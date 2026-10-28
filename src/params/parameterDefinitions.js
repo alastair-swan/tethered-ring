@@ -539,6 +539,10 @@ export function createParameterDefinitions() {
   enableBackgroundAlpha: {value: 1, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustBackgroundOpacity', folder: 'Rendering'},
   showEarthsSurface: {value: defaultShows, units: '', autoMap: true, onChange: 'adjustEarthSurfaceVisibility', folder: 'Rendering'},
   showEarthsAtmosphere: {value: true, units: '', autoMap: true, onChange: 'adjustEarthAtmosphereVisibility', folder: 'Rendering'},
+  // The sun's position at the start of the simulation (it then moves with simulated time). 0 / -1 =
+  // automatic: a repeatable daytime for the preset's starting view (see src/physics/solar.js).
+  sunDayOfYear: {value: 0, units: '', autoMap: true, min: 0, max: 366, step: 1, onChange: 'updatedParam', folder: 'Rendering'},
+  sunTimeOfDayUTC: {value: -1, units: 'h', autoMap: true, min: -1, max: 24, step: 0.01, onChange: 'updatedParam', folder: 'Rendering'},
   showOcean: {value: true, units: '', autoMap: true, onChange: 'adjustOcean', folder: 'Rendering'},
   underwaterVisibility: {value: 20000, units: 'm', autoMap: true, min: 100, max: 200000, onChange: 'adjustOcean', folder: 'Rendering'},   // distance at which things underwater have almost faded into the water colour (a visual cue, not realism)
   earthTextureOpacity: {value: 1, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustEarthTextureOpacity', folder: 'Rendering'},

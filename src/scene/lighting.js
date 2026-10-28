@@ -1,5 +1,8 @@
 import * as THREE from 'three'
 
+// How far out the (directional) sun light is placed; only its direction matters.
+const SUN_DISTANCE = 1e9
+
 // Sun and ambient light. When a preset enables surface shadows, the directional light gets a small,
 // dense shadow frustum that is re-centred on the camera target every frame (see updateShadowFocus);
 // a planet-sized shadow map would be far too coarse for metre-scale vehicles.
@@ -55,6 +58,19 @@ export class Lighting {
     this.sunLight.position.copy(pointInPlanetFrame).addScaledVector(this.shadowDirection, 300000)
     this.shadowTarget.updateMatrixWorld()
     this.sunLight.updateMatrixWorld()
+  }
+
+  // Points the sun along `worldDirection` (towards the sun, world axes); `planetDirection` is the same
+  // in the planet frame, for the shadow-casting set-up, which lives there.
+  setSunDirection(worldDirection, planetDirection) {
+    if (this.shadowTarget) {
+      this.shadowDirection.copy(planetDirection).normalize()
+      return
+    }
+    this.sunLight.position.copy(worldDirection).normalize().multiplyScalar(SUN_DISTANCE)
+    this.sunLight.target.position.set(0, 0, 0)
+    this.sunLight.updateMatrixWorld()
+    this.sunLight.target.updateMatrixWorld()
   }
 
   // Called every frame with the camera target (world coordinates).

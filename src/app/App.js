@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { VRButton } from 'three/addons/webxr/VRButton.js'
 import * as tram from '../utils/tram.js'
+import { subsolarPoint, advanceDate, defaultDaytime } from '../physics/solar.js'
 import { SimClock } from '../core/SimClock.js'
 import { ParameterStore } from '../params/ParameterStore.js'
 import { createParameterDefinitions } from '../params/parameterDefinitions.js'
@@ -47,6 +48,8 @@ const TUBE_DEPLOY_RATE = 0.0025 // fraction per second
 //   clock.tick() -> step(dt): advance animations at clock.time -> render()
 // Recording and shot playback drive step()/render() themselves with a fixed time step.
 const _sunDirection = new THREE.Vector3()
+const _sunPlanet = new THREE.Vector3()
+const _sunWorld = new THREE.Vector3()
 const _sunTarget = new THREE.Vector3()
 
 export class App {
@@ -315,6 +318,7 @@ export class App {
     this.initialReferencePoint = reference.clone()
     this.camera.placeInitially(reference)
     this.camera.controls.autoRotate = this.d.orbitControlsAutoRotate.value
+    this.resolveSunDate()
 
     this.googleEarth = new GoogleEarthCameraPlayback({
       camera: this.camera3d,
@@ -602,12 +606,48 @@ export class App {
       this.updateSeaSurfaceVisibility()
     }
     MooringCables.refreshSome()
+    this.updateSun()
     this.lighting.followCameraTarget(this.camera.controls.target)
 
     if (this.trackPointLogger) {
       const c = this.camera
       this.trackPointLogger.capture(t, this.camera3d.position.clone(), this.camera3d.up.clone(), c.controls.target.clone(), c.controls.upDirection.clone(), this.planetSpec)
     }
+  }
+
+  // The sun follows a date on Earth (presets that place the sun themselves, and other bodies, keep
+  // their own). Automatic date parameters become a repeatable daytime for the preset's starting view,
+  // written back into the parameters so they show in the GUI and are saved with shots.
+  get sunFollowsDate() {
+    return this.planetSpec.name === 'Earth' && !this.nonGUIParams.sunLightPosition
+  }
+
+  resolveSunDate() {
+    if (!this.sunFollowsDate) return
+    const autoDay = !(this.store.get('sunDayOfYear') >= 1)
+    const autoTime = !(this.store.get('sunTimeOfDayUTC') >= 0)
+    if (!autoDay && !autoTime) return
+    // The place in view: the camera's target, or (for views of the whole planet, which orbit its
+    // centre) the point below the camera.
+    let target = this.planetCoordSys.worldToLocal(this.camera.controls.target.clone())
+    if (target.length() < this.planetRadius / 2) target = this.planetCoordSys.worldToLocal(this.camera3d.getWorldPosition(new THREE.Vector3()))
+    const geo = tram.ecefToGeodetic(target.x, target.y, target.z, this.planetSpec.ellipsoid)
+    const chosen = defaultDaytime(this.presetId, geo.lat, geo.lon)
+    if (autoDay) this.store.set('sunDayOfYear', chosen.dayOfYear)
+    if (autoTime) this.store.set('sunTimeOfDayUTC', Math.round(chosen.utcHours * 100) / 100)
+    this.store.derive()
+  }
+
+  // Sun direction for the start date plus the simulated time.
+  updateSun() {
+    if (!this.sunFollowsDate) return
+    const date = advanceDate(Math.max(1, this.store.get('sunDayOfYear')), Math.max(0, this.store.get('sunTimeOfDayUTC')), this.clock.time)
+    const s = subsolarPoint(date.dayOfYear, date.utcHours)
+    const p = tram.geodeticToECEF(s.lat, s.lon, 0, this.planetSpec.ellipsoid)
+    _sunPlanet.set(p.x, p.y, p.z).normalize()
+    this.planetCoordSys.updateWorldMatrix(true, false)
+    _sunWorld.copy(_sunPlanet).transformDirection(this.planetCoordSys.matrixWorld)
+    this.lighting.setSunDirection(_sunWorld, _sunPlanet)
   }
 
   stepRingAnimations(dt) {
