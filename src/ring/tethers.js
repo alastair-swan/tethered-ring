@@ -36,7 +36,10 @@ function stripsToGeometry({strips, thicknesses, strands}) {
 
 class TetherGeometry extends BufferGeometry {
 
-	constructor(planetSpec, crv, ctv, dParamWithUnits, specs, fastTetherRender, genKMLFile, kmlFile, genSpecs, planetCoordSys, tetheredRingRefCoordSys) {
+	// anchorDepth (m): how far below the equatorial-radius sphere the ground is where the tethers are
+	// anchored. The ring is modelled on that sphere, but the ground is the ellipsoid (up to 21 km lower
+	// off the equator), so the tethers are designed for the height they actually span.
+	constructor(planetSpec, crv, ctv, dParamWithUnits, specs, fastTetherRender, genKMLFile, kmlFile, genSpecs, planetCoordSys, tetheredRingRefCoordSys, {anchorDepth = 0} = {}) {
 		super();
 
     const tetherPoints = []
@@ -49,6 +52,7 @@ class TetherGeometry extends BufferGeometry {
     const currentCatenaryTypes = [[], []]       // Shape of the catenery for the portion of the tethers that are off the ground when the ring is less than fully elevated   
     const verbose = false
     const radiusOfPlanet = planetSpec.ellipsoid.a
+    const groundRadius = radiusOfPlanet - anchorDepth
 
     // Tethered Ring Math
     // Inputs:
@@ -90,7 +94,7 @@ class TetherGeometry extends BufferGeometry {
     // Initially we will assume that PointB is at x=0 on the catenary. This is done just so that we can calculate a temporary "PointP.x", 
     // and then set PointB.x as a percentage of this temporarty PointP.x. 
     const tempPointP = new tram.cateneryVector()
-    tempPointP.y = dParamWithUnits['ringFinalAltitude'].value
+    tempPointP.y = dParamWithUnits['ringFinalAltitude'].value + anchorDepth
     tempPointP.x = c * Math.acos(Math.exp(-tempPointP.y/c))      // Eq 11
     tempPointP.s = c * Math.acosh(Math.exp(tempPointP.y/c))      // Eq 13b
     
@@ -120,7 +124,7 @@ class TetherGeometry extends BufferGeometry {
       pointB.θ = pointB.x / c                              // Eq 12
       pointB.y = c * Math.log(1.0/Math.cos(pointB.x/c))    // Eq 10
       pointB.s = c * Math.acosh(Math.exp(pointB.y/c))      // Eq 13b
-      pointP.y = pointB.y + dParamWithUnits['ringFinalAltitude'].value
+      pointP.y = pointB.y + dParamWithUnits['ringFinalAltitude'].value + anchorDepth
       pointP.x = c * Math.acos(Math.exp(-pointP.y/c))      // Eq 11
       pointP.s = c * Math.acosh(Math.exp(pointP.y/c))      // Eq 13b
       pointP.θ = pointP.x / c                              // Eq 12
@@ -164,7 +168,7 @@ class TetherGeometry extends BufferGeometry {
 
     const r = Math.sqrt(crv.yc**2 + crv.mainRingRadius**2)
 
-    tempPointP.y = r - radiusOfPlanet
+    tempPointP.y = r - groundRadius
     tempPointP.x = c * Math.acos(Math.exp(-tempPointP.y/c))      // Eq 11
     tempPointP.s = c * Math.acosh(Math.exp(tempPointP.y/c))      // Eq 13b
     
@@ -179,7 +183,7 @@ class TetherGeometry extends BufferGeometry {
       pointB.y = c * Math.log(1.0/Math.cos(pointB.x/c))    // Eq 10
       pointB.s = c * Math.acosh(Math.exp(pointB.y/c))      // Eq 13b
       pointB_s[j] = pointB.s  // We'll need to use this later
-      pointP.y = pointB.y + crv.currentMainRingAltitude
+      pointP.y = pointB.y + crv.currentMainRingAltitude + anchorDepth
       pointP.x = c * Math.acos(Math.exp(-pointP.y/c))      // Eq 11
       pointP.s = c * Math.acosh(Math.exp(pointP.y/c))      // Eq 13b
       pointP.θ = pointP.x / c                                  // Eq 12
@@ -206,9 +210,9 @@ class TetherGeometry extends BufferGeometry {
         // Compute a distance from the center of the planet and a angle from the ring's axis of symmetry
         const x = 2 * c * Math.atan(Math.exp(s/c)) - (c * Math.PI / 2)   // Eq 15
         const y = c * Math.log(Math.cosh(s/c))                           // Eq 16
-        const r = radiusOfPlanet + (y - pointB.y)
-        const ω_anchor = ω_P + (pointP.x-pointB.x) / radiusOfPlanet     // Left this unreduced to make it a bit easier to understand the logic
-        const ω = ω_anchor - (x-pointB.x) / radiusOfPlanet
+        const r = groundRadius + (y - pointB.y)
+        const ω_anchor = ω_P + (pointP.x-pointB.x) / groundRadius     // Left this unreduced to make it a bit easier to understand the logic
+        const ω = ω_anchor - (x-pointB.x) / groundRadius
         const θ = x / c
         const tensileForcePerMeterRhoComponentAtX = fT.z / Math.tan(θ + ω_P)
         const tensileForcePerMeterAtX = Math.sqrt(fT.z**2 + tensileForcePerMeterRhoComponentAtX**2)

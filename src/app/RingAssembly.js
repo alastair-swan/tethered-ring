@@ -9,6 +9,9 @@ import { PixelLOD } from '../scene/PixelLOD.js'
 const UNIVERSE = { gravitationalConstant: 6.67408e-11 }
 // Distant tether forks are merged once their branches would be less than this far apart on screen.
 const TETHER_MERGE_PIXELS = 0.1
+// Tethers are designed for the depth of the ground below the equatorial-radius sphere at their anchors,
+// rounded up to this step (so they always reach the ground) so that nearby tethers share geometry.
+const TETHER_DEPTH_STEP = 250 // m
 
 // Owns the tethered ring structure itself: one tetheredRingSystem per ring (presets can request
 // several), their tethers, and the diagnostic markers (planet axis, equator, ring curve, force
@@ -76,15 +79,27 @@ export class RingAssembly {
         const geometry = new TetherGeometry(this.planetSpec, crv, this.ctv, d, this.specs, this.fastTetherRender && !genKMLFile, genKMLFile, kmlFile, genSpecs, this.planetCoordSys, refCoordSys)
         this.tetherGeometries.push(geometry)
         if (this.fastTetherRender && !genKMLFile) {
-          // One tether geometry, instanced around the ring by rotation about the ring axis. Each copy
-          // picks how many of its last forks to merge from how far apart those branches are on screen.
-          const levelGeometries = [geometry, ...geometry.mergedForkGeometries]
-          for (const g of levelGeometries) g.userData.shared = true
+          // One tether geometry per anchor depth (see TETHER_DEPTH_STEP), instanced around the ring by
+          // rotation about the ring axis. Each copy picks how many of its last forks to merge from how
+          // far apart those branches are on screen.
           const n = d.numTethers.value
           const k = 2 * Math.PI * 2 / n
+          const depths = this.tetherAnchorDepths(geometry, crv, refCoordSys, n / 2, k)
+          const byDepth = new Map()
+          const levelsFor = (step) => {
+            if (!byDepth.has(step)) {
+              const g = step === 0 ? geometry : new TetherGeometry(this.planetSpec, crv, new tram.commonTetherVariables(), d, {}, true, false, '', false, this.planetCoordSys, refCoordSys, { anchorDepth: step * TETHER_DEPTH_STEP })
+              if (step !== 0) this.tetherGeometries.push(g)
+              const levels = [g, ...g.mergedForkGeometries]
+              for (const level of levels) level.userData.shared = true
+              byDepth.set(step, { levels, fanWidths: g.forkFanWidths })
+            }
+            return byDepth.get(step)
+          }
           for (let i = 0; i < n / 2; i++) {
             const theta = i * k
-            const tether = this.createTetherLOD(levelGeometries, geometry.forkFanWidths)
+            const { levels, fanWidths } = levelsFor(Math.ceil(depths[i] / TETHER_DEPTH_STEP))
+            const tether = this.createTetherLOD(levels, fanWidths)
             tether.position.setFromSphericalCoords(this.planetRadius + crv.currentMainRingAltitude, -(Math.PI / 2 - crv.currentEquivalentLatitude), theta)
             tether.rotation.y = theta
             list.push(tether)
@@ -123,6 +138,32 @@ export class RingAssembly {
       })
     })
     return lod
+  }
+
+  // Depth of the ground (the ellipsoid) below the equatorial-radius sphere at each tether copy's
+  // anchors (the deeper of its two), from the anchors of the sphere design (`geometry`, whose ground
+  // points are at r = a). The anchors of the deeper design are a little further out, but the ground
+  // changes slowly.
+  tetherAnchorDepths(geometry, crv, refCoordSys, count, step) {
+    const position = geometry.getAttribute('position')
+    const reference = new THREE.Vector3().setFromSphericalCoords(this.planetRadius + crv.currentMainRingAltitude, -(Math.PI / 2 - crv.currentEquivalentLatitude), 0)
+    const anchors = []
+    const p = new THREE.Vector3()
+    for (let i = 0; i < position.count; i++) {
+      p.fromBufferAttribute(position, i).add(reference)
+      if (p.length() < this.planetRadius + 1) anchors.push(p.clone())
+    }
+    refCoordSys.updateMatrix()
+    const yAxis = new THREE.Vector3(0, 1, 0)
+    const depths = new Float64Array(count)
+    for (let i = 0; i < count; i++) {
+      for (const anchor of anchors) {
+        p.copy(anchor).applyAxisAngle(yAxis, i * step).applyMatrix4(refCoordSys.matrix)
+        const depth = p.length() * (1 - tram.ellipsoidSurfaceScale(p.x, p.y, p.z, this.planetSpec.ellipsoid))
+        depths[i] = Math.max(depths[i], depth)
+      }
+    }
+    return depths
   }
 
   disposeTethers() {
