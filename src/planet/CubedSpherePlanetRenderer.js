@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
+import { fbmGlsl, noiseOffsets, SEA_SURFACE_FREQUENCIES, seaSurfaceLookGlsl } from './seaNoise.js';
 
 // =============================================================================
 // CubedSpherePlanetRenderer - cubed-sphere quadtree LOD planet renderer that
@@ -84,7 +85,7 @@ const WGS84_E2 = 2 / 298.257223563 - 1 / (298.257223563 * 298.257223563);
 const DEG2RAD = Math.PI / 180;
 // Sea surface (options.water): opacity of deep water, the depth over which it fades in from the
 // coastline, and its colour before a tile's imagery has loaded.
-const WATER_OPACITY = 0.6;
+const WATER_OPACITY = 0.12; // looking straight into it (more at grazing angles: see seaNoise.js)
 const WATER_SHALLOWS_DEPTH = 30;
 const WATER_FALLBACK_COLOR = 0x1d5f7d;
 // Sea floor seen from under the surface (linear RGB), and the depth over which it replaces the imagery.
@@ -1843,6 +1844,9 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     }
   }
 
+  // Mostly clear (so the tube and cables show through), more opaque at grazing angles, with fine
+  // ripples (seaNoise.js) that show where the surface is and how far away; tinted by the imagery's
+  // ocean colour and clearer still in the shallows.
   _createWaterMaterial(tile) {
     const material = new THREE.MeshPhongMaterial({
       color: tile.texture ? 0xffffff : WATER_FALLBACK_COLOR,
@@ -1850,22 +1854,35 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
       specular: 0x7d97a8,
       shininess: 80,
       transparent: true,
-      opacity: WATER_OPACITY,
       depthWrite: false,
     });
+    const offsets = noiseOffsets(tile.center, SEA_SURFACE_FREQUENCIES);
     material.onBeforeCompile = (shader) => {
+      shader.uniforms.seaRippleOffset = { value: offsets };
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
 attribute float seaDepth;
-varying float vSeaDepth;`)
+varying float vSeaDepth;
+varying vec3 vSeaLocal;`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>
-vSeaDepth = seaDepth;`);
+vSeaDepth = seaDepth;
+vSeaLocal = transformed;`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
-varying float vSeaDepth;`)
+varying float vSeaDepth;
+varying vec3 vSeaLocal;
+${fbmGlsl('seaRipple', SEA_SURFACE_FREQUENCIES)}
+${seaSurfaceLookGlsl(WATER_OPACITY)}`)
         .replace('#include <alphatest_fragment>', `if (vSeaDepth <= 0.0) discard; // land
-// Clearer in the shallows, so the coastline is soft.
-diffuseColor.a *= mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed(1)}, 0.0, 1.0));
+{
+  float ripple = seaRippleFbm(vSeaLocal, length(vViewPosition));
+  float shine;
+  vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, abs(dot(normalize(vNormal), normalize(vViewPosition))), shine);
+  diffuseColor.rgb = shaded.rgb;
+  totalEmissiveRadiance += seaSurfaceHighlight * shine * 0.35; // reflected sky
+  // Clearer in the shallows, so the coastline is soft.
+  diffuseColor.a = shaded.a * mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed(1)}, 0.0, 1.0));
+}
 #include <alphatest_fragment>`);
     };
     material.customProgramCacheKey = () => 'seaSurface';
@@ -1875,17 +1892,13 @@ diffuseColor.a *= mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed
   // The imagery shows the ocean as seen from space (near-black navy), which underwater makes the sea
   // floor indistinguishable from the water. While the camera is under the surface (seafloorView = 1),
   // ground below sea level is drawn in a sediment colour instead, keeping the imagery's light and dark
-  // variation and blending in over the first SEAFLOOR_BLEND_DEPTH metres below sea level. The altitude
-  // is computed per vertex from the tile-local position plus the tile centre (good to ~1 m in float32).
+  // variation, with mild fractal noise (seaNoise.js), blending in over the first SEAFLOOR_BLEND_DEPTH
+  // metres below sea level. The altitude is computed per vertex from the tile-local position plus the
+  // tile centre (good to ~1 m in float32).
   _configureSeafloor(material, tile) {
     const previous = material.onBeforeCompile;
     const previousKey = material.customProgramCacheKey;
-    // Noise lattice offsets for this tile, (centre * frequency) mod period in float64, so the shader
-    // only works with small tile-local numbers (as for the lunar surface detail).
-    const offsets = SEAFLOOR_FREQS.map(f => new THREE.Vector3(
-      positiveMod(tile.center.x * f, DETAIL_PERIOD),
-      positiveMod(tile.center.y * f, DETAIL_PERIOD),
-      positiveMod(tile.center.z * f, DETAIL_PERIOD)));
+    const offsets = noiseOffsets(tile.center, SEAFLOOR_FREQS);
     material.onBeforeCompile = (shader, renderer) => {
       if (previous) previous.call(material, shader, renderer);
       shader.uniforms.seafloorView = this.seafloorView;
@@ -1905,49 +1918,16 @@ vSeafloorLocal = transformed;
   float surface = 1.0 / sqrt((d.x * d.x + d.z * d.z) / ${(this.a * this.a).toExponential(10)} + d.y * d.y / ${(this.b * this.b).toExponential(10)});
   vSeafloorAltitude = r - surface;
 }`);
-      const bands = SEAFLOOR_FREQS.length;
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
-#define SEAFLOOR_BANDS ${bands}
 uniform float seafloorView;
-uniform vec3 seafloorOffset[SEAFLOOR_BANDS];
 varying float vSeafloorAltitude;
 varying vec3 vSeafloorLocal;
-const float seafloorFreq[SEAFLOOR_BANDS] = float[](${SEAFLOOR_FREQS.map(f => f.toExponential(6)).join(', ')});
-
-float seafloorHash(vec3 p) {
-  p = mod(p, ${DETAIL_PERIOD.toFixed(1)}); // periodic lattice: per-tile offsets wrap seamlessly
-  p = fract(p * 0.1031);
-  p += dot(p, p.yzx + 33.33);
-  return fract((p.x + p.y) * p.z);
-}
-
-float seafloorNoise(vec3 p) {
-  vec3 i = floor(p);
-  vec3 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(mix(seafloorHash(i), seafloorHash(i + vec3(1, 0, 0)), f.x),
-                 mix(seafloorHash(i + vec3(0, 1, 0)), seafloorHash(i + vec3(1, 1, 0)), f.x), f.y),
-             mix(mix(seafloorHash(i + vec3(0, 0, 1)), seafloorHash(i + vec3(1, 0, 1)), f.x),
-                 mix(seafloorHash(i + vec3(0, 1, 1)), seafloorHash(i + vec3(1, 1, 1)), f.x), f.y), f.z);
-}
-
-// Fractal noise in [-1, 1]; each octave fades out as its wavelength shrinks below a few pixels.
-float seafloorFbm(float viewDistance) {
-  float sum = 0.0, weight = 0.0, amplitude = 1.0;
-  for (int i = 0; i < SEAFLOOR_BANDS; i++) {
-    float wavelengthPixels = 1000.0 / (seafloorFreq[i] * viewDistance);
-    float visible = smoothstep(2.0, 6.0, wavelengthPixels);
-    sum += amplitude * visible * (seafloorNoise(vSeafloorLocal * seafloorFreq[i] + seafloorOffset[i]) * 2.0 - 1.0);
-    weight += amplitude;
-    amplitude *= 0.6;
-  }
-  return sum / weight;
-}`)
+${fbmGlsl('seafloor', SEAFLOOR_FREQS)}`)
         .replace('#include <map_fragment>', `#include <map_fragment>
 if (seafloorView > 0.0 && vSeafloorAltitude < 0.0) {
   float luma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
-  float mottle = seafloorFbm(length(vViewPosition));
+  float mottle = seafloorFbm(vSeafloorLocal, length(vViewPosition));
   vec3 sediment = vec3(${SEAFLOOR_COLOR.map(c => c.toFixed(3)).join(', ')}) * (0.75 + 1.5 * luma)
     * (1.0 + ${SEAFLOOR_CONTRAST.toFixed(2)} * mottle) * vec3(1.0 + 0.08 * mottle, 1.0, 1.0 - 0.08 * mottle);
   float amount = seafloorView * clamp(-vSeafloorAltitude / ${SEAFLOOR_BLEND_DEPTH.toFixed(1)}, 0.0, 1.0);

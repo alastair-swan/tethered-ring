@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { ecefToGeodetic } from '../physics/geodesy.js'
+import { fbmGlsl, noiseOffsets, SEA_SURFACE_FREQUENCIES, seaSurfaceLookGlsl } from './seaNoise.js'
 
 // The sea, as seen from in it: the underside of the water surface, and an underwater look (fog in the
 // water colour, no sky). From above, the surface is drawn by the planet's tiles in the colour of the
@@ -18,6 +19,7 @@ import { ecefToGeodetic } from '../physics/geodesy.js'
 const RINGS = 64
 const SECTORS = 64
 const UNDERSIDE_COLOR = new THREE.Color(0x6fb3c9)
+const UNDERSIDE_OPACITY = 0.18 // looking straight up through it (more at grazing angles)
 const SHALLOW_WATER_COLOR = new THREE.Color(0x1f6f8c)
 const DEEP_WATER_COLOR = new THREE.Color(0x04131f)
 const DARKENING_DEPTH = 300 // m: below this the underwater fog is at its darkest
@@ -56,10 +58,40 @@ export class Ocean {
       }
     }
     geometry.setIndex(index)
-    // Seen from below (back faces), lit by the daylight coming through it rather than shaded.
+    // Seen from below (back faces), lit by the daylight coming through it rather than shaded: mostly
+    // clear, more opaque at grazing angles, with the same ripples as the surface seen from above.
     this.material = new THREE.MeshBasicMaterial({
-      color: UNDERSIDE_COLOR, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.BackSide,
+      color: UNDERSIDE_COLOR, transparent: true, depthWrite: false, side: THREE.BackSide,
     })
+    this.rippleOffsets = noiseOffsets(new THREE.Vector3(), SEA_SURFACE_FREQUENCIES)
+    this.material.onBeforeCompile = (shader) => {
+      shader.uniforms.seaRippleOffset = { value: this.rippleOffsets }
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+varying vec3 vSeaLocal;
+varying vec3 vSeaView;
+varying vec3 vSeaNormal;`)
+        .replace('#include <project_vertex>', `#include <project_vertex>
+vSeaLocal = transformed;
+vSeaView = -mvPosition.xyz;
+vSeaNormal = normalize(normalMatrix * normal);`)
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+varying vec3 vSeaLocal;
+varying vec3 vSeaView;
+varying vec3 vSeaNormal;
+${fbmGlsl('seaRipple', SEA_SURFACE_FREQUENCIES)}
+${seaSurfaceLookGlsl(UNDERSIDE_OPACITY)}`)
+        .replace('#include <alphatest_fragment>', `{
+  float ripple = seaRippleFbm(vSeaLocal, length(vSeaView));
+  float shine;
+  vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, abs(dot(normalize(vSeaNormal), normalize(vSeaView))), shine);
+  diffuseColor.rgb = shaded.rgb;
+  diffuseColor.a = shaded.a;
+}
+#include <alphatest_fragment>`)
+    }
+    this.material.customProgramCacheKey = () => 'seaUnderside'
     this.mesh = new THREE.Mesh(geometry, this.material)
     this.mesh.name = 'oceanSurface'
     this.mesh.frustumCulled = false // rebuilt around the camera every frame
@@ -163,6 +195,7 @@ export class Ocean {
       }
     }
     this.mesh.position.copy(_origin)
+    noiseOffsets(_origin, SEA_SURFACE_FREQUENCIES, this.rippleOffsets) // ripples stay put as the disc moves
     this.mesh.geometry.attributes.position.needsUpdate = true
     this.mesh.geometry.attributes.normal.needsUpdate = true
   }
