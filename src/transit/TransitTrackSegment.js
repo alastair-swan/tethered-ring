@@ -1,61 +1,50 @@
-import * as tram from '../utils/tram.js'
+import * as THREE from 'three'
+import { offset_r, offset_y, makeOffsetCurve } from '../ring/ringGeometry.js'
+import { RingInstancedLayer } from '../ring/RingInstancedLayer.js'
 
-export class virtualTransitTrackSegment {
-    constructor(positionInFrameOfReference, unallocatedModelsArray) {
-      this.p = positionInFrameOfReference
-      this.unallocatedModels = unallocatedModelsArray
-    }
-  
-    // The following properties are common to all track sections...
-    static currentEquivalentLatitude
-    static isVisible
-    static isDynamic
-    static hasChanged
-  
-    static update(dParamWithUnits, crv) {
-      const ttnut = dParamWithUnits['transitTracksNumUpwardTracks'].value
-      const ttnot = dParamWithUnits['transitTracksNumOutwardTracks'].value
-  
-      virtualTransitTrackSegment.transitTrackRelativePosition_r = []
-      virtualTransitTrackSegment.transitTrackRelativePosition_y = []
-      for (let j = 0; j < ttnut; j++) {
-        const ttuof = j - (ttnut - 1)/2  // Transit Track Upward Offset Factor
-        const transitTrackUpwardOffset = dParamWithUnits['transitTubeUpwardOffset'].value + dParamWithUnits['transitTrackUpwardOffset'].value + ttuof * dParamWithUnits['transitTrackUpwardSpacing'].value
-        virtualTransitTrackSegment.transitTrackRelativePosition_r[j] = []
-        virtualTransitTrackSegment.transitTrackRelativePosition_y[j] = []
-        for (let i = 0; i < ttnot; i++) {
-          const ttoof = i - (ttnot - 1)/2  // Transit Track Outward Offset Factor
-          const transitTrackOutwardOffset = dParamWithUnits['transitTubeOutwardOffset'].value + dParamWithUnits['transitTrackOutwardOffset'].value + ttoof * dParamWithUnits['transitTrackOutwardSpacing'].value
-          virtualTransitTrackSegment.transitTrackRelativePosition_r[j][i] = tram.offset_r(transitTrackOutwardOffset, transitTrackUpwardOffset, crv.currentEquivalentLatitude)
-          virtualTransitTrackSegment.transitTrackRelativePosition_y[j][i] = tram.offset_y(transitTrackOutwardOffset, transitTrackUpwardOffset, crv.currentEquivalentLatitude)
-        }
-      }
+let transitTrackMaterial = null
 
-      virtualTransitTrackSegment.currentEquivalentLatitude = crv.currentEquivalentLatitude
-      virtualTransitTrackSegment.isVisible = dParamWithUnits['showTransitTracks'].value
-      virtualTransitTrackSegment.isDynamic =  false
-      virtualTransitTrackSegment.hasChanged = true
-    }
-  
-    placeAndOrientModel(om, refFrame, wedgeToCameraDistance) {
-      const modelsTrackPosition = (this.p + refFrame.p) % 1 
-      if (modelsTrackPosition==='undefined' || (modelsTrackPosition<0) || (modelsTrackPosition>1)) {
-        console.log("error!!!")
-      }
-      else {
-        const pointOnRingCurve = refFrame.curve.getPoint(modelsTrackPosition)
-        const angle = 2 * Math.PI * modelsTrackPosition
-        const j = om.userData.upwardIndex
-        const i = om.userData.outwardIndex
-        om.position.set(
-          pointOnRingCurve.x + virtualTransitTrackSegment.transitTrackRelativePosition_r[j][i] * Math.cos(angle),
-          pointOnRingCurve.y + virtualTransitTrackSegment.transitTrackRelativePosition_y[j][i],
-          pointOnRingCurve.z + virtualTransitTrackSegment.transitTrackRelativePosition_r[j][i] * Math.sin(angle))
-        om.rotation.set(0, -angle, virtualTransitTrackSegment.currentEquivalentLatitude)
-        om.visible = virtualTransitTrackSegment.isVisible
-        om.matrixValid = false
-        if (this.perfOptimizedThreeJS) om.freeze()
-      }
+// One instanced layer per track (transitTracksNumUpwardTracks x transitTracksNumOutwardTracks).
+export function createTransitTrackLayers(dParamWithUnits, crv, mainRingCurve, numTransitStops, cameraRange) {
+  const layers = []
+  const numSegments = dParamWithUnits['showTransitTracks'].value ? numTransitStops : 0
+  if (numSegments === 0) return layers
+  const ttnut = dParamWithUnits['transitTracksNumUpwardTracks'].value
+  const ttnot = dParamWithUnits['transitTracksNumOutwardTracks'].value
+  const dx = dParamWithUnits['transitTrackWidth'].value / 2
+  const dy = dParamWithUnits['transitTrackHeight'].value / 2
+  const trackShape = new THREE.Shape()
+  trackShape.moveTo(dx, dy)
+  trackShape.lineTo(dx, -dy)
+  trackShape.lineTo(-dx, -dy)
+  trackShape.lineTo(-dx, dy)
+  trackShape.closed = true
+  if (!transitTrackMaterial) transitTrackMaterial = new THREE.MeshPhongMaterial({color: 0x3f3f3f})
+  const lat = crv.currentEquivalentLatitude
+
+  for (let j = 0; j < ttnut; j++) {
+    const ttuof = j - (ttnut - 1) / 2  // Transit Track Upward Offset Factor
+    const upward = dParamWithUnits['transitTubeUpwardOffset'].value + dParamWithUnits['transitTrackUpwardOffset'].value + ttuof * dParamWithUnits['transitTrackUpwardSpacing'].value
+    for (let i = 0; i < ttnot; i++) {
+      const ttoof = i - (ttnot - 1) / 2  // Transit Track Outward Offset Factor
+      const outward = dParamWithUnits['transitTubeOutwardOffset'].value + dParamWithUnits['transitTrackOutwardOffset'].value + ttoof * dParamWithUnits['transitTrackOutwardSpacing'].value
+      const geometry = new THREE.ExtrudeGeometry(trackShape, {
+        steps: 16,
+        depth: 1,
+        extrudePath: makeOffsetCurve(outward, upward, crv, 4, mainRingCurve, 0, numSegments),
+      })
+      layers.push(new RingInstancedLayer({
+        name: 'transitTrack_' + j + '_' + i,
+        geometry,
+        material: transitTrackMaterial,
+        numSegments,
+        dr: offset_r(outward, upward, lat),
+        dy: offset_y(outward, upward, lat),
+        rotZ: lat,
+        cameraRange,
+        ringCircumference: 2 * Math.PI * crv.mainRingRadius,
+      }))
     }
   }
-  
+  return layers
+}

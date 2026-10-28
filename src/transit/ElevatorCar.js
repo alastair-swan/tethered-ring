@@ -1,73 +1,58 @@
 import * as THREE from 'three'
-import * as tram from '../utils/tram.js'
+import { offset_r, offset_y } from '../ring/ringGeometry.js'
+import { VirtualRingObject, ringPoint } from './VirtualRingObject.js'
 
-export class virtualElevatorCar {
-    constructor(positionInFrameOfReference, unallocatedModelsArray) {
-        this.p = positionInFrameOfReference
-        this.unallocatedModels = unallocatedModelsArray
+const _tmp = new THREE.Object3D()
+
+export class virtualElevatorCar extends VirtualRingObject {
+  static isDynamic = true
+  // Set by the transit system each frame: the motion profile and the elevator channel's time.
+  static calculator = null
+  static animationTime = 0
+  static timeRate = 1
+
+  static update(dParamWithUnits, crv) {
+    virtualElevatorCar.elevatorCarOutwardOffset = dParamWithUnits['transitTubeOutwardOffset'].value - dParamWithUnits['transitTubeTubeRadius'].value + dParamWithUnits['elevatorCableOutwardOffset'].value
+    virtualElevatorCar.elevatorCarUpwardOffset = dParamWithUnits['transitTubeUpwardOffset'].value + dParamWithUnits['ringTerminusUpwardOffset'].value + dParamWithUnits['elevatorCarUpwardOffset'].value
+    virtualElevatorCar.elevatorCarForwardOffset = dParamWithUnits['elevatorCableForwardOffset'].value
+    virtualElevatorCar.currentEquivalentLatitude = crv.currentEquivalentLatitude
+    virtualElevatorCar.currentMainRingAltitude = crv.currentMainRingAltitude
+    virtualElevatorCar.elevatorCarRotZ = crv.currentEquivalentLatitude - Math.PI/2
+    virtualElevatorCar.isVisible = dParamWithUnits['showElevatorCars'].value
+    virtualElevatorCar.animate(crv.currentMainRingAltitude)
+  }
+
+  // elevatorAltitude: the car's altitude coordinate, equal to the ring's altitude when docked at the top
+  // and to groundTerminusUpwardOffset when docked at the bottom.
+  static offsetsForAltitude(elevatorAltitude) {
+    const up = virtualElevatorCar.elevatorCarUpwardOffset + elevatorAltitude - virtualElevatorCar.currentMainRingAltitude
+    const lat = virtualElevatorCar.currentEquivalentLatitude
+    return [offset_r(virtualElevatorCar.elevatorCarOutwardOffset, up, lat), offset_y(virtualElevatorCar.elevatorCarOutwardOffset, up, lat)]
+  }
+
+  static animate(elevatorAltitude) {
+    [virtualElevatorCar.elevatorCarPosition_dr, virtualElevatorCar.elevatorCarPosition_dy] = virtualElevatorCar.offsetsForAltitude(elevatorAltitude)
+  }
+
+  placeWithOffsets(om, refFrame, dr, dy) {
+    const p = this.trackPosition(refFrame)
+    ringPoint(refFrame.curve, p, dr, dy, virtualElevatorCar.elevatorCarForwardOffset, om.position)
+    om.rotation.set(0, -2 * Math.PI * p, virtualElevatorCar.elevatorCarRotZ)
+  }
+
+  placeAndOrientModel(om, refFrame) {
+    this.placeWithOffsets(om, refFrame, virtualElevatorCar.elevatorCarPosition_dr, virtualElevatorCar.elevatorCarPosition_dy)
+    om.visible = virtualElevatorCar.isVisible
+  }
+
+  getFuturePosition(refFrame, timeDeltaInSeconds = 0) {
+    let dr = virtualElevatorCar.elevatorCarPosition_dr
+    let dy = virtualElevatorCar.elevatorCarPosition_dy
+    if (virtualElevatorCar.calculator) {
+      const t = virtualElevatorCar.animationTime + virtualElevatorCar.timeRate * timeDeltaInSeconds
+      ;[dr, dy] = virtualElevatorCar.offsetsForAltitude(virtualElevatorCar.calculator.calculateElevatorPosition(t))
     }
-
-    // The following properties are common to all virtual elevators...
-    static elevatorCarOutwardOffset
-    static elevatorCarUpwardOffset
-    static elevatorCarForwardOffset
-    static elevatorCarPosition_dr
-    static elevatorCarPosition_dy
-    static currentEquivalentLatitude
-    static isVisible
-    static isDynamic
-    static hasChanged
-
-    static update(dParamWithUnits, crv) {
-        virtualElevatorCar.elevatorCarOutwardOffset = dParamWithUnits['transitTubeOutwardOffset'].value - dParamWithUnits['transitTubeTubeRadius'].value + dParamWithUnits['elevatorCableOutwardOffset'].value
-        virtualElevatorCar.elevatorCarUpwardOffset = dParamWithUnits['transitTubeUpwardOffset'].value + dParamWithUnits['ringTerminusUpwardOffset'].value + dParamWithUnits['elevatorCarUpwardOffset'].value
-        virtualElevatorCar.elevatorCarForwardOffset = dParamWithUnits['elevatorCableForwardOffset'].value
-        virtualElevatorCar.currentEquivalentLatitude = crv.currentEquivalentLatitude
-        virtualElevatorCar.elevatorCarRotZ = crv.currentEquivalentLatitude - Math.PI/2
-        virtualElevatorCar.isVisible = dParamWithUnits['showElevatorCars'].value
-        virtualElevatorCar.isDynamic =  true
-        virtualElevatorCar.hasChanged = true
-    }
-
-    static animate(elevatorAltitude, crv) {
-        virtualElevatorCar.elevatorCarPosition_dr = tram.offset_r(virtualElevatorCar.elevatorCarOutwardOffset, virtualElevatorCar.elevatorCarUpwardOffset + elevatorAltitude-crv.currentMainRingAltitude, crv.currentEquivalentLatitude)
-        virtualElevatorCar.elevatorCarPosition_dy = tram.offset_y(virtualElevatorCar.elevatorCarOutwardOffset, virtualElevatorCar.elevatorCarUpwardOffset + elevatorAltitude-crv.currentMainRingAltitude, crv.currentEquivalentLatitude)
-    }
-
-    placeAndOrientModel(om, refFrame, wedgeToCameraDistance) {
-        const modelsTrackPosition = (this.p + refFrame.p) % 1 
-        if (modelsTrackPosition==='undefined' || (modelsTrackPosition<0) || (modelsTrackPosition>1)) {
-            console.log("error!!!")
-        }
-        else {
-            const pointOnRingCurve = refFrame.curve.getPoint(modelsTrackPosition)
-            const angle = 2 * Math.PI * modelsTrackPosition
-            om.position.set(
-                pointOnRingCurve.x + virtualElevatorCar.elevatorCarPosition_dr * Math.cos(angle) + virtualElevatorCar.elevatorCarForwardOffset * -Math.sin(angle),
-                pointOnRingCurve.y + virtualElevatorCar.elevatorCarPosition_dy,
-                pointOnRingCurve.z + virtualElevatorCar.elevatorCarPosition_dr * Math.sin(angle) + virtualElevatorCar.elevatorCarForwardOffset * Math.cos(angle))
-            om.rotation.set(0, -angle, virtualElevatorCar.elevatorCarRotZ)
-            //om.rotateY(-Math.PI)
-            om.visible = virtualElevatorCar.isVisible
-            om.matrixValid = false
-            if (this.perfOptimizedThreeJS) om.freeze()
-        }
-    }
-
-    getFuturePosition(refFrame, timeDeltaInSeconds) {
-
-      // timeDeltaInSeconds is not supported yet...
-      const modelsTrackPosition = (this.p + refFrame.p) % 1
-      const pointOnRingCurve = refFrame.curve.getPoint(modelsTrackPosition)
-      const angle = 2 * Math.PI * modelsTrackPosition
-      pointOnRingCurve.add(new THREE.Vector3(
-          virtualElevatorCar.elevatorCarPosition_dr * Math.cos(angle) + virtualElevatorCar.elevatorCarForwardOffset * -Math.sin(angle),
-          virtualElevatorCar.elevatorCarPosition_dy,
-          virtualElevatorCar.elevatorCarPosition_dr * Math.sin(angle) + virtualElevatorCar.elevatorCarForwardOffset * Math.cos(angle)))
-      return pointOnRingCurve
-
-    }
-
-
+    this.placeWithOffsets(_tmp, refFrame, dr, dy)
+    return _tmp.position.clone()
+  }
 }
-  

@@ -1,48 +1,24 @@
-import * as tram from '../utils/tram.js'
+import { offset_r, offset_y } from '../ring/ringGeometry.js'
+import { VirtualRingObject, placeModelOnRing } from './VirtualRingObject.js'
 
-export class virtualGroundTerminus {
-    constructor(positionInFrameOfReference, unallocatedModelsArray) {
-        this.p = positionInFrameOfReference
-        this.unallocatedModels = unallocatedModelsArray
-    }
+export class virtualGroundTerminus extends VirtualRingObject {
+  static isDynamic = false
 
-    // The following properties are common to all virtual groundTerminuses...
-    static groundTerminusRelativePosition_r
-    static groundTerminusRelativePosition_y
-    static currentEquivalentLatitude
-    static isVisible
-    static isDynamic
-    static hasChanged
+  static update(dParamWithUnits, crv) {
+    const outwardOffset = dParamWithUnits['transitTubeOutwardOffset'].value - dParamWithUnits['transitTubeTubeRadius'].value + dParamWithUnits['groundTerminusOutwardOffset'].value
+    const upwardOffset = dParamWithUnits['transitTubeUpwardOffset'].value + dParamWithUnits['groundTerminusUpwardOffset'].value - crv.currentMainRingAltitude
+    virtualGroundTerminus.groundTerminusRelativePosition_r = offset_r(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
+    virtualGroundTerminus.groundTerminusRelativePosition_y = offset_y(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
+    virtualGroundTerminus.currentEquivalentLatitude = crv.currentEquivalentLatitude
+    virtualGroundTerminus.isVisible = dParamWithUnits['showGroundTerminuses'].value
+  }
 
-    static update(dParamWithUnits, crv) {
-        const groundTerminusOutwardOffset = dParamWithUnits['transitTubeOutwardOffset'].value - dParamWithUnits['transitTubeTubeRadius'].value + dParamWithUnits['groundTerminusOutwardOffset'].value
-        const groundTerminusUpwardOffset = dParamWithUnits['transitTubeUpwardOffset'].value + dParamWithUnits['groundTerminusUpwardOffset'].value - crv.currentMainRingAltitude
-        virtualGroundTerminus.groundTerminusRelativePosition_r = tram.offset_r(groundTerminusOutwardOffset, groundTerminusUpwardOffset, crv.currentEquivalentLatitude)
-        virtualGroundTerminus.groundTerminusRelativePosition_y = tram.offset_y(groundTerminusOutwardOffset, groundTerminusUpwardOffset, crv.currentEquivalentLatitude)
-        virtualGroundTerminus.currentEquivalentLatitude = crv.currentEquivalentLatitude
-        virtualGroundTerminus.isVisible = dParamWithUnits['showGroundTerminuses'].value
-        virtualGroundTerminus.isDynamic =  false
-        virtualGroundTerminus.hasChanged = true
-    }
-
-    placeAndOrientModel(om, refFrame, wedgeToCameraDistance) {
-        const modelsTrackPosition = (this.p + refFrame.p) % 1 
-        if (modelsTrackPosition==='undefined' || (modelsTrackPosition<0) || (modelsTrackPosition>1)) {
-            console.log("error!!!")
-        }
-        else {
-            const pointOnRingCurve = refFrame.curve.getPoint(modelsTrackPosition)
-            const angle = 2 * Math.PI * modelsTrackPosition
-            om.position.set(
-                pointOnRingCurve.x + virtualGroundTerminus.groundTerminusRelativePosition_r * Math.cos(angle),
-                pointOnRingCurve.y + virtualGroundTerminus.groundTerminusRelativePosition_y,
-                pointOnRingCurve.z + virtualGroundTerminus.groundTerminusRelativePosition_r * Math.sin(angle) )
-            om.rotation.set(0, -angle, virtualGroundTerminus.currentEquivalentLatitude)
-            om.rotateZ(-Math.PI/2)
-            om.rotateY(-Math.PI/2)
-            om.visible = virtualGroundTerminus.isVisible
-            om.matrixValid = false
-            if (this.perfOptimizedThreeJS) om.freeze()
-        }
-    }
+  placeAndOrientModel(om, refFrame) {
+    placeModelOnRing(om, refFrame.curve, this.trackPosition(refFrame),
+      virtualGroundTerminus.groundTerminusRelativePosition_r, virtualGroundTerminus.groundTerminusRelativePosition_y, 0,
+      virtualGroundTerminus.currentEquivalentLatitude)
+    om.rotateZ(-Math.PI/2)
+    om.rotateY(-Math.PI/2)
+    om.visible = virtualGroundTerminus.isVisible
+  }
 }

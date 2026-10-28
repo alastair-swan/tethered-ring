@@ -1,47 +1,28 @@
-import * as tram from '../utils/tram.js'
+import * as THREE from 'three'
+import { offset_r, offset_y } from '../ring/ringGeometry.js'
+import { RingInstancedLayer } from '../ring/RingInstancedLayer.js'
 
-export class virtualSolarArray {
-  constructor(positionInFrameOfReference, unallocatedModelsArray) {
-    this.p = positionInFrameOfReference
-    this.unallocatedModels = unallocatedModelsArray
+let solarArrayMaterial = null
+
+export function createSolarArrayLayer(dParamWithUnits, crv, cameraRange) {
+  const numSegments = dParamWithUnits['showSolarArrays'].value ? dParamWithUnits['numVirtualSolarArrays'].value : 0
+  const outward = dParamWithUnits['solarArrayOutwardOffset'].value
+  const upward = dParamWithUnits['solarArrayUpwardOffset'].value
+  const geometry = new THREE.PlaneGeometry(dParamWithUnits['solarArrayWidth'].value, dParamWithUnits['solarArrayHeight'].value, 1, 1)
+  if (!solarArrayMaterial) {
+    const texture = new THREE.TextureLoader().load('./textures/SolarPanelTexture.jpg')
+    solarArrayMaterial = new THREE.MeshPhongMaterial({side: THREE.DoubleSide, map: texture})
   }
-
-  // The following properties are common to all virtual habitats...
-  static currentEquivalentLatitude
-  static solarArrayRotZ
-  static isVisible
-  static isDynamic
-  static hasChanged
-
-  static update(dParamWithUnits, crv) {
-    const solarArrayOutwardOffset = dParamWithUnits['solarArrayOutwardOffset'].value
-    const solarArrayUpwardOffset = dParamWithUnits['solarArrayUpwardOffset'].value
-    virtualSolarArray.solarArrayRelativePosition_r = tram.offset_r(solarArrayOutwardOffset, solarArrayUpwardOffset, crv.currentEquivalentLatitude)
-    virtualSolarArray.solarArrayRelativePosition_y = tram.offset_y(solarArrayOutwardOffset, solarArrayUpwardOffset, crv.currentEquivalentLatitude)
-    virtualSolarArray.currentEquivalentLatitude = crv.currentEquivalentLatitude
-    virtualSolarArray.solarArrayRotZ = crv.currentEquivalentLatitude - Math.PI/2
-    virtualSolarArray.isVisible = dParamWithUnits['showSolarArrays'].value
-    virtualSolarArray.isDynamic =  false
-    virtualSolarArray.hasChanged = true
-  }
-
-  placeAndOrientModel(om, refFrame, wedgeToCameraDistance) {
-    const modelsTrackPosition = (this.p + refFrame.p) % 1 
-    if (modelsTrackPosition==='undefined' || (modelsTrackPosition<0) || (modelsTrackPosition>1)) {
-      console.log("error!!!")
-    }
-    else {
-      const pointOnRingCurve = refFrame.curve.getPoint(modelsTrackPosition)
-      const angle = 2 * Math.PI * modelsTrackPosition
-      om.position.set(
-        pointOnRingCurve.x + virtualSolarArray.solarArrayRelativePosition_r * Math.cos(angle),
-        pointOnRingCurve.y + virtualSolarArray.solarArrayRelativePosition_y,
-        pointOnRingCurve.z + virtualSolarArray.solarArrayRelativePosition_r * Math.sin(angle))
-      om.rotation.set(0, -angle, virtualSolarArray.solarArrayRotZ)
-      om.rotateX(-Math.PI/4)
-      om.visible = virtualSolarArray.isVisible
-      om.matrixValid = false
-      if (this.perfOptimizedThreeJS) om.freeze()
-    }
-  }
+  return new RingInstancedLayer({
+    name: 'solarArray',
+    geometry,
+    material: solarArrayMaterial,
+    numSegments,
+    dr: offset_r(outward, upward, crv.currentEquivalentLatitude),
+    dy: offset_y(outward, upward, crv.currentEquivalentLatitude),
+    rotZ: crv.currentEquivalentLatitude - Math.PI/2,
+    localRotation: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI/4),
+    cameraRange,
+    ringCircumference: 2 * Math.PI * crv.mainRingRadius,
+  })
 }

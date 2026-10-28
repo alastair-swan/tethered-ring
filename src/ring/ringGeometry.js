@@ -1,6 +1,5 @@
 // Shared tethered-ring dimensions and offset helpers.
 import * as THREE from 'three'
-import * as tram from '../utils/tram.js'
 import { lerp } from '../utils/math.js'
 
 export function offset_r(outwardOffset, upwardOffset, currentEquivalentLatitude) {
@@ -44,8 +43,8 @@ export function makeOffsetCurve(outwardOffset, upwardOffset, crv, lengthSegments
   // Create a curve to represent the path we want the tube to take
   console.assert(lengthSegments % 2 == 0, "lengthSegments must be even")
   const tubePoints = []
-  const dr = tram.offset_r(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
-  const dy = tram.offset_y(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
+  const dr = offset_r(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
+  const dy = offset_y(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
   for (let i = -lengthSegments/2; i<=lengthSegments/2; i++) {
     const modelsTrackPosition = (segmentNumber + i/lengthSegments)/totalSegments
     const pointOnRingCurve = mainRingCurve.getPoint(modelsTrackPosition)

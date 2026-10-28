@@ -1,92 +1,80 @@
 import * as THREE from 'three'
-import * as tram from '../utils/tram.js'
+import { offset_r, offset_y } from '../ring/ringGeometry.js'
+import { VirtualRingObject, posFrac, ringPoint } from './VirtualRingObject.js'
 
-export class virtualTransitVehicle {
-  constructor(positionInFrameOfReference, unallocatedModelsArray) {
-    // The virtual vehicle has a position around the ring, a transitTubeLevel, and an innerOuterTrackFactor
-    // A 0 indicates the lower level, and a 1 indicates the upper level
-    // A 0 indicates the inner track and a 1 indicates the outer track. Values between 0 and 1 indicate that the vehicle is changing tracks.
-    // Distance around the track is a value from 0 to 2*PI
-    this.p = positionInFrameOfReference
-    this.unallocatedModels = unallocatedModelsArray
-    // level
-    // innerOuterTrackFactor
-    // distanceAroundTrack
-    // speed
-    // accelleration
-    // position
-    // modelIndex
-  }
+const _tmp = new THREE.Object3D()
 
-  // The following properties are common to all virtual vehicles...
+export class virtualTransitVehicle extends VirtualRingObject {
+  // The vehicle's position is this.p (fixed, within its lane's moving reference frame) plus the
+  // frame's position. Lanes: 0/1 express (constant speed), 2/3 collector (stop at every transit stop).
+  static isDynamic = true
   static transitVehicleRelativePosition_r = []
   static transitVehicleRelativePosition_y = []
-  static currentEquivalentLatitude
-  static isVisible
-  static isDynamic
-  static hasChanged
 
   static update(dParamWithUnits, crv) {
-
     const dx = dParamWithUnits['transitTrackOuterOffset'].value
     const dy1 = dParamWithUnits['transitTrackUpperOffset1'].value
     const dy2 = dParamWithUnits['transitTrackUpperOffset2'].value
     const trackOffsetsList = [[-dx, dy1], [dx, dy1], [-dx, dy2], [dx, dy2]]
-  
+
     for (let trackIndex = 0; trackIndex<trackOffsetsList.length; trackIndex++) {
       const outwardOffset = dParamWithUnits['transitTubeOutwardOffset'].value + trackOffsetsList[trackIndex][0]
       const upwardOffset = dParamWithUnits['transitTubeUpwardOffset'].value + dParamWithUnits['ringTerminusUpwardOffset'].value + trackOffsetsList[trackIndex][1] + dParamWithUnits['transitVehicleUpwardOffset'].value  // Last is half of the track height
-      virtualTransitVehicle.transitVehicleRelativePosition_r[trackIndex] = tram.offset_r(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
-      virtualTransitVehicle.transitVehicleRelativePosition_y[trackIndex]  = tram.offset_y(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
+      virtualTransitVehicle.transitVehicleRelativePosition_r[trackIndex] = offset_r(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
+      virtualTransitVehicle.transitVehicleRelativePosition_y[trackIndex] = offset_y(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
     }
-    virtualTransitVehicle.systemForwardOffset = dParamWithUnits['transitSystemForwardOffset'].value / crv.mainRingRadius
-    virtualTransitVehicle.forwardOffset = dParamWithUnits['transitVehicleForwardOffset'].value / crv.mainRingRadius
+    virtualTransitVehicle.systemForwardOffset = dParamWithUnits['transitSystemForwardOffset'].value / (2 * Math.PI * crv.mainRingRadius)
+    virtualTransitVehicle.forwardOffset = dParamWithUnits['transitVehicleForwardOffset'].value / (2 * Math.PI * crv.mainRingRadius)
     virtualTransitVehicle.currentEquivalentLatitude = crv.currentEquivalentLatitude
-    virtualTransitVehicle.ringCircumference = crv.mainRingRadius * Math.PI * 2
     virtualTransitVehicle.isVisible = dParamWithUnits['showTransitVehicles'].value
-    virtualTransitVehicle.isDynamic =  true
-    virtualTransitVehicle.hasChanged = true
+  }
+
+  // Track position of the vehicle's model origin when its frame is at framePosition.
+  modelTrackPosition(refFrame, framePosition) {
+    return posFrac(this.p + framePosition + virtualTransitVehicle.systemForwardOffset + refFrame.direction * virtualTransitVehicle.forwardOffset)
+  }
+
+  placeAt(om, refFrame, framePosition) {
+    const p = this.modelTrackPosition(refFrame, framePosition)
+    const trackIndex = refFrame.trackIndex
+    ringPoint(refFrame.curve, p,
+      virtualTransitVehicle.transitVehicleRelativePosition_r[trackIndex],
+      virtualTransitVehicle.transitVehicleRelativePosition_y[trackIndex], 0, om.position)
+    om.rotation.set(0, -2 * Math.PI * p, virtualTransitVehicle.currentEquivalentLatitude)
+    if (refFrame.direction===-1) {
+      om.rotateX(Math.PI)
+    }
   }
 
   placeAndOrientModel(om, refFrame) {
-    const modelsTrackPosition = tram.posFrac(this.p + refFrame.p + virtualTransitVehicle.systemForwardOffset + refFrame.direction * virtualTransitVehicle.forwardOffset)
-    if (modelsTrackPosition==='undefined' || (modelsTrackPosition<0) || (modelsTrackPosition>1)) {
-      console.log("error!!!")
-    }
-    else {
-      const trackIndex = refFrame.trackIndex
-      const r1 = virtualTransitVehicle.transitVehicleRelativePosition_r[trackIndex]
-      const y1 = virtualTransitVehicle.transitVehicleRelativePosition_y[trackIndex]
-      const pointOnRingCurve = refFrame.curve.getPoint(modelsTrackPosition)
-      const angle = 2 * Math.PI * modelsTrackPosition
-      om.position.set(
-        pointOnRingCurve.x + r1 * Math.cos(angle),
-        pointOnRingCurve.y + y1,
-        pointOnRingCurve.z + r1 * Math.sin(angle) )
-      om.rotation.set(0, -angle, virtualTransitVehicle.currentEquivalentLatitude)
-      if (refFrame.direction===-1) {
-        om.rotateX(Math.PI)
-      }
-      om.visible = virtualTransitVehicle.isVisible
-      om.matrixValid = false
-    }
+    this.placeAt(om, refFrame, refFrame.p)
+    om.visible = virtualTransitVehicle.isVisible
   }
 
-  getFuturePosition(refFrame, timeDeltaInSeconds) {
-
-    // Ideally we should account for accelleration when calculating the future position.
-    // This simplified calculation assumes the vehicle is traveling at a steady speed.
-    // As it is, the calculation leaves the camera a little bit off target at the end of the tweening opertion.
-    const offsetToFuturePosition = (timeDeltaInSeconds * refFrame.v * -refFrame.direction) / virtualTransitVehicle.ringCircumference
-    const modelsTrackPosition = tram.posFrac(this.p + refFrame.p + offsetToFuturePosition)
-    const trackIndex = refFrame.trackIndex
-    const r1 = virtualTransitVehicle.transitVehicleRelativePosition_r[trackIndex]
-    const y1 = virtualTransitVehicle.transitVehicleRelativePosition_y[trackIndex]
-    const pointOnRingCurve = refFrame.curve.getPoint(modelsTrackPosition)
-    const angle = 2 * Math.PI * modelsTrackPosition
-    pointOnRingCurve.add(new THREE.Vector3(r1 * Math.cos(angle), y1, r1 * Math.sin(angle) ))
-    return pointOnRingCurve
-
+  // Ring-local position of the rendered model's origin `timeDeltaInSeconds` from now. Uses the
+  // lane's exact motion profile, so acceleration and stops are accounted for.
+  getFuturePosition(refFrame, timeDeltaInSeconds = 0) {
+    this.placeAt(_tmp, refFrame, refFrame.futureP(timeDeltaInSeconds))
+    return _tmp.position.clone()
   }
 
+  // Same contract as virtualLaunchVehicle.getFutureFrame (ring-local vectors).
+  getFutureFrame(refFrame, timeDeltaInSeconds = 0) {
+    const framePosition = refFrame.futureP(timeDeltaInSeconds)
+    const p = this.modelTrackPosition(refFrame, framePosition)
+    this.placeAt(_tmp, refFrame, framePosition)
+    const angle = 2 * Math.PI * p
+    const lat = virtualTransitVehicle.currentEquivalentLatitude
+    const forward = new THREE.Vector3(-Math.sin(angle), 0, Math.cos(angle)).multiplyScalar(refFrame.direction)
+    const upward = new THREE.Vector3(Math.cos(lat) * Math.cos(angle), Math.sin(lat), Math.cos(lat) * Math.sin(angle))
+    const rightward = forward.clone().cross(upward).normalize()
+    _tmp.updateMatrix()
+    return {
+      position: _tmp.position.clone(),
+      forward,
+      upward,
+      rightward,
+      orientation: _tmp.quaternion.clone(),
+    }
+  }
 }

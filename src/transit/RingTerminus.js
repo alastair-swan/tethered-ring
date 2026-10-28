@@ -1,50 +1,24 @@
-import * as tram from '../utils/tram.js'
+import { offset_r, offset_y } from '../ring/ringGeometry.js'
+import { VirtualRingObject, placeModelOnRing } from './VirtualRingObject.js'
 
-export class virtualRingTerminus {
-    constructor(positionInFrameOfReference, unallocatedModelsArray) {
-        this.p = positionInFrameOfReference
-        this.unallocatedModels = unallocatedModelsArray
-    }
+export class virtualRingTerminus extends VirtualRingObject {
+  static isDynamic = false
 
-    // The following properties are common to all virtual ringTerminuses...
-    static mainRingCurve
-    static ringTerminusRelativePosition_r
-    static ringTerminusRelativePosition_y
-    static currentEquivalentLatitude
-    static isVisible
-    static isDynamic
-    static hasChanged
+  static update(dParamWithUnits, crv) {
+    const outwardOffset = dParamWithUnits['transitTubeOutwardOffset'].value - dParamWithUnits['transitTubeTubeRadius'].value + dParamWithUnits['ringTerminusOutwardOffset'].value
+    const upwardOffset = dParamWithUnits['transitTubeUpwardOffset'].value + dParamWithUnits['ringTerminusUpwardOffset'].value
+    virtualRingTerminus.ringTerminusRelativePosition_r = offset_r(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
+    virtualRingTerminus.ringTerminusRelativePosition_y = offset_y(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
+    virtualRingTerminus.currentEquivalentLatitude = crv.currentEquivalentLatitude
+    virtualRingTerminus.isVisible = dParamWithUnits['showRingTerminuses'].value
+  }
 
-    static update(dParamWithUnits, crv) {
-        const ringTerminusOutwardOffset = dParamWithUnits['transitTubeOutwardOffset'].value - dParamWithUnits['transitTubeTubeRadius'].value + dParamWithUnits['ringTerminusOutwardOffset'].value
-        const ringTerminusUpwardOffset = dParamWithUnits['transitTubeUpwardOffset'].value + dParamWithUnits['ringTerminusUpwardOffset'].value
-        virtualRingTerminus.ringTerminusRelativePosition_r = tram.offset_r(ringTerminusOutwardOffset, ringTerminusUpwardOffset, crv.currentEquivalentLatitude)
-        virtualRingTerminus.ringTerminusRelativePosition_y = tram.offset_y(ringTerminusOutwardOffset, ringTerminusUpwardOffset, crv.currentEquivalentLatitude)
-        virtualRingTerminus.currentEquivalentLatitude = crv.currentEquivalentLatitude
-        virtualRingTerminus.isVisible = dParamWithUnits['showRingTerminuses'].value
-        virtualRingTerminus.isDynamic =  false
-        virtualRingTerminus.hasChanged = true
-    }
-
-    placeAndOrientModel(om, refFrame, wedgeToCameraDistance) {
-        const modelsTrackPosition = (this.p + refFrame.p) % 1 
-        if (modelsTrackPosition==='undefined' || (modelsTrackPosition<0) || (modelsTrackPosition>1)) {
-            console.log("error!!!")
-        }
-        else {
-            const pointOnRingCurve = refFrame.curve.getPoint(modelsTrackPosition)
-            const angle = 2 * Math.PI * modelsTrackPosition
-            om.position.set(
-                pointOnRingCurve.x + virtualRingTerminus.ringTerminusRelativePosition_r * Math.cos(angle),
-                pointOnRingCurve.y + virtualRingTerminus.ringTerminusRelativePosition_y,
-                pointOnRingCurve.z + virtualRingTerminus.ringTerminusRelativePosition_r * Math.sin(angle) )
-            om.rotation.set(0, -angle, virtualRingTerminus.currentEquivalentLatitude)
-            om.rotateZ(-Math.PI/2)
-            om.rotateY(-Math.PI/2)
-            om.visible = virtualRingTerminus.isVisible
-            om.matrixValid = false
-            if (this.perfOptimizedThreeJS) om.freeze()
-        }
-    }
+  placeAndOrientModel(om, refFrame) {
+    placeModelOnRing(om, refFrame.curve, this.trackPosition(refFrame),
+      virtualRingTerminus.ringTerminusRelativePosition_r, virtualRingTerminus.ringTerminusRelativePosition_y, 0,
+      virtualRingTerminus.currentEquivalentLatitude)
+    om.rotateZ(-Math.PI/2)
+    om.rotateY(-Math.PI/2)
+    om.visible = virtualRingTerminus.isVisible
+  }
 }
-  

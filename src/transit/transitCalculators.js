@@ -33,167 +33,178 @@ export class elevatorCarVariables {
     this.batterySpecificEnergy = 265 // Wh/kg
     this.driveSystemEfficiency = 0.8
     this.batteryMassPerKg = this.energyRequirementPerKg / (this.batterySpecificEnergy * 3600 * this.driveSystemEfficiency)
-    this.travelDistance = this.crv.currentMainRingAltitude + this.dParamWithUnits['transitTubeUpwardOffset'].value + this.dParamWithUnits['ringTerminusUpwardOffset'].value + this.dParamWithUnits['elevatorCarUpwardOffset'].value - this.dParamWithUnits['groundTerminusUpwardOffset'].value   // May need to subtract the altitude of the terestrial terminus
+    // The car travels between its docked position at the ring terminus and at the ground terminus.
+    // In the elevator's altitude coordinate these are currentMainRingAltitude and groundTerminusUpwardOffset.
+    this.travelDistance = Math.max(0, this.crv.currentMainRingAltitude - this.dParamWithUnits['groundTerminusUpwardOffset'].value)
     this.maxAccelleration = this.dParamWithUnits['elevatorCarMaxAcceleration'].value
     this.maxSpeed = this.dParamWithUnits['elevatorCarMaxSpeed'].value
-    this.accellerationTime = this.maxSpeed / this.maxAccelleration
-    this.accellerationDistance = Math.min(this.travelDistance/2, 0.5 * this.maxAccelleration * this.accellerationTime**2)
-    this.accellerationTime = Math.sqrt(2 * this.accellerationDistance / this.maxAccelleration)
-    this.steadySpeedDistance = (this.crv.currentMainRingAltitude + this.dParamWithUnits['transitTubeUpwardOffset'].value) - 2*this.accellerationDistance
-    this.steadySpeedTime = this.steadySpeedDistance / this.maxSpeed
-    this.totalTravelTime = this.steadySpeedTime + 2 * this.accellerationTime
+    const move = new TrapezoidalMove(this.travelDistance, this.maxSpeed, this.maxAccelleration)
+    this.accellerationTime = move.accelerationTime
+    this.accellerationDistance = move.accelerationDistance
+    this.peakSpeed = move.peakSpeed
+    this.steadySpeedDistance = move.cruiseDistance
+    this.steadySpeedTime = move.cruiseTime
+    this.totalTravelTime = move.duration
   }
 }
 
-export class accellerationElement {
-  constructor(isDVOrA, valueDVOrA, t) {
-    this.isDVOrA = isDVOrA
-    this.valueDVOrA = valueDVOrA
-    this.t = t
-  }
-}
-
-class accellerationProfile {
-  constructor() {
-    this.accellerationProfile = []
-  }
-
-  addElement(elementType, elementValue, duration) {
-    // elementType must be "D", "V", or "A"
-    // elementValue must be m, m/s, or m/s2
-    // duration is a value in seconds
-    this.accellerationProfile.push(new accellerationElement(elementType, elementValue, duration))
-  }
-
-  getTotalTime() {
-    let totalTime = 0
-    for (let i = 0; i<this.accellerationProfile.length; i++) {
-      totalTime += this.accellerationProfile[i].t
+// Point-to-point move with a trapezoidal (or, for short moves, triangular) speed profile.
+// Position and speed are continuous; acceleration is piecewise constant (+a, 0, -a).
+// A non-positive speed or acceleration limit means the move never happens (duration Infinity,
+// distance stays 0), which avoids the Infinity/NaN positions the old profile produced.
+export class TrapezoidalMove {
+  constructor(distance, maxSpeed, maxAcceleration) {
+    this.distance = Math.max(0, distance)
+    this.feasible = (maxSpeed > 0) && (maxAcceleration > 0) && Number.isFinite(maxSpeed) && Number.isFinite(maxAcceleration)
+    if (!this.feasible || this.distance === 0) {
+      this.accelerationTime = 0
+      this.accelerationDistance = 0
+      this.peakSpeed = 0
+      this.cruiseDistance = 0
+      this.cruiseTime = 0
+      this.acceleration = 0
+      this.duration = (this.distance === 0) ? 0 : Infinity
+      return
     }
-    return totalTime
-  }
-
-  getDVAAtTime(t) {
-    let d = 0
-    let v = 0
-    let a = 0
-    let tStep
-    let tPrev = 0
-  
-    for (let i = 0; i<this.accellerationProfile.length; i++) {
-      tStep = Math.min(t - tPrev, this.accellerationProfile[i].t)
-      if (this.accellerationProfile[i].isDVOrA=="D") {
-        a = 0
-        v = 0
-        d = this.accellerationProfile[i].valueDVOrA
-      }
-      else {
-        if (this.accellerationProfile[i].isDVOrA=="V") {
-          a = 0
-          v = this.accellerationProfile[i].valueDVOrA
-          d += v * tStep
-        }
-        else {
-          if (this.accellerationProfile[i].isDVOrA=="A") {
-            a = this.accellerationProfile[i].valueDVOrA
-            d += v * tStep + 0.5 * a * tStep**2
-            v += a * tStep
-          }
-          else {
-            // ToDo - we could add another term, jerk, for easing the accelleration
-            consiole.assert("isDVOrA was not D, V, or A")
-          }
-        }
-      }
-      if (tStep<this.accellerationProfile[i].t) break
-      tPrev += this.accellerationProfile[i].t
+    this.acceleration = maxAcceleration
+    let ta = maxSpeed / maxAcceleration
+    if (maxAcceleration * ta * ta > this.distance) {
+      // Cannot reach maxSpeed: triangular profile
+      ta = Math.sqrt(this.distance / maxAcceleration)
     }
-    return [d, v, a]
+    this.accelerationTime = ta
+    this.peakSpeed = maxAcceleration * ta
+    this.accelerationDistance = 0.5 * maxAcceleration * ta * ta
+    this.cruiseDistance = Math.max(0, this.distance - 2 * this.accelerationDistance)
+    this.cruiseTime = this.cruiseDistance / this.peakSpeed
+    this.duration = 2 * ta + this.cruiseTime
   }
 
-  getDistanceTraveledAtTime(t) {
-    let d, v, a
-    [d, v, a] = this.getDVAAtTime(t)
-    return d
+  // Distance covered t seconds after the start of the move (clamped to [0, distance]).
+  distanceAt(t) {
+    if (!this.feasible || t <= 0) return 0
+    if (t >= this.duration) return this.distance
+    const a = this.acceleration
+    const ta = this.accelerationTime
+    if (t < ta) return 0.5 * a * t * t
+    if (t < ta + this.cruiseTime) return this.accelerationDistance + this.peakSpeed * (t - ta)
+    const tr = this.duration - t
+    return this.distance - 0.5 * a * tr * tr
   }
 
-  getSpeedAtTime(t) {
-    let d, v, a
-    [d, v, a] = this.getDVAAtTime(t)
-    return v
+  speedAt(t) {
+    if (!this.feasible || t <= 0 || t >= this.duration) return 0
+    const ta = this.accelerationTime
+    if (t < ta) return this.acceleration * t
+    if (t < ta + this.cruiseTime) return this.peakSpeed
+    return this.acceleration * (this.duration - t)
   }
 }
 
+function positiveModulo(x, m) {
+  return x - Math.floor(x / m) * m
+}
+
+// Elevator car altitude as a pure function of the elevator animation time t (seconds).
+// Cycle: dwell at the top (ring terminus), descend, dwell at the bottom (ground terminus), ascend.
+// The returned "altitude" is currentMainRingAltitude at the top and groundTerminusUpwardOffset at
+// the bottom, matching the coordinate used to place the cars and the follow-elevator camera.
 export class elevatorPositionCalculator {
   constructor(dParamWithUnits, crv, ecv) {
-    this.accProfile = new accellerationProfile()
-    this.accProfile.addElement("D", crv.currentMainRingAltitude, ecv.waitTime)
-    this.accProfile.addElement("A", -ecv.maxAccelleration, ecv.accellerationTime)
-    this.accProfile.addElement("V", -ecv.maxSpeed, ecv.steadySpeedTime)
-    this.accProfile.addElement("A", ecv.maxAccelleration, ecv.accellerationTime)
-    this.accProfile.addElement("D", dParamWithUnits['groundTerminusUpwardOffset'].value, ecv.waitTime)
-    this.accProfile.addElement("A", ecv.maxAccelleration, ecv.accellerationTime)
-    this.accProfile.addElement("V", ecv.maxSpeed, ecv.steadySpeedTime)
-    this.accProfile.addElement("A", -ecv.maxAccelleration, ecv.accellerationTime)
-    this.cycleTime = (ecv.totalTravelTime + ecv.waitTime) * 2  
-    //console.log(ecv.totalTravelTime/60)
+    this.topAltitude = crv.currentMainRingAltitude
+    this.bottomAltitude = dParamWithUnits['groundTerminusUpwardOffset'].value
+    this.waitTime = (ecv && Number.isFinite(ecv.waitTime)) ? ecv.waitTime : 30
+    this.move = new TrapezoidalMove(this.topAltitude - this.bottomAltitude, dParamWithUnits['elevatorCarMaxSpeed'].value, dParamWithUnits['elevatorCarMaxAcceleration'].value)
+    this.travelTime = this.move.duration
+    this.cycleTime = Number.isFinite(this.travelTime) ? 2 * (this.waitTime + this.travelTime) : Infinity
+    // Kept for callers that add a phase shift; the transit system applies its own animation time instead.
+    this.timeOffset = 0
+  }
+
+  // Returns [altitude, verticalSpeed] at time t.
+  stateAt(t) {
+    if (!Number.isFinite(this.cycleTime)) return [this.topAltitude, 0]
+    const tc = positiveModulo(t + this.timeOffset, this.cycleTime)
+    const w = this.waitTime
+    const T = this.travelTime
+    if (tc < w) return [this.topAltitude, 0]
+    if (tc < w + T) return [this.topAltitude - this.move.distanceAt(tc - w), -this.move.speedAt(tc - w)]
+    if (tc < 2 * w + T) return [this.bottomAltitude, 0]
+    return [this.bottomAltitude + this.move.distanceAt(tc - 2 * w - T), this.move.speedAt(tc - 2 * w - T)]
   }
 
   calculateElevatorPosition(t) {
-    const tWithinCycle = t % this.cycleTime
-    const elevatorPosition = this.accProfile.getDistanceTraveledAtTime(tWithinCycle)
-    return elevatorPosition
+    return this.stateAt(t)[0]
+  }
+
+  calculateElevatorSpeed(t) {
+    return this.stateAt(t)[1]
   }
 }
 
+// Length of a closed path offset from the main ring curve by (outwardOffset, upwardOffset).
+export function offsetRingPathLength(mainRingCurve, crv, outwardOffset, upwardOffset, samples = 8192) {
+  const dr = offset_r(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
+  const dy = offset_y(outwardOffset, upwardOffset, crv.currentEquivalentLatitude)
+  const P = new THREE.Vector3()
+  const prevP = new THREE.Vector3()
+  let l = 0
+  for (let i = 0; i <= samples; i++) {
+    const trackPosition = i / samples
+    const angle = 2 * Math.PI * trackPosition   // (the old code used cos(trackPosition) with a 0..1 fraction)
+    mainRingCurve.getPoint(trackPosition, P)
+    P.x += dr * Math.cos(angle)
+    P.y += dy
+    P.z += dr * Math.sin(angle)
+    if (i > 0) l += prevP.distanceTo(P)
+    prevP.copy(P)
+  }
+  return l
+}
+
+// Position of the collector-lane reference frame as a function of the transit animation time.
+// Every cycle the frame dwells for transitVehicleStopDuration, then moves exactly k transit-stop
+// spacings using a trapezoidal profile (accelerate, cruise at transitVehicleCruisingSpeed, brake).
+// k is the smallest whole number of stops that leaves room to reach cruising speed and to cruise
+// for 2*transitVehicleMergeTime. Vehicles are placed on transit-stop positions, so every vehicle
+// is at a stop whenever the frame is dwelling.
+// Limitation (flagged): all collector-lane vehicles in a lane stop and start at the same moment.
 export class vehicleReferenceFrameTrackPositionCalculator {
   constructor(dParamWithUnits, mainRingCurve, crv) {
-    this.accProfile = new accellerationProfile()
-    const accellerationTime = dParamWithUnits['transitVehicleCruisingSpeed'].value / dParamWithUnits['transitVehicleMaxAcceleration'].value
-    this.accProfile.addElement("V", 0, dParamWithUnits['transitVehicleStopDuration'].value)
-    this.accProfile.addElement("A", dParamWithUnits['transitVehicleMaxAcceleration'].value, accellerationTime)
-    this.accProfile.addElement("V", dParamWithUnits['transitVehicleCruisingSpeed'].value, dParamWithUnits['transitVehicleMergeTime'].value)
-    this.accProfile.addElement("V", dParamWithUnits['transitVehicleCruisingSpeed'].value, dParamWithUnits['transitVehicleMergeTime'].value)
-    this.accProfile.addElement("A", -dParamWithUnits['transitVehicleMaxAcceleration'].value, accellerationTime)
-    this.cycleTime = this.accProfile.getTotalTime()
-    this.cycleDistance = this.accProfile.getDistanceTraveledAtTime(this.cycleTime)
-
-    // Calculate the lenngth of the transit track (future-proofed method used here does not assume that the curve is a near-perfect circle)
-    let l = 0
-    let P
-    let prevP = null
-    const transitVehicleRelativePosition_r = offset_r(dParamWithUnits['transitTubeOutwardOffset'].value, dParamWithUnits['transitTubeUpwardOffset'].value, crv.currentEquivalentLatitude)
-    const transitVehicleRelativePosition_y = offset_y(dParamWithUnits['transitTubeOutwardOffset'].value, dParamWithUnits['transitTubeUpwardOffset'].value, crv.currentEquivalentLatitude)
-    for (let i = 0; i<=8192; i++) {
-      const trackPosition = i/8192
-      const P = mainRingCurve.getPointAt(trackPosition)
-      // ToDo - need to add the track's upward and outward offsets from the mainRing's curve
-      P.x += transitVehicleRelativePosition_r * Math.cos(trackPosition)
-      P.y += transitVehicleRelativePosition_y
-      P.z += transitVehicleRelativePosition_r * Math.sin(trackPosition)
-
-      if (prevP) {
-        l += prevP.distanceTo(P)
-      }
-      prevP = P
-    }
-    this.transitTubeCircumference = l
+    const nt = dParamWithUnits['numVirtualRingTerminuses'].value
+    const nh = dParamWithUnits['numVirtualHabitats'].value
+    this.numStops = Math.max(1, nt + nh)
+    this.transitTubeCircumference = offsetRingPathLength(mainRingCurve, crv, dParamWithUnits['transitTubeOutwardOffset'].value, dParamWithUnits['transitTubeUpwardOffset'].value)
+    this.stopSpacing = this.transitTubeCircumference / this.numStops
+    const v = dParamWithUnits['transitVehicleCruisingSpeed'].value
+    const a = dParamWithUnits['transitVehicleMaxAcceleration'].value
+    const mergeTime = dParamWithUnits['transitVehicleMergeTime'].value
+    this.stopDuration = Math.max(0, dParamWithUnits['transitVehicleStopDuration'].value)
+    const minDistance = (a > 0) ? v * v / a + 2 * mergeTime * v : 0
+    this.stopsPerCycle = Math.max(1, Math.ceil(minDistance / this.stopSpacing - 1e-9))
+    this.cycleDistance = this.stopsPerCycle * this.stopSpacing
+    this.move = new TrapezoidalMove(this.cycleDistance, v, a)
+    this.moving = this.move.feasible
+    this.cycleTime = this.stopDuration + this.move.duration
   }
 
+  // Returns the frame position as a fraction of the ring.
   calcTrackPosition(t) {
-    const tAtCycleStart = Math.floor(t/this.cycleTime)
-    const tWithinCycle = t % this.cycleTime
-    const trackPosition = ( (tAtCycleStart * this.cycleDistance + this.accProfile.getDistanceTraveledAtTime(tWithinCycle)) / this.transitTubeCircumference ) % 1
-    return trackPosition
+    if (!this.moving || !(this.cycleTime > 0)) return 0
+    const n = Math.floor(t / this.cycleTime)
+    const tWithinCycle = t - n * this.cycleTime
+    const d = this.move.distanceAt(tWithinCycle - this.stopDuration)
+    // Whole stops travelled so far, reduced modulo numStops in integer arithmetic to keep precision.
+    const wholeStops = positiveModulo(positiveModulo(n, this.numStops) * this.stopsPerCycle, this.numStops)
+    return positiveModulo((wholeStops + d / this.stopSpacing) / this.numStops, 1)
   }
 
+  // Returns the frame speed in m/s (non-negative).
   calcTrackSpeed(t) {
-    const tAtCycleStart = Math.floor(t/this.cycleTime)
-    const tWithinCycle = t % this.cycleTime
-    const trackSpeed = this.accProfile.getSpeedAtTime(tWithinCycle)
-    return trackSpeed
+    if (!this.moving || !(this.cycleTime > 0)) return 0
+    const tWithinCycle = positiveModulo(t, this.cycleTime)
+    return this.move.speedAt(tWithinCycle - this.stopDuration)
   }
-
 }
 
 export function getTransitVehiclePosition(dParamWithUnits, crv, ecv, t) {

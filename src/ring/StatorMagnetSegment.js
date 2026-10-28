@@ -1,111 +1,57 @@
 import * as THREE from 'three'
-import * as tram from '../utils/tram.js'
+import { offset_r, offset_y, makeOffsetCurve } from './ringGeometry.js'
+import { RingInstancedLayer } from './RingInstancedLayer.js'
 
-export class statorMagnetSegmentModel {
-  constructor(dParamWithUnits, crv, mainRingCurve) {
+let statorMagnetMaterial = null
 
-    const lengthSegments = 4
+// The stator magnets that levitate and drive the moving rings (static).
+export function createStatorMagnetLayer(dParamWithUnits, crv, mainRingCurve, cameraRange) {
+  const numSegments = dParamWithUnits['showStatorMagnets'].value ? dParamWithUnits['numVirtualStatorMagnetSegments'].value : 0
+  const lengthSegments = 4
+  const outward = dParamWithUnits['mainRingOutwardOffset'].value
+  const upward = dParamWithUnits['mainRingUpwardOffset'].value
 
-    // Procedurally generate the moving rings
-    function getStatorMagnetSegmentCurve() {
-      const segmentNumber = 0
-      const totalSegments = dParamWithUnits['numVirtualStatorMagnetSegments'].value
-      return tram.makeOffsetCurve(dParamWithUnits['mainRingOutwardOffset'].value, dParamWithUnits['mainRingUpwardOffset'].value, crv, lengthSegments, mainRingCurve, segmentNumber, totalSegments)
-    }
+  const mrdx = dParamWithUnits['movingRingThickness'].value / 2
+  const smdx = dParamWithUnits['statorMagnetThickness'].value / 2
+  const smdy = dParamWithUnits['statorMagnetHeight'].value / 2
+  const smag = dParamWithUnits['statorMagnetAirGap'].value / 2
+  const r = 2*smdx
+  const shape = new THREE.Shape()
+  const xOffset = -smag - mrdx - smdx
+  shape.moveTo(xOffset+smdx, smdy)
+  shape.lineTo(xOffset+smdx, -smdy)
+  shape.lineTo(xOffset-smdx, -smdy)
+  shape.arc(0, r, r, -Math.PI/2, -Math.PI, true)
+  shape.lineTo(xOffset-smdx-r, 0-r)
+  shape.arc(r, 0, r, -Math.PI, -3*Math.PI/2, true)
+  shape.arc(0, r, r, -Math.PI/2, -Math.PI, true)
+  shape.lineTo(xOffset-smdx-r, smdy-r)
+  shape.arc(r, 0, r, -Math.PI, -3*Math.PI/2, true)
+  shape.lineTo(xOffset-smdx, smdy)
+  shape.closed = true
 
-    // Create stator magnet segments
-    const mrdx = dParamWithUnits['movingRingThickness'].value / 2
-    const mrdy = dParamWithUnits['movingRingHeight'].value / 2
-    const smdx = dParamWithUnits['statorMagnetThickness'].value / 2
-    const smdy = dParamWithUnits['statorMagnetHeight'].value / 2
-    const smag = dParamWithUnits['statorMagnetAirGap'].value / 2
-    const r = 2*smdx
-    const statorMagnetShape = new THREE.Shape()
-    const xOffset = -smag - mrdx - smdx
-    statorMagnetShape.moveTo(xOffset+smdx, smdy)
-    statorMagnetShape.lineTo(xOffset+smdx, -smdy)
-    statorMagnetShape.lineTo(xOffset-smdx, -smdy)
-    statorMagnetShape.arc(0, r, r, -Math.PI/2, -Math.PI, true)
-    statorMagnetShape.lineTo(xOffset-smdx-r, 0-r)
-    statorMagnetShape.arc(r, 0, r, -Math.PI, -3*Math.PI/2, true)
-
-    statorMagnetShape.arc(0, r, r, -Math.PI/2, -Math.PI, true)
-    statorMagnetShape.lineTo(xOffset-smdx-r, smdy-r)
-    statorMagnetShape.arc(r, 0, r, -Math.PI, -3*Math.PI/2, true)
-    statorMagnetShape.lineTo(xOffset-smdx, smdy)
-    statorMagnetShape.closed = true
-
-    const statorMagnetExtrudeSettings = {
-      steps: lengthSegments,
-      depth: 1,
-      extrudePath: getStatorMagnetSegmentCurve()
-    }
-
-    const statorMagnetGeometry = new THREE.ExtrudeGeometry(statorMagnetShape, statorMagnetExtrudeSettings)
-    const statorMagnetTexture = new THREE.TextureLoader().load( './textures/steelTexture.jpg' )
-    statorMagnetTexture.wrapS = THREE.RepeatWrapping;
-    //statorMagnetTexture.wrapT = THREE.RepeatWrapping;
-    statorMagnetTexture.repeat.set( 1, 50 );
-    //statorMagnetTexture.rotation = Math.PI/2
-    const statorMagnetMaterial = new THREE.MeshPhongMaterial( {transparent: false, side: THREE.DoubleSide, map: statorMagnetTexture})
-    const statorMagnetMesh = new THREE.Mesh(statorMagnetGeometry, statorMagnetMaterial)
-    return statorMagnetMesh
-
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    steps: lengthSegments,
+    depth: 1,
+    extrudePath: makeOffsetCurve(outward, upward, crv, lengthSegments, mainRingCurve, 0, Math.max(1, numSegments)),
+  })
+  if (!statorMagnetMaterial) {
+    const texture = new THREE.TextureLoader().load('./textures/steelTexture.jpg')
+    texture.wrapS = THREE.RepeatWrapping
+    texture.repeat.set(1, 50)
+    statorMagnetMaterial = new THREE.MeshPhongMaterial({transparent: false, side: THREE.DoubleSide, map: texture})
   }
-
+  return new RingInstancedLayer({
+    name: 'statorMagnet',
+    geometry,
+    material: statorMagnetMaterial,
+    numSegments,
+    numRings: dParamWithUnits['numMainRings'].value,
+    ringSpacing: dParamWithUnits['mainRingSpacing'].value,
+    dr: offset_r(outward, upward, crv.currentEquivalentLatitude),
+    dy: offset_y(outward, upward, crv.currentEquivalentLatitude),
+    rotZ: Math.PI/2,   // ToDo - the actual angle is a function of the forces that were calculated in tethers.js
+    cameraRange,
+    ringCircumference: 2 * Math.PI * crv.mainRingRadius,
+  })
 }
-
-export class virtualStatorMagnetSegment {
-  constructor(positionInFrameOfReference, index, unallocatedModelsArray) {
-    this.p = positionInFrameOfReference
-    this.index = index
-    this.unallocatedModels = unallocatedModelsArray
-  }
-
-  // The following properties are common to all virtual habitats...
-  static currentEquivalentLatitude
-  static statorMagnetRotZ
-  static isVisible
-  static isDynamic
-  static hasChanged
-
-  static update(dParamWithUnits, crv) {
-
-    const statorMagnetOutwardOffset = dParamWithUnits['mainRingOutwardOffset'].value
-    const statorMagnetUpwardOffset = dParamWithUnits['mainRingUpwardOffset'].value
-    virtualStatorMagnetSegment.mro = (dParamWithUnits['numMainRings'].value - 1)/2
-    virtualStatorMagnetSegment.mainRingSpacing = dParamWithUnits['mainRingSpacing'].value
-    virtualStatorMagnetSegment.statorMagnetRelativePosition_r = tram.offset_r(statorMagnetOutwardOffset, statorMagnetUpwardOffset, crv.currentEquivalentLatitude)
-    virtualStatorMagnetSegment.statorMagnetRelativePosition_y = tram.offset_y(statorMagnetOutwardOffset, statorMagnetUpwardOffset, crv.currentEquivalentLatitude)
-    virtualStatorMagnetSegment.mainRingSpacing = dParamWithUnits['mainRingSpacing'].value
-    virtualStatorMagnetSegment.currentEquivalentLatitude = crv.currentEquivalentLatitude
-    virtualStatorMagnetSegment.statorMagnetRotZ = Math.PI/2 // crv.currentEquivalentLatitude // ToDo - The actual angle is a function of the forces that were calculated in tether.js
-    virtualStatorMagnetSegment.isVisible = dParamWithUnits['showStatorMagnets'].value
-    virtualStatorMagnetSegment.isDynamic =  false
-    virtualStatorMagnetSegment.hasChanged = true
-
-  }
-
-  placeAndOrientModel(om, refFrame, wedgeToCameraDistance) {
-
-    const modelsTrackPosition = (this.p + refFrame.p) % 1 
-    if (modelsTrackPosition==='undefined' || (modelsTrackPosition<0) || (modelsTrackPosition>1)) {
-      console.log("error!!!")
-    }
-    else {
-      const pointOnRingCurve = refFrame.curve.getPoint(modelsTrackPosition)
-      const angle = 2 * Math.PI * modelsTrackPosition
-      om.position.set(
-        pointOnRingCurve.x + virtualStatorMagnetSegment.statorMagnetRelativePosition_r * Math.cos(angle),
-        pointOnRingCurve.y + virtualStatorMagnetSegment.statorMagnetRelativePosition_y + (this.index-virtualStatorMagnetSegment.mro) * virtualStatorMagnetSegment.mainRingSpacing,
-        pointOnRingCurve.z + virtualStatorMagnetSegment.statorMagnetRelativePosition_r * Math.sin(angle))
-      om.rotation.set(0, -angle, virtualStatorMagnetSegment.statorMagnetRotZ)
-      om.visible = virtualStatorMagnetSegment.isVisible
-      om.matrixValid = false
-      if (this.perfOptimizedThreeJS) om.freeze()
-    }
-
-  }
-
-}
-  

@@ -1,46 +1,28 @@
-import * as tram from '../utils/tram.js'
+import * as THREE from 'three'
+import { offset_r, offset_y, makeOffsetCurve } from '../ring/ringGeometry.js'
+import { RingInstancedLayer } from '../ring/RingInstancedLayer.js'
 
-export class virtualTransitTubeSegment {
-    constructor(positionInFrameOfReference, unallocatedModelsArray) {
-      this.p = positionInFrameOfReference
-      this.unallocatedModels = unallocatedModelsArray
-    }
-  
-    // The following properties are common to all tube sections...
-    static currentEquivalentLatitude
-    static transitTubeRotZ
-    static isVisible
-    static isDynamic
-    static hasChanged
-  
-    static update(dParamWithUnits, crv) {
-      const transitTubeOutwardOffset = dParamWithUnits['transitTubeOutwardOffset'].value
-      const transitTubeUpwardOffset = dParamWithUnits['transitTubeUpwardOffset'].value
-      virtualTransitTubeSegment.transitTubeRelativePosition_r = tram.offset_r(transitTubeOutwardOffset, transitTubeUpwardOffset, crv.currentEquivalentLatitude)
-      virtualTransitTubeSegment.transitTubeRelativePosition_y = tram.offset_y(transitTubeOutwardOffset, transitTubeUpwardOffset, crv.currentEquivalentLatitude)
-      virtualTransitTubeSegment.currentEquivalentLatitude = crv.currentEquivalentLatitude
-      virtualTransitTubeSegment.isVisible = dParamWithUnits['showTransitTube'].value
-      virtualTransitTubeSegment.isDynamic =  false
-      virtualTransitTubeSegment.hasChanged = true
-    }
-  
-    placeAndOrientModel(om, refFrame, wedgeToCameraDistance) {
-      const modelsTrackPosition = (this.p + refFrame.p) % 1 
-      if (modelsTrackPosition==='undefined' || (modelsTrackPosition<0) || (modelsTrackPosition>1)) {
-        console.log("error!!!")
-      }
-      else {
-        const pointOnRingCurve = refFrame.curve.getPoint(modelsTrackPosition)
-        const angle = 2 * Math.PI * modelsTrackPosition
-        om.position.set(
-          pointOnRingCurve.x + virtualTransitTubeSegment.transitTubeRelativePosition_r * Math.cos(angle),
-          pointOnRingCurve.y + virtualTransitTubeSegment.transitTubeRelativePosition_y,
-          pointOnRingCurve.z + virtualTransitTubeSegment.transitTubeRelativePosition_r * Math.sin(angle))
-        om.rotation.set(0, -angle, virtualTransitTubeSegment.currentEquivalentLatitude)
-        om.visible = virtualTransitTubeSegment.isVisible
-        om.matrixValid = false
-        if (this.perfOptimizedThreeJS) om.freeze()
-      }
-    }
-  }
-  
+// The evacuated transit tube: one instance per transit stop spacing (exactly one per position;
+// the old code pushed numMainRings coincident copies of every segment).
+export function createTransitTubeLayer(dParamWithUnits, crv, mainRingCurve, numTransitStops, cameraRange) {
+  const numSegments = dParamWithUnits['showTransitTube'].value ? numTransitStops : 0
+  const lengthSegments = 4
+  const outward = dParamWithUnits['transitTubeOutwardOffset'].value
+  const upward = dParamWithUnits['transitTubeUpwardOffset'].value
+  const curve = makeOffsetCurve(outward, upward, crv, lengthSegments, mainRingCurve, 0, Math.max(1, numSegments))
+  const geometry = new THREE.TubeGeometry(curve, lengthSegments, dParamWithUnits['transitTubeTubeRadius'].value, 32, false)
+  const material = new THREE.MeshPhongMaterial({side: THREE.FrontSide, transparent: true, opacity: dParamWithUnits['transitTubeOpacity'].value})
+  const layer = new RingInstancedLayer({
+    name: 'transitTube',
+    geometry,
+    material,
+    numSegments,
+    dr: offset_r(outward, upward, crv.currentEquivalentLatitude),
+    dy: offset_y(outward, upward, crv.currentEquivalentLatitude),
+    rotZ: crv.currentEquivalentLatitude,
+    cameraRange,
+    ringCircumference: 2 * Math.PI * crv.mainRingRadius,
+  })
+  layer.ownedMaterial = material
+  return layer
+}
