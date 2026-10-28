@@ -6,7 +6,6 @@ import {
 
 import { CylindricalVector3 } from '../utils/tram.js'
 
-import * as Curves from 'three/src/extras/curves/Curves.js';
 
 class SledGrapplerPlacementInfo {
   constructor(

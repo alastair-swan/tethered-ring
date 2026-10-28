@@ -2,7 +2,6 @@
 // Use when local
 import * as THREE from 'three'
 
-//import WebGPURenderer from 'three/src/renderers/webgpu/WebGPURenderer.js' // Doesn't seem to be stable yet...
 console.log(`Three.js Revision: ${THREE.REVISION}`)
 
 //import { GUI } from 'three/examples/jsm/libs/dat.gui.module'

@@ -5,7 +5,6 @@ import * as kmlutils from '../export/kmlutils.js'
 import * as tram from '../utils/tram.js'
 import { myFormat } from '../utils/tram.js'
 import * as LauncherRamp from './launcherRamp.js'
-import { mx_bilerp_0 } from 'three/src/nodes/materialx/lib/mx_noise.js'
 import { arrow } from '../ring/markers.js'
 
 export function defineTrajectoryCurvesParametersHaveChanged() {

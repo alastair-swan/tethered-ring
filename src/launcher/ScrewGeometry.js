@@ -5,7 +5,6 @@ import {
   Vector3
 } from 'three'
 
-import * as Curves from 'three/src/extras/curves/Curves.js';
 
 class ScrewGeometry extends BufferGeometry {
 

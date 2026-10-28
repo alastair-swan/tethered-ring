@@ -1,4 +1,4 @@
-import * as MathUtils from 'three/src/math/MathUtils.js';
+import { MathUtils } from 'three';
 import { Vector2 } from 'three'
 import { Vector3 } from 'three'
 import { Matrix4 } from 'three'
