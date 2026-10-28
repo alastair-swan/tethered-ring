@@ -384,11 +384,12 @@ export function threadStartDistance({ initialVelocity, initialDistance, accelera
 // the specs). The screw always uses the largest number of starts (flights) in its doubling sequence
 // that still leaves room for a grappler pad between adjacent flights (see threadStartDistance).
 // Flight k of n sits at phase k / n, so doubling n keeps the existing flights and starts new ones
-// halfway between them. A single start would unbalance the screw, so the sequence starts at 2 or
-// more. It is set by the launcherMassDriverScrewThreadStarts parameter, the maximum M: M halved for
-// as long as that stays a whole number of at least 2 (8: 2, 4, 8; 12: 3, 6, 12; 10: 5, 10; 7: 7).
-// 0 means 8, about the most the current flight and pad geometry allows. The thread begins where the
-// first number in the sequence fits; before that the screw is a plain shaft.
+// halfway between them. The grapplers need an even number of flights (which also keeps the screw
+// balanced), so every number in the sequence is even. It is set by the launcherMassDriverScrewThreadStarts
+// parameter, the maximum M (rounded down to an even number, at least 2): M halved for as long as the
+// result stays even (8: 2, 4, 8; 12: 6, 12; 10: 10). 0 means 8, about the most the current flight and
+// pad geometry allows. The thread begins where the first number in the sequence fits; before that the
+// screw is a plain shaft.
 // segmentLength: when given, extra starts begin at the next screw segment boundary, so each segment
 // has a single number of starts (the first flight can begin mid-segment).
 export function screwThreadLayout(dParamWithUnits, segmentLength = 0) {
@@ -406,9 +407,9 @@ export function screwThreadLayout(dParamWithUnits, segmentLength = 0) {
     padThickness: p('adaptiveNutGrapplerMagnetThickness') + p('adaptiveNutGrapplerPadLiftAwayDistance'),
   }
   const requested = Math.round(p('launcherMassDriverScrewThreadStarts'))
-  const maxStarts = (requested >= 1) ? Math.max(2, requested) : 8
+  const maxStarts = (requested >= 1) ? Math.max(2, requested - (requested % 2)) : 8
   let firstStarts = maxStarts
-  while (firstStarts % 2 === 0 && firstStarts / 2 >= 2) firstStarts /= 2
+  while (firstStarts % 4 === 0) firstStarts /= 2
   // steps[i]: { starts, distance } where that many starts begin; distances increase with starts.
   const steps = []
   for (let starts = firstStarts; starts <= maxStarts; starts *= 2) {

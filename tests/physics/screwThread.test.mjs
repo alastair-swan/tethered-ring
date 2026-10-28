@@ -31,12 +31,13 @@ test('a thread with more starts needs a higher speed to leave room for a pad', (
   assert.equal(threadStartDistance({ ...geometry, threadStarts: 64 }), Infinity)
 })
 
-test('the layout doubles the starts from the largest whole-number halving of the maximum, never using 1', () => {
+test('the layout doubles the starts up to the maximum, using only even numbers', () => {
   const sequence = (max) => screwThreadLayout(params({ ...bigIsland, launcherMassDriverScrewThreadStarts: max })).steps.map(s => s.starts)
   assert.deepEqual(sequence(8), [2, 4, 8])
-  assert.deepEqual(sequence(12), [3, 6, 12])
-  assert.deepEqual(sequence(10), [5, 10])
-  assert.deepEqual(sequence(7), [7])
+  assert.deepEqual(sequence(12), [6, 12])
+  assert.deepEqual(sequence(10), [10])
+  assert.deepEqual(sequence(7), [6])
+  assert.deepEqual(sequence(6), [6])
   assert.deepEqual(sequence(1), [2])
   assert.deepEqual(sequence(0), [2, 4, 8])
 })
