@@ -1,6 +1,5 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
-import { CircleSuperCurve3 } from '../curves/CircleSuperCurve3.js'
 // import * as THREE from 'https://cdn.skypack.dev/three@0.133.1/build/three.module.js'
 // import { mergeBufferGeometries } from 'https://cdn.skypack.dev/three@0.133.1/examples/jsm/utils/BufferGeometryUtils.js'
 
@@ -73,8 +72,8 @@ export class mainRingCurveObject {
     // Dispose of the old object(s) in the old scene...
     this.mainRingCurveMeshes.forEach(mesh => {
       mesh.geometry.dispose()
-      mesh.material.dispose()
-      this.tetheredRingRefCoordSys.remove(mesh)
+      mesh.material.dispose()   // shared by all chunks; dispose() is idempotent
+      if (mesh.parent) mesh.parent.remove(mesh)
     })
     this.mainRingCurveMeshes.splice(0, this.mainRingCurveMeshes.length)
 
@@ -82,31 +81,26 @@ export class mainRingCurveObject {
     this.tetheredRingRefCoordSys = tetheredRingRefCoordSys
 
     if (dParamWithUnits['showMainRingCurve'].value) {
-      const numPointsOnMainRingCurve = 256
-      const points = mainRingCurve.getPoints( numPointsOnMainRingCurve )
-      points.forEach(point => point.sub(referencePoint))
-    
-      // Debug - Draw a loop along the curve to check that it is correctly positioned
-      let mainRingCurveMesh
-      const drawTubeAlongMainRingCurve = true
-      if (drawTubeAlongMainRingCurve) {
-        const localCurve = new THREE.CatmullRomCurve3(points)
-        mainRingCurveMesh = new THREE.Mesh(
-          new THREE.TubeGeometry( localCurve, numPointsOnMainRingCurve, 2, 8, true ),
-          new THREE.MeshPhongMaterial({color: 0x3d3d3c})
-        )
+      // The tube is split into chunks, each with vertices relative to its own nearby origin, so it
+      // does not jitter near the camera (a single mesh around the whole ring would need ~6.4e6 m
+      // vertex coordinates, quantised to ~0.5 m in float32). `referencePoint` is no longer needed.
+      const numChunks = 64
+      const pointsPerChunk = 16
+      const material = new THREE.MeshPhongMaterial({color: 0x3d3d3c})
+      for (let c = 0; c < numChunks; c++) {
+        const origin = mainRingCurve.getPoint((c + 0.5) / numChunks)
+        const points = []
+        for (let i = 0; i <= pointsPerChunk; i++) {
+          points.push(mainRingCurve.getPoint((c + i / pointsPerChunk) / numChunks).sub(origin))
+        }
+        const mesh = new THREE.Mesh(
+          new THREE.TubeGeometry(new THREE.CatmullRomCurve3(points), pointsPerChunk * 2, 2, 8, false),
+          material)
+        mesh.name = 'mainRingCurve'
+        mesh.position.copy(origin)
+        this.mainRingCurveMeshes.push(mesh)
+        this.tetheredRingRefCoordSys.add(mesh)
       }
-      else {
-        mainRingCurveMesh = new THREE.LineLoop(
-          new THREE.BufferGeometry().setFromPoints( points ),
-          new THREE.LineBasicMaterial( { color: 0x00ff00 })
-        )
-      }
-
-      mainRingCurveMesh.name = 'mainRingCurve'
-      mainRingCurveMesh.position.copy(referencePoint)
-      this.mainRingCurveMeshes.push(mainRingCurveMesh)
-      this.mainRingCurveMeshes.forEach(mesh => this.tetheredRingRefCoordSys.add(mesh))
     }
   }
 }
@@ -132,13 +126,17 @@ export function arrow(position, direction, arrowSize = 1000000, vectorMagnitude 
 }
 
 export class gyroscopicForceArrowsObject {
-  constructor(planetCoordSys, dParamWithUnits, mainRingCurve, crv, radiusOfPlanet, ringToPlanetRotation) {
+  // ringSpeed (m/s): pass specs['movingRingsSpeed'].value. If omitted, the last value given (or the
+  // old hard-coded 18222 m/s placeholder) is used.
+  constructor(planetCoordSys, dParamWithUnits, mainRingCurve, crv, radiusOfPlanet, ringToPlanetRotation, ringSpeed) {
     this.gyroscopicForceArrowMeshes = []
     this.planetCoordSys = planetCoordSys
-    this.update(dParamWithUnits, mainRingCurve, crv, radiusOfPlanet, ringToPlanetRotation)
+    this.ringSpeed = 18222.22222
+    this.update(dParamWithUnits, mainRingCurve, crv, radiusOfPlanet, ringToPlanetRotation, ringSpeed)
   }
 
-  update(dParamWithUnits, mainRingCurve, crv, radiusOfPlanet, ringToPlanetRotation) {
+  update(dParamWithUnits, mainRingCurve, crv, radiusOfPlanet, ringToPlanetRotation, ringSpeed) {
+    if (Number.isFinite(ringSpeed) && ringSpeed > 0) this.ringSpeed = ringSpeed
 
     this.gyroscopicForceArrowMeshes.forEach(mesh => {
       mesh.geometry.dispose()
@@ -174,7 +172,7 @@ export class gyroscopicForceArrowsObject {
   
         const latitude = Math.atan2(positionInPlanetCoordSys.y, Math.sqrt(positionInPlanetCoordSys.x**2 + positionInPlanetCoordSys.z**2))
         const lonitude = Math.atan2(positionInPlanetCoordSys.x, positionInPlanetCoordSys.z)
-        const ringSpeed = 18222.22222  // ToDo: Need to obtain this value from the place where it is formally calculated
+        const ringSpeed = this.ringSpeed
         localPosition.copy(positionInPlanetCoordSys) 
         localVelocity.x = forwardUnitVector.x * ringSpeed
         localVelocity.y = forwardUnitVector.y * ringSpeed
@@ -288,50 +286,4 @@ export class gravityForceArrowsObject {
       this.gravityForceArrowMeshes.forEach(mesh => this.planetCoordSys.add(mesh))
     }
   }
-}
-
-export class randomFlightPathObject {
-
-  constructor(planetCoordSys, dParamWithUnits, mainRingCurve, crv, ctv, radiusOfPlanet, ringToPlanetRotation) {
-    this.randomFlighPathMeshes = []
-    this.planetCoordSys = planetCoordSys
-    this.update(dParamWithUnits, mainRingCurve, crv, ctv, radiusOfPlanet, ringToPlanetRotation, false, false, false)
-  }
-
-  update(dParamWithUnits, mainRingCurve, crv, ctv, radiusOfPlanet, ringToPlanetRotation, showTensileForceArrows, showGravityForceArrows, showInertialForceArrows) {
-    this.randomFlighPathMeshes.forEach(mesh => {
-      mesh.geometry.dispose()
-      mesh.material.dispose()
-      this.planetCoordSys.remove(mesh)
-    })
-    this.randomFlighPathMeshes.splice(0, this.randomFlighPathMeshes.length)
-
-    // Extrude a number of random flight paths
-    for (let i = 0; i<numFlightPaths; i++) {
-      // Randomize altitude, direction, and the position where the path crosses under the ring
-      const altitude = 1000 + 12000 * Math.random()
-      const direction = 0
-      const position = mainRingCurve.getPoint(i / n)
-
-      const targetPosition = new THREE.Vector3(402701.22087436507, -4015908.319093469, -4952967.081153212)
-      const targetPositionLocal = tetheredRingRefCoordSys.worldToLocal(targetPosition)
-      // Then compute it's theta value and convert it to a 0 to 1 value 
-      // Note: There is an implicate assumption here that mainRingCurve is a circle, so this code will need
-      // to be upgraded if we want to implement a non-circular mainRingCurve.
-      const nearestTrackPosition = (Math.atan2(targetPositionLocal.z, targetPositionLocal.x) / (2*Math.PI) + 1) % 1
-      const pointOnRingAtNearestTrackPosition = mainRingCurve.getPoint(nearestTrackPosition)
-      const axisOfRotation = mainRingCurve.getTangent(nearestTrackPosition)
-
-      // Now move this point down to the randomly selected altitude
-      const flightpathStartPoint = pointOnRingAtNearestTrackPosition.multiplyScalar((crv.radiusOfPlanet + altitude) / (crv.radiusOfPlanet + crv.currentMainRingAltitude))
-      const flightPathCurve = new CircleSuperCurve3(new THREE.Vector3(0, 0, 0), axisOfRotation, flightpathStartPoint, 100000)
-
-      // Create a curve to represent the flight path
-      // Extrude a square tube to represent the flight path
-
-    } 
-
-    this.randomFlighPathMeshes.forEach(mesh => this.planetCoordSys.add(mesh))
-  }
-
 }

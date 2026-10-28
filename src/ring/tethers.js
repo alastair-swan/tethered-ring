@@ -225,6 +225,7 @@ class TetherGeometry extends BufferGeometry {
     let tetherBranchesLength = [1]  // Using a one element array because we want the function to return a value
     let tetherVolume = [1]
 
+    const stripGroupStarts = []   // Non-fast mode: first strip index of each tether (for precision-safe chunks)
     if (fastTetherRender) {
       // The 'j' index is used to stagger the tethers 
       // We are assuming here that the ring has a constant altitude, so we can create just two types of tethers and reuse them over and over again, all the way around the ring. 
@@ -255,6 +256,7 @@ class TetherGeometry extends BufferGeometry {
         const selectedPointB_s = pointB_s[jModNumTypes]
         const θ = j / dParamWithUnits['numTethers'].value * 2.0 * Math.PI
         const referencePoint = new Vector3(0, 0, 0)
+        stripGroupStarts.push({firstStrip: tetherStrips.length, θ})
         makeTetherStrips(θ, referencePoint, catenaryPoints, selectedPointB_s, numTetherPoints, numMainRings, mainRingSpacing, whenToForkVertically, numForkLevels, numTethers, tetherSpanOverlapFactor, tetherFiberDensity, genSpecs, specs, tetherBranchesLength, tetherVolume)
         if (genSpecs && (j < tetherTypes.length)) {
           V[j] = tetherVolume[0]
@@ -432,6 +434,43 @@ class TetherGeometry extends BufferGeometry {
       })
     })
     
+    // Non-fast mode stores absolute (~6.4e6 m) coordinates, which jitter in float32. Also provide the
+    // same tethers split into chunks whose vertices are relative to a nearby origin. Render them with
+    //   tetherGeometry.localChunks.forEach(({origin, geometry}) => { const m = new LineSegments(geometry, material); m.position.copy(origin); parent.add(m) })
+    // instead of one LineSegments using this (absolute) geometry.
+    this.localChunks = []
+    if (!fastTetherRender && stripGroupStarts.length > 0) {
+      const numChunks = Math.min(stripGroupStarts.length, 256)
+      const tethersPerChunk = Math.ceil(stripGroupStarts.length / numChunks)
+      for (let c = 0; c * tethersPerChunk < stripGroupStarts.length; c++) {
+        const firstGroup = c * tethersPerChunk
+        const lastGroup = Math.min(stripGroupStarts.length, firstGroup + tethersPerChunk) - 1
+        const firstStrip = stripGroupStarts[firstGroup].firstStrip
+        const endStrip = (lastGroup + 1 < stripGroupStarts.length) ? stripGroupStarts[lastGroup + 1].firstStrip : tetherStrips.length
+        const θMid = (stripGroupStarts[firstGroup].θ + stripGroupStarts[lastGroup].θ) / 2
+        const origin = new Vector3().setFromSphericalCoords(radiusOfPlanet + crv.currentMainRingAltitude, -(Math.PI/2 - crv.currentEquivalentLatitude), θMid)
+        const positions = []
+        const thicknesses = []
+        const indices = []
+        let n = 0
+        for (let k = firstStrip; k < endStrip; k++) {
+          tetherStrips[k].forEach((point, i) => {
+            positions.push(point.x - origin.x, point.y - origin.y, point.z - origin.z)
+            thicknesses.push(tetherStripThicknesses[k][i])
+            if (i > 0) indices.push(n - 1, n)
+            n++
+          })
+        }
+        if (n === 0) continue
+        const geometry = new BufferGeometry()
+        geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3))
+        geometry.setAttribute('thickness', new BufferAttribute(new Float32Array(thicknesses), 1))
+        geometry.setIndex(indices)
+        geometry.computeBoundingSphere()
+        this.localChunks.push({origin, geometry})
+      }
+    }
+
     // Add tether points to KML file
     let overflow = 0
     if (genKMLFile) {
@@ -441,22 +480,22 @@ class TetherGeometry extends BufferGeometry {
       this.kmlFile  = ''
       tetherStrips.forEach(strip => {
         if (this.kmlFile.length<1000000) {   // Don't let the file get too big
-          this.kmlFile.concat(kmlutils.kmlTetherPlacemarkHeader)
+          this.kmlFile += kmlutils.kmlTetherPlacemarkHeader
           strip.forEach((point) => {
             const xyzWorld = tetheredRingRefCoordSys.localToWorld(point.clone())
             const xyzPlanet = planetCoordSys.worldToLocal(xyzWorld.clone())
             const lla = tram.ecefToGeodetic(xyzPlanet.x, xyzPlanet.y, xyzPlanet.z, planetSpec.ellipsoid)
             //const coordString = '          ' + lla.lon + ',' + lla.lat + ',' + lla.alt + '\n'
             const coordString = '          ' + Math.round(lla.lon*10000000)/10000000 + ',' + Math.round(lla.lat*10000000)/10000000 + ',' + Math.round(Math.abs(lla.alt)*1000)/1000 + '\n'
-            this.kmlFile.concat(coordString)
+            this.kmlFile += coordString
           })
-          this.kmlFile.concat(kmlutils.kmlPlacemarkFooter)
+          this.kmlFile += kmlutils.kmlPlacemarkFooter
         }
         else {
           overflow++
         }
       })
-      console.log('KML file too big by ' + overflow + ' strips')
+      if (overflow > 0) console.log('KML file too big by ' + overflow + ' strips')
     }
   
     this.userData['catenaryTypes'] = currentCatenaryTypes

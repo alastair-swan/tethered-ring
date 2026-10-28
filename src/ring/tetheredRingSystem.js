@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import * as tram from '../utils/tram.js'   // Tethered Ring Architectural Model (a collection of functions useful for building a tethered ring system)
-import {mainRingCurve} from './mainRingCurve.js'
+import {mainRingCurve, genMainRingKML} from './mainRingCurve.js'
 
 export class tetheredRingSystem {
   constructor(dParamWithUnits, universeSpec, planetSpec, ringSpec, index, genKMLFile, kmlFile) {
@@ -35,6 +35,9 @@ export class tetheredRingSystem {
 
     // Create a curve to represent the shape of the tethered ring system
     this.mainRingCurve = new mainRingCurve(dParamWithUnits, planetSpec, this.crv, index, genKMLFile, kmlFile)
+
+    // KML placemark for the main ring (strings are immutable, so callers append this.kmlFile themselves)
+    this.kmlFile = (index===0 && genKMLFile) ? genMainRingKML(this.mainRingCurve, planetSpec, this.ringToPlanetQuaternion) : ''
 
     // Create a line for visualizing the main ring's curve
     // const mainRingCurveVisualizer = new 

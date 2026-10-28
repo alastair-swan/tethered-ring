@@ -17,7 +17,7 @@ export const kmlMainRingPlacemarkHeader = `    <Placemark>
       <name>MainRing</name>
       <description>Main Ring</description>
       <styleUrl>#faintGray</styleUrl>
-      <LinearRing>
+      <LineString>
         <extrude>0</extrude>
         <tessellate>0</tessellate>
         <altitudeMode>absolute</altitudeMode>
@@ -28,7 +28,7 @@ export const kmlTetherPlacemarkHeader = `    <Placemark>
       <name>Tether</name>
       <description>Tether</description>
       <styleUrl>#faintGray</styleUrl>
-      <LinearRing>
+      <LineString>
         <extrude>0</extrude>
         <tessellate>0</tessellate>
         <altitudeMode>absolute</altitudeMode>
@@ -38,7 +38,7 @@ export const kmlLauncherPlacemarkHeader = `    <Placemark>
       <name>Launcher</name>
       <description>Launcher</description>
       <styleUrl>#faintGray</styleUrl>
-      <LinearRing>
+      <LineString>
         <extrude>0</extrude>
         <tessellate>0</tessellate>
         <altitudeMode>absolute</altitudeMode>
@@ -49,7 +49,7 @@ export const kmlRampSupportPlacemarkHeader = `    <Placemark>
       <name>Support</name>
       <description>Support Strut</description>
       <styleUrl>#faintGray</styleUrl>
-      <LinearRing>
+      <LineString>
         <extrude>0</extrude>
         <tessellate>0</tessellate>
         <altitudeMode>absolute</altitudeMode>
@@ -59,7 +59,7 @@ export const kmlRampSupportPlacemarkHeader = `    <Placemark>
 
 
 export const kmlPlacemarkFooter = `        </coordinates>
-      </LinearRing>
+      </LineString>
     </Placemark>
 `
 
