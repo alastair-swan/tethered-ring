@@ -39,6 +39,7 @@ const _north = new THREE.Vector3()
 const _dir = new THREE.Vector3()
 const _point = new THREE.Vector3()
 const _origin = new THREE.Vector3()
+const _quaternion = new THREE.Quaternion()
 
 export class Ocean {
   // parent: the planet's coordinate system (planet-centred, Y = polar axis).
@@ -110,7 +111,7 @@ else {
     if (!enabled) {
       this.setCameraInWater(false)
       this.mesh.visible = false
-      SeaDarkening.update(false, _up, 0, 0)
+      SeaDarkening.update(false)
       if (this.scene.fog === this.fog) this.scene.fog = null
     }
   }
@@ -128,12 +129,8 @@ else {
     this.cameraUnderSurface = geo.alt < 0 && geo.alt > seaFloor
     this.setCameraInWater(this.cameraUnderSurface && !isDry(_camera), -geo.alt)
     // From above the sea, things under it fade into the water by their optical path through it.
-    const a = this.ellipsoid.a, b = this.ellipsoid.b ?? a * (1 - (this.ellipsoid.f || 0))
-    const r = _camera.length()
-    const seaLevelRadius = 1 / Math.sqrt(((_camera.x / r) ** 2 + (_camera.z / r) ** 2) / (a * a) + (_camera.y / r) ** 2 / (b * b))
     const above = !this.cameraUnderSurface
-    _up.copy(_camera).transformDirection(this.parent.matrixWorld) // the camera's vertical, in world axes
-    SeaDarkening.update(above, _up, r, seaLevelRadius)
+    SeaDarkening.update(above, _camera, this.ellipsoid, this.parent.getWorldQuaternion(_quaternion))
 
     // The disc is the sea's underside: seen from under the surface, rippled and translucent; from
     // above, an opaque backstop for rays that dip under the surface and would come back out of it

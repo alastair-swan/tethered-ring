@@ -87,7 +87,9 @@ const DEG2RAD = Math.PI / 180;
 // coastline, and its colour before a tile's imagery has loaded.
 const WATER_OPACITY = 0.12; // looking straight into it (more at grazing angles: see seaNoise.js)
 const WATER_SHALLOWS_DEPTH = 30;
-const WATER_FALLBACK_COLOR = 0x1d5f7d;
+const WATER_FALLBACK_COLOR = 0x0b2a3a; // (dark, like the imagery's ocean, so it is not taken for land)
+// Imagery luminance (linear) over which a pixel counts as land rather than sea (fade between the two).
+const WATER_LAND_LUMINANCE = ['0.06', '0.18'];
 // The underside of the sea as seen from above it (through the water, near the horizon): deep water.
 const WATER_UNDERSIDE_FROM_ABOVE = [0.015, 0.035, 0.06];
 // Sea floor seen from under the surface (linear RGB), and the depth over which it replaces the imagery.
@@ -1897,33 +1899,66 @@ varying float vSeaDepth;`)
       depthWrite: false,
     });
     const offsets = noiseOffsets(tile.center, SEA_SURFACE_FREQUENCIES);
+    const invA2 = (1 / (this.a * this.a)).toExponential(10);
+    const invB2 = (1 / (this.b * this.b)).toExponential(10);
     material.onBeforeCompile = (shader) => {
       shader.uniforms.seaRippleOffset = { value: offsets };
+      shader.uniforms.seaTileCenter = { value: tile.center };
+      // Per-pixel normals: on a distant (coarse) tile the vertex normals, interpolated across big flat
+      // triangles, are slightly off from cell to cell, and the sharp sun glint turns that into a grid.
+      // The normal is instead computed for each pixel from the ellipsoid at its planet position (to
+      // ~1e-7 rad in float32) and rotated into view space with the (constant) mesh axes.
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
+uniform vec3 seaTileCenter;
 attribute float seaDepth;
 varying float vSeaDepth;
-varying vec3 vSeaLocal;`)
+varying vec3 vSeaLocal;
+varying vec3 vSeaPlanet;
+varying vec3 vSeaAxisX;
+varying vec3 vSeaAxisY;
+varying vec3 vSeaAxisZ;`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>
 vSeaDepth = seaDepth;
-vSeaLocal = transformed;`);
+vSeaLocal = transformed;
+vSeaPlanet = transformed + seaTileCenter;
+vSeaAxisX = normalMatrix * vec3(1.0, 0.0, 0.0);
+vSeaAxisY = normalMatrix * vec3(0.0, 1.0, 0.0);
+vSeaAxisZ = normalMatrix * vec3(0.0, 0.0, 1.0);`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
 varying float vSeaDepth;
 varying vec3 vSeaLocal;
+varying vec3 vSeaPlanet;
+varying vec3 vSeaAxisX;
+varying vec3 vSeaAxisY;
+varying vec3 vSeaAxisZ;
 ${fbmGlsl('seaRipple', SEA_SURFACE_FREQUENCIES)}
-${seaSurfaceLookGlsl(WATER_OPACITY)}`)
+${seaSurfaceLookGlsl(WATER_OPACITY)}
+
+// Ellipsoid normal at this pixel, in view space.
+vec3 seaViewNormal() {
+  vec3 n = normalize(vSeaPlanet * vec3(${invA2}, ${invB2}, ${invA2}));
+  return normalize(n.x * vSeaAxisX + n.y * vSeaAxisY + n.z * vSeaAxisZ);
+}`)
         .replace('#include <alphatest_fragment>', `if (vSeaDepth <= 0.0) discard; // land
+// Where the imagery itself shows land, snow or ice (bright; the ocean in the imagery is very dark),
+// there is no water: the coastline follows the imagery, and coarse distant tiles, whose coastal
+// vertices can dip below sea level, do not dot the shore with blobs of water.
+float seaImageryLand = smoothstep(${WATER_LAND_LUMINANCE[0]}, ${WATER_LAND_LUMINANCE[1]}, dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722)));
+if (seaImageryLand >= 1.0) discard;
 {
   float ripple = seaRippleFbm(vSeaLocal, length(vViewPosition));
   float shine;
-  vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, abs(dot(normalize(vNormal), normalize(vViewPosition))), shine);
+  vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, abs(dot(seaViewNormal(), normalize(vViewPosition))), shine);
   diffuseColor.rgb = shaded.rgb;
   totalEmissiveRadiance += seaSurfaceHighlight * shine * 0.35; // reflected sky
   // Clearer in the shallows, so the coastline is soft.
-  diffuseColor.a = shaded.a * mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed(1)}, 0.0, 1.0));
+  diffuseColor.a = shaded.a * mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed(1)}, 0.0, 1.0)) * (1.0 - seaImageryLand);
 }
-#include <alphatest_fragment>`);
+#include <alphatest_fragment>`)
+        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+normal = seaViewNormal();`);
     };
     material.customProgramCacheKey = () => 'seaSurface';
     return material;

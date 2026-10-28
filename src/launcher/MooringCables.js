@@ -31,8 +31,9 @@ const anchorGeometry = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0)
 anchorGeometry.userData.shared = true
 const anchorMaterial = new THREE.MeshStandardMaterial({ color: 0xd9d3c4, emissive: 0x3a3832, roughness: 0.9 })
 anchorMaterial.onBeforeCompile = (shader) => {
+  // fog = 1 - exp(-path / L), so fading 8x more slowly is 1 - (1 - fog)^(1/8).
   shader.fragmentShader = shader.fragmentShader.replace('#include <fog_fragment>',
-    THREE.ShaderChunk.fog_fragment.replace('-seaPath / seaRay.z', '-seaPath / (8.0 * seaRay.z)'))
+    THREE.ShaderChunk.fog_fragment.replace('seaTint, vSeaFog)', 'seaTint, 1.0 - pow(1.0 - vSeaFog, 0.125))'))
 }
 anchorMaterial.customProgramCacheKey = () => 'mooringAnchor'
 let lineMaterial = new THREE.LineBasicMaterial({ color: 0x505050, transparent: true, opacity: 0.6 })
