@@ -23,7 +23,6 @@ const UNDERSIDE_COLOR = new THREE.Color(0x6fb3c9)
 const UNDERSIDE_OPACITY = 0.18 // looking straight up through it (more at grazing angles)
 // Seen from above (through the water, near the horizon): deep water, matching the fog in the sea.
 const UNDERSIDE_FROM_ABOVE = [0.012, 0.03, 0.05]
-const DEEP_BACKSTOP_DEPTH = 11500 // m: below the deepest sea floor (see the deep backstop in the constructor)
 const SHALLOW_WATER_COLOR = new THREE.Color(0x1f6f8c)
 const DEEP_WATER_COLOR = new THREE.Color(0x04131f)
 // The water colour goes from slightly darker than SHALLOW just under the surface towards (but never
@@ -104,17 +103,6 @@ else {
     parent.add(this.mesh)
 
     this.fog = new THREE.FogExp2(SHALLOW_WATER_COLOR.clone(), 0)
-
-    // From above the sea, a ray that goes down into it must always end on something: where no sea
-    // floor is drawn (terrain not loaded, or culled beyond the horizon) it would show the sky through
-    // the water, and translucent things in the water (the cable lines) would blend with that sky and
-    // seem to glow. This opaque deep-water disc, below the deepest sea floor, catches such rays; the
-    // real sea floor, wherever it is drawn, is in front of it.
-    this.deepMesh = new THREE.Mesh(discGeometry(), new THREE.MeshBasicMaterial({ color: new THREE.Color(...UNDERSIDE_FROM_ABOVE) }))
-    this.deepMesh.name = 'seaDeepBackstop'
-    this.deepMesh.frustumCulled = false
-    this.deepMesh.visible = false
-    parent.add(this.deepMesh)
   }
 
   setEnabled(enabled) {
@@ -122,7 +110,6 @@ else {
     if (!enabled) {
       this.setCameraInWater(false)
       this.mesh.visible = false
-      this.deepMesh.visible = false
       SeaDarkening.update(false, _up, 0, 0)
       if (this.scene.fog === this.fog) this.scene.fog = null
     }
@@ -153,17 +140,18 @@ else {
     // beyond the horizon (the Earth curves away), so the sky never shows through the sea.
     this.mesh.visible = true
     this.opaque.value = above ? 1 : 0
-    // As a backstop it must be drawn before anything translucent in front of it (e.g. the cable
-    // lines), or they would blend with the sky behind it and show up bright against the dark water.
-    // As the underside seen from below it is drawn after the translucent things it covers.
-    this.mesh.renderOrder = above ? -1 : 2
+    // As a backstop it is opaque and drawn in the opaque pass, so it is in place before anything
+    // translucent in front of it (e.g. the cable lines) is blended over it; otherwise they would blend
+    // with the sky behind it and glow against the dark water. As the underside seen from below it is
+    // translucent and drawn after the translucent things it covers.
+    this.material.transparent = !above
+    this.material.depthWrite = above
+    this.mesh.renderOrder = above ? 0 : 2
     // Rebuild only when the camera has moved by a noticeable fraction of its height above the sea
     // (the innermost ring is 5% of it), or has crossed the surface.
     const height = Math.abs(geo.alt)
-    this.deepMesh.visible = above
     if (!this._builtAt || this._builtAbove !== above || this._builtAt.distanceTo(_camera) > Math.max(0.05, 0.01 * height)) {
       this.buildSurface(height, above)
-      if (above) this.buildDeepBackstop(height)
       ;(this._builtAt ??= new THREE.Vector3()).copy(_camera)
       this._builtAbove = above
     }
@@ -190,13 +178,6 @@ else {
     const horizon = this.horizonDistance(heightAboveSea)
     this.fillDisc(this.mesh, heightAboveSea, Math.max(3000, horizon * (above ? 2.2 : 1.05) + 1000), 0)
     noiseOffsets(this.mesh.position, SEA_SURFACE_FREQUENCIES, this.rippleOffsets) // ripples stay put as the disc moves
-  }
-
-  // The deep backstop reaches as far as a ray from the camera can go before it is that deep.
-  buildDeepBackstop(heightAboveSea) {
-    const meanRadius = this.meanRadius()
-    const reach = this.horizonDistance(heightAboveSea) + Math.sqrt(2 * meanRadius * DEEP_BACKSTOP_DEPTH) + 1000
-    this.fillDisc(this.deepMesh, heightAboveSea, reach, DEEP_BACKSTOP_DEPTH)
   }
 
   meanRadius() {
@@ -259,11 +240,9 @@ else {
 
   dispose() {
     this.setEnabled(false)
-    for (const mesh of [this.mesh, this.deepMesh]) {
-      mesh.parent?.remove(mesh)
-      mesh.geometry.dispose()
-      mesh.material.dispose()
-    }
+    this.mesh.parent?.remove(this.mesh)
+    this.mesh.geometry.dispose()
+    this.material.dispose()
   }
 }
 

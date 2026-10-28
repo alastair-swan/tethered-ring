@@ -1823,13 +1823,21 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
 
   // Creates, replaces or removes the tile's sea-surface mesh (a child of the tile mesh, so it follows
   // the tile's position and visibility).
+  //
+  // Two meshes share the geometry: the translucent surface (front faces), drawn after the translucent
+  // things it covers, and its opaque underside (back faces). From above the sea, a view ray that skims
+  // the surface near the horizon passes into the water and, because of the Earth's curvature, comes
+  // back out through the underside further on, where there is no sea floor behind it. The underside is
+  // drawn in the opaque pass, so it is in place before anything translucent in the water (the cable
+  // lines, the tube) is blended over it: otherwise they would blend with the sky behind and glow.
   _updateTileWater(tile) {
     const waterGeometry = tile.mesh?.geometry?.userData.waterGeometry ?? null;
     if (!waterGeometry) {
       if (tile.waterMesh) {
-        tile.mesh.remove(tile.waterMesh);
+        tile.mesh.remove(tile.waterMesh, tile.waterUnderside);
         tile.waterMesh.material.dispose();
         tile.waterMesh = null;
+        tile.waterUnderside = null;
       }
       return;
     }
@@ -1839,20 +1847,46 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
       tile.waterMesh.frustumCulled = false; // the tile is culled instead
       tile.waterMesh.renderOrder = 2;       // after the translucent things it covers (e.g. the tube)
       tile.waterMesh.visible = this.waterVisible;
-      tile.mesh.add(tile.waterMesh);
+      tile.waterUnderside = new THREE.Mesh(waterGeometry, this._waterUndersideMaterial());
+      tile.waterUnderside.name = 'seaUnderside';
+      tile.waterUnderside.frustumCulled = false;
+      tile.waterUnderside.visible = this.waterVisible;
+      tile.mesh.add(tile.waterMesh, tile.waterUnderside);
     }
     else {
       tile.waterMesh.geometry = waterGeometry;
+      tile.waterUnderside.geometry = waterGeometry;
     }
+  }
+
+  // The sea's underside as seen from above it: opaque deep water (shared by every tile).
+  _waterUndersideMaterial() {
+    if (this._undersideMaterial) return this._undersideMaterial;
+    const material = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(...WATER_UNDERSIDE_FROM_ABOVE),
+      side: THREE.BackSide,
+    });
+    material.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+attribute float seaDepth;
+varying float vSeaDepth;`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+vSeaDepth = seaDepth;`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+varying float vSeaDepth;`)
+        .replace('#include <alphatest_fragment>', `if (vSeaDepth <= 0.0) discard; // land
+#include <alphatest_fragment>`);
+    };
+    material.customProgramCacheKey = () => 'seaUndersideFromAbove';
+    this._undersideMaterial = material;
+    return material;
   }
 
   // Mostly clear (so the tube and cables show through), more opaque at grazing angles, with fine
   // ripples (seaNoise.js) that show where the surface is and how far away; tinted by the imagery's
-  // ocean colour and clearer still in the shallows.
-  // Back faces: from above the sea, a view ray that skims the surface near the horizon passes into
-  // the water and, because of the Earth's curvature, comes back out through the underside further on;
-  // there the underside is opaque deep water, so the sky never shows through the sea. From under the
-  // surface the underside is drawn by Ocean.js instead, so back faces are skipped.
+  // ocean colour and clearer still in the shallows. (Front faces; see _updateTileWater.)
   _createWaterMaterial(tile) {
     const material = new THREE.MeshPhongMaterial({
       color: tile.texture ? 0xffffff : WATER_FALLBACK_COLOR,
@@ -1861,15 +1895,10 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
       shininess: 80,
       transparent: true,
       depthWrite: false,
-      side: THREE.DoubleSide,
-      // three.js would otherwise draw a transparent double-sided material in two passes (twice the
-      // draw calls); the back faces are opaque, so their order relative to the front faces is moot.
-      forceSinglePass: true,
     });
     const offsets = noiseOffsets(tile.center, SEA_SURFACE_FREQUENCIES);
     material.onBeforeCompile = (shader) => {
       shader.uniforms.seaRippleOffset = { value: offsets };
-      shader.uniforms.seafloorView = this.seafloorView;
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
 attribute float seaDepth;
@@ -1880,17 +1909,12 @@ vSeaDepth = seaDepth;
 vSeaLocal = transformed;`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
-uniform float seafloorView;
 varying float vSeaDepth;
 varying vec3 vSeaLocal;
 ${fbmGlsl('seaRipple', SEA_SURFACE_FREQUENCIES)}
 ${seaSurfaceLookGlsl(WATER_OPACITY)}`)
         .replace('#include <alphatest_fragment>', `if (vSeaDepth <= 0.0) discard; // land
-if (!gl_FrontFacing) {
-  if (seafloorView > 0.5) discard; // under the surface: Ocean.js draws the underside
-  diffuseColor = vec4(${WATER_UNDERSIDE_FROM_ABOVE.map(c => c.toFixed(3)).join(', ')}, 1.0);
-}
-else {
+{
   float ripple = seaRippleFbm(vSeaLocal, length(vViewPosition));
   float shine;
   vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, abs(dot(normalize(vNormal), normalize(vViewPosition))), shine);
@@ -1962,7 +1986,7 @@ if (seafloorView > 0.0 && vSeafloorAltitude < 0.0) {
   setWaterVisible(visible) {
     this.waterVisible = visible;
     for (const tile of this.tiles.values()) {
-      if (tile.waterMesh) tile.waterMesh.visible = visible;
+      if (tile.waterMesh) tile.waterMesh.visible = tile.waterUnderside.visible = visible;
     }
   }
 
@@ -2565,7 +2589,7 @@ if (seafloorView > 0.0 && vSeafloorAltitude < 0.0) {
       tile.mesh.geometry.dispose();
       tile.mesh.geometry.userData.waterGeometry?.dispose();
     }
-    if (tile.waterMesh) { tile.waterMesh.material.dispose(); tile.waterMesh = null; }
+    if (tile.waterMesh) { tile.waterMesh.material.dispose(); tile.waterMesh = null; tile.waterUnderside = null; }
     if (tile.material && tile.material !== this.baseMaterial) tile.material.dispose();
     tile.heightSamples = null;
     this.debugStats.gpuBytes = Math.max(0, this.debugStats.gpuBytes - tile.estimatedBytes);
