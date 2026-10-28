@@ -21,6 +21,8 @@ const RINGS = 64
 const SECTORS = 64
 const UNDERSIDE_COLOR = new THREE.Color(0x6fb3c9)
 const UNDERSIDE_OPACITY = 0.18 // looking straight up through it (more at grazing angles)
+// Seen from above (through the water, near the horizon): deep water, matching the fog in the sea.
+const UNDERSIDE_FROM_ABOVE = [0.012, 0.03, 0.05]
 const SHALLOW_WATER_COLOR = new THREE.Color(0x1f6f8c)
 const DEEP_WATER_COLOR = new THREE.Color(0x04131f)
 // The water colour goes from slightly darker than SHALLOW just under the surface towards (but never
@@ -70,8 +72,10 @@ export class Ocean {
       color: UNDERSIDE_COLOR, transparent: true, depthWrite: false, side: THREE.BackSide,
     })
     this.rippleOffsets = noiseOffsets(new THREE.Vector3(), SEA_SURFACE_FREQUENCIES)
+    this.opaque = { value: 0 } // 1 while the camera is above the sea (see update)
     this.material.onBeforeCompile = (shader) => {
       shader.uniforms.seaRippleOffset = { value: this.rippleOffsets }
+      shader.uniforms.seaUndersideOpaque = this.opaque
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
 varying vec3 vSeaLocal;
@@ -83,12 +87,16 @@ vSeaView = -mvPosition.xyz;
 vSeaNormal = normalize(normalMatrix * normal);`)
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
+uniform float seaUndersideOpaque;
 varying vec3 vSeaLocal;
 varying vec3 vSeaView;
 varying vec3 vSeaNormal;
 ${fbmGlsl('seaRipple', SEA_SURFACE_FREQUENCIES)}
 ${seaSurfaceLookGlsl(UNDERSIDE_OPACITY)}`)
-        .replace('#include <alphatest_fragment>', `{
+        .replace('#include <alphatest_fragment>', `if (seaUndersideOpaque > 0.5) {
+  diffuseColor = vec4(${UNDERSIDE_FROM_ABOVE.map(c => c.toFixed(3)).join(', ')}, 1.0);
+}
+else {
   float ripple = seaRippleFbm(vSeaLocal, length(vSeaView));
   float shine;
   vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, abs(dot(normalize(vSeaNormal), normalize(vSeaView))), shine);
@@ -113,7 +121,7 @@ ${seaSurfaceLookGlsl(UNDERSIDE_OPACITY)}`)
     if (!enabled) {
       this.setCameraInWater(false)
       this.mesh.visible = false
-      SeaDarkening.update(false, _origin, 0)
+      SeaDarkening.update(false, _up, 0, 0)
       if (this.scene.fog === this.fog) this.scene.fog = null
     }
   }
@@ -130,19 +138,26 @@ ${seaSurfaceLookGlsl(UNDERSIDE_OPACITY)}`)
     const seaFloor = (geo.alt < 0) ? this.sampleTerrainHeight(geo.lat, geo.lon)?.heightMeters ?? -Infinity : -Infinity
     this.cameraUnderSurface = geo.alt < 0 && geo.alt > seaFloor
     this.setCameraInWater(this.cameraUnderSurface && !isDry(_camera), -geo.alt)
-    // From above the sea, things under it darken with the distance through the water.
+    // From above the sea, things under it fade into the water by their optical path through it.
     const a = this.ellipsoid.a, b = this.ellipsoid.b ?? a * (1 - (this.ellipsoid.f || 0))
     const r = _camera.length()
     const seaLevelRadius = 1 / Math.sqrt(((_camera.x / r) ** 2 + (_camera.z / r) ** 2) / (a * a) + (_camera.y / r) ** 2 / (b * b))
-    SeaDarkening.update(!this.cameraUnderSurface, this.parent.getWorldPosition(_point), seaLevelRadius)
-    this.mesh.visible = this.cameraUnderSurface
-    if (!this.cameraUnderSurface) return
+    const above = !this.cameraUnderSurface
+    _up.copy(_camera).transformDirection(this.parent.matrixWorld) // the camera's vertical, in world axes
+    SeaDarkening.update(above, _up, r, seaLevelRadius)
+
+    // The disc is the sea's underside: seen from under the surface, rippled and translucent; from
+    // above, an opaque backstop for rays that dip under the surface and would come back out of it
+    // beyond the horizon (the Earth curves away), so the sky never shows through the sea.
+    this.mesh.visible = true
+    this.opaque.value = above ? 1 : 0
     // Rebuild only when the camera has moved by a noticeable fraction of its height above the sea
-    // (the innermost ring is 5% of it); otherwise the existing disc is still centred closely enough.
+    // (the innermost ring is 5% of it), or has crossed the surface.
     const height = Math.abs(geo.alt)
-    if (!this._builtAt || this._builtAt.distanceTo(_camera) > Math.max(0.05, 0.01 * height)) {
-      this.buildSurface(height)
+    if (!this._builtAt || this._builtAbove !== above || this._builtAt.distanceTo(_camera) > Math.max(0.05, 0.01 * height)) {
+      this.buildSurface(height, above)
       ;(this._builtAt ??= new THREE.Vector3()).copy(_camera)
+      this._builtAbove = above
     }
   }
 
@@ -161,13 +176,15 @@ ${seaSurfaceLookGlsl(UNDERSIDE_OPACITY)}`)
   }
 
   // Rebuilds the surface disc around the point below the camera (heightAboveSea: |camera altitude|).
-  buildSurface(heightAboveSea) {
+  // From above it reaches past twice the horizon distance: a ray that skims under the surface comes
+  // back out of it about as far beyond the horizon as it went in before it.
+  buildSurface(heightAboveSea, above = false) {
     const a = this.ellipsoid.a
     const b = this.ellipsoid.b ?? a * (1 - (this.ellipsoid.f || 0))
     const meanRadius = (2 * a + b) / 3
     // Out to just past the horizon (at least a few km), and never more than a quarter of the way round.
     const horizon = Math.sqrt(heightAboveSea * (2 * meanRadius + heightAboveSea))
-    const maxDistance = Math.min(meanRadius * Math.PI / 2, Math.max(3000, horizon * 1.05 + 1000))
+    const maxDistance = Math.min(meanRadius * Math.PI / 2, Math.max(3000, horizon * (above ? 2.2 : 1.05) + 1000))
     const firstRing = Math.max(0.5, heightAboveSea * 0.05)
     const growth = Math.pow(maxDistance / firstRing, 1 / (RINGS - 1))
 

@@ -1862,6 +1862,9 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
+      // three.js would otherwise draw a transparent double-sided material in two passes (twice the
+      // draw calls); the back faces are opaque, so their order relative to the front faces is moot.
+      forceSinglePass: true,
     });
     const offsets = noiseOffsets(tile.center, SEA_SURFACE_FREQUENCIES);
     material.onBeforeCompile = (shader) => {

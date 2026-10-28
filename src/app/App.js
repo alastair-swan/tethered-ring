@@ -209,7 +209,17 @@ export class App {
     const enabled = d.showOcean.value && d.showEarthsSurface.value
     this.ocean.visibility = d.underwaterVisibility.value
     this.ocean.setEnabled(enabled)
-    this.planet.setWaterVisible(enabled)
+    this.updateSeaSurfaceVisibility()
+  }
+
+  // The tiles' sea surface is only needed from above it (from under the surface the Ocean draws the
+  // underside instead).
+  updateSeaSurfaceVisibility() {
+    const visible = this.ocean.enabled && !this.ocean.cameraUnderSurface
+    if (visible !== this._seaSurfaceVisible) {
+      this._seaSurfaceVisible = visible
+      this.planet.setWaterVisible(visible)
+    }
   }
 
   buildRing() {
@@ -584,7 +594,10 @@ export class App {
     // The water surface follows the camera; in the water (but not inside the evacuated tube) the view
     // switches to the underwater look (see render()).
     this.ocean?.update(this.camera3d, (point) => this.launchSystem?.isInsideTube(point) ?? false)
-    if (this.ocean) this.planet.setSeafloorView(this.ocean.enabled && this.ocean.cameraUnderSurface ? 1 : 0)
+    if (this.ocean) {
+      this.planet.setSeafloorView(this.ocean.enabled && this.ocean.cameraUnderSurface ? 1 : 0)
+      this.updateSeaSurfaceVisibility()
+    }
     MooringCables.refreshSome()
     this.lighting.followCameraTarget(this.camera.controls.target)
 

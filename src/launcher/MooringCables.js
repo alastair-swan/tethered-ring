@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { ecefToGeodetic, geodeticToECEF } from '../physics/geodesy.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
+import { SeaDarkening } from '../planet/seaDarkening.js'
 
 // Mooring cables for one tube segment. Where the mass-driver tube runs under the sea it is buoyant
 // and held down by cables to the sea floor, in inverted Vs so that they also resist sideways
@@ -77,15 +78,30 @@ export class MooringCables {
   static sets = new Set()
   static _queue = []
 
-  // The material for the cable lines: pass the tethers' material so the cables fade the same way.
-  // (A ShaderMaterial built from the tether shaders sharing its uniforms; the colour is our own.)
+  // The material for the cable lines: pass the tethers' material so the cables fade with on-screen
+  // size the same way. (A ShaderMaterial built from the tether shaders, sharing their uniforms; the
+  // colour is our own.) Unlike the tethers, the cables are in the sea, so it also takes the scene's
+  // fog (they fade into the water with distance exactly as the sea floor does) and the from-above sea
+  // darkening (see seaDarkening.js).
   static setLineMaterial(tetherMaterial) {
+    const vertexShader = tetherMaterial.vertexShader
+      .replace('#include <logdepthbuf_pars_vertex>', '#include <logdepthbuf_pars_vertex>\n#include <fog_pars_vertex>')
+      .replace('#include <logdepthbuf_vertex>', '#include <logdepthbuf_vertex>\n  vec4 mvPosition = eyeCoord;\n  #include <fog_vertex>')
+    const fragmentShader = tetherMaterial.fragmentShader
+      .replace('#include <logdepthbuf_pars_fragment>', '#include <logdepthbuf_pars_fragment>\n#include <fog_pars_fragment>')
+      .replace('#include <colorspace_fragment>', '#include <colorspace_fragment>\n  #include <fog_fragment>')
     lineMaterial = new THREE.ShaderMaterial({
-      uniforms: { ...tetherMaterial.uniforms, color: { value: new THREE.Color(0x141414) } },
-      vertexShader: tetherMaterial.vertexShader,
-      fragmentShader: tetherMaterial.fragmentShader,
+      uniforms: {
+        ...tetherMaterial.uniforms,
+        color: { value: new THREE.Color(0x141414) },
+        ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog),
+        ...SeaDarkening.uniforms(),
+      },
+      vertexShader,
+      fragmentShader,
       transparent: true,
       blending: tetherMaterial.blending,
+      fog: true,
     })
   }
 
