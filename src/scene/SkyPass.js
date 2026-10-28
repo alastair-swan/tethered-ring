@@ -2,6 +2,32 @@ import * as THREE from 'three'
 import { stars } from './stars.js'
 
 const MOON_ORBIT_DISTANCE = 384467000 // m
+const SUN_DISTANCE = 5e10 // m (inside the sky camera's far plane; only the direction matters)
+const SUN_ANGULAR_RADIUS = 0.2665 * Math.PI / 180
+const SUN_SPRITE_SCALE = 12 // the sprite is this many disc radii across: the rest is glow
+const _sunDir = new THREE.Vector3()
+const _target = new THREE.Vector3()
+
+// A white disc of 1/SUN_SPRITE_SCALE of the texture's width, with a soft glow around it.
+function sunTexture() {
+  const size = 256
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = size
+  const g = canvas.getContext('2d')
+  const r = size / 2
+  const disc = r / (SUN_SPRITE_SCALE / 2)
+  const gradient = g.createRadialGradient(r, r, 0, r, r, r)
+  gradient.addColorStop(0, 'rgba(255,255,250,1)')
+  gradient.addColorStop(disc / r * 0.9, 'rgba(255,255,245,1)')
+  gradient.addColorStop(disc / r * 1.1, 'rgba(255,240,200,0.45)')
+  gradient.addColorStop(0.45, 'rgba(255,220,170,0.08)')
+  gradient.addColorStop(1, 'rgba(255,210,160,0)')
+  g.fillStyle = gradient
+  g.fillRect(0, 0, size, size)
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  return texture
+}
 
 // Renders far-away things (stars and the companion body: the Moon, or Earth when the simulation is
 // on the Moon) in a separate pass with its own camera, before the main scene.
@@ -41,6 +67,16 @@ export class SkyPass {
     this.sunLight = new THREE.DirectionalLight(0xffffff, 1)
     this.scene.add(this.sunLight)
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.15))
+
+    // The sun: a disc (its real 0.53 degree size) with a glow, far beyond the Moon so the Moon (and
+    // the planet, drawn later) can pass in front of it. Seen through the air, the atmosphere draws it
+    // instead (see atmosphere.frag.glsl), since the sky is drawn over this pass.
+    this.sun = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: sunTexture(), blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+    }))
+    this.sun.name = 'sun'
+    this.sun.scale.setScalar(2 * SUN_DISTANCE * Math.tan(SUN_ANGULAR_RADIUS) * SUN_SPRITE_SCALE)
+    this.scene.add(this.sun)
   }
 
   // Places the companion body along a direction from the planet centre (planet frame).
@@ -60,6 +96,8 @@ export class SkyPass {
     this.planetFrame.matrix.copy(planetCoordSys.matrixWorld)
     this.planetFrame.matrixWorldNeedsUpdate = true
     this.sunLight.position.copy(sunLight.getWorldPosition(new THREE.Vector3()))
+    _sunDir.copy(this.sunLight.position).sub(sunLight.target.getWorldPosition(_target)).normalize()
+    this.sun.position.copy(this.camera.position).addScaledVector(_sunDir, SUN_DISTANCE)
     this.stars.animate(dParamWithUnits, planetSpec, mainCamera)
   }
 

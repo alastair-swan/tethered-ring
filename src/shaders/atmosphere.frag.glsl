@@ -43,6 +43,12 @@ void main() {
   float day = smoothstep(-0.25, 0.2, dot(up, atmoSun));
   float opacity = (1.0 - exp(-path / atmoParams.y)) * day;
   vec3 color = mix(zenithColor, horizonColor, smoothstep(2.0, 20.0, path / atmoParams.y));
+  // The sun's disc and glow, seen through the air (the sky would otherwise cover the sky pass's sun).
+  float sunCos = dot(d, atmoSun);
+  float sunDisc = smoothstep(0.999986, 0.999990, sunCos);               // 0.27 degree radius
+  float sunGlow = 0.25 * pow(max(sunCos, 0.0), 800.0) + 0.15 * pow(max(sunCos, 0.0), 30.0);
+  color = mix(color, vec3(1.0, 0.97, 0.9), clamp(sunDisc + sunGlow * day, 0.0, 1.0));
+  opacity = max(opacity, max(sunDisc, sunGlow * day));
   gl_FragColor = vec4(color, opacity);
   #include <colorspace_fragment>
 }

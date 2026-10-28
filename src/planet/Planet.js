@@ -205,6 +205,7 @@ export class Planet {
     u.atmoPole.value.set(_atmoPole.x, _atmoPole.y, _atmoPole.z, k - 1);
     u.atmoParams.value.x = c2 - a * a;
     u.atmoSun.value.copy(sunDirection).normalize();
+    this.lod.setSunDirection(sunDirection);
   }
 
   /** Per-frame LOD selection and streaming. Call before rendering. */
