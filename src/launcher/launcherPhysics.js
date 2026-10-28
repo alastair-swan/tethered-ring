@@ -354,6 +354,43 @@ export function threadSpeed(distance, initialVelocity, initialDistance, accelera
   return -initialVelocity
 }
 
+// Distance along the screw from which the thread can drive the nut. A grappler pad engages by sitting
+// in the groove between two adjacent flights, so the groove must fit the pad and the clearance it
+// lifts away by. The groove is measured square to the flight faces at the shaft surface, where it is
+// narrowest: (lead / threadStarts) * cos(leadAngle) - threadThickness, with lead = speed / rev/s and
+// tan(leadAngle) = lead / (2 pi shaftRadius). Near the breech the nut is slow, the lead is tiny and
+// the flights would overlap; there the screw is a plain shaft and the pads stay disengaged.
+// Returns -Infinity if the thread is valid from the breech, Infinity if a pad can never fit.
+export function threadStartDistance({ initialVelocity, initialDistance, acceleration, revolutionsPerSecond,
+  threadStarts, shaftRadius, threadThickness, padThickness }) {
+  initialVelocity = Math.max(1, initialVelocity)
+  const width = threadThickness + padThickness
+  const circumference = 2 * Math.PI * shaftRadius
+  const n = Math.max(1, threadStarts)
+  if (circumference <= n * width) return Infinity
+  const minimumLead = n * width * circumference / Math.sqrt(circumference**2 - (n * width)**2)
+  const minimumSpeed = Math.abs(nonZero(revolutionsPerSecond, 1e-3)) * minimumLead
+  if (initialVelocity >= minimumSpeed) return -Infinity
+  if (!(acceleration > 0)) return Infinity
+  return initialDistance + (minimumSpeed**2 - initialVelocity**2) / (2 * acceleration)
+}
+
+// threadStartDistance for the current parameters (used by both the screws and the adaptive nuts).
+export function screwThreadStartDistance(dParamWithUnits) {
+  const p = (name) => dParamWithUnits[name].value
+  return threadStartDistance({
+    initialVelocity: p('launcherMassDriver1InitialVelocity'),
+    initialDistance: p('adaptiveNutBodyLength') / 2,
+    acceleration: nonZero(p('launcherMassDriverForwardAcceleration'), 1e-3),
+    revolutionsPerSecond: p('launcherMassDriverScrewRevolutionsPerSecond'),
+    // (calculateThreadStarts can add starts further along; the thread always starts well before that.)
+    threadStarts: calculateThreadStarts(0, p('launcherMassDriverScrewThreadStarts')),
+    shaftRadius: p('launcherMassDriverScrewShaftOuterRadius'),
+    threadThickness: p('launcherMassDriverScrewThreadThickness'),
+    padThickness: p('adaptiveNutGrapplerMagnetThickness') + p('adaptiveNutGrapplerPadLiftAwayDistance'),
+  })
+}
+
 export function calculateThreadStarts(baseDistanceAlongScrew, theadStarts) {
   // ToDo: This is a proof of concept. We need to implement a more accurate algorithm for adjusting the number of thread starts as the vehicle progresses down the launcher.
   //return (baseDistanceAlongScrew<2000) ? 1 : (baseDistanceAlongScrew<5000) ? 2 : (baseDistanceAlongScrew<20000) ? 4 : 8

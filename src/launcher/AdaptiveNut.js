@@ -5,6 +5,7 @@ import * as tram from '../utils/tram.js'
 import { quaternionFromFrame } from '../curves/SuperCurves.js'
 import { MovingVirtualObject, curveFrameAtTime, parameterSignature } from './VirtualObject.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
+import { screwThreadStartDistance } from './launcherPhysics.js'
 
 const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
 const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
@@ -246,6 +247,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     v.launcherMassDriverForwardAcceleration = p('launcherMassDriverForwardAcceleration')
     v.launcherMassDriver1InitialVelocity = p('launcherMassDriver1InitialVelocity')
     v.initialDistance = p('adaptiveNutBodyLength') / 2
+    v.threadStartDistance = screwThreadStartDistance(dParamWithUnits)  // pads behind this cannot engage
     v.adaptiveNutGrapplerRangeFactor = p('adaptiveNutGrapplerRangeFactor')
 
     // Because the nut inferfaces with the screw, we need to obtains some screw parameters as well...
@@ -347,7 +349,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
       shaftOuterRadius, threadRadius, threadThickness, threadStarts, screwRevolutionsPerSecond,
       acceleration, initialVelocity, initialDistance, distance, grapplerLength, numGrapplers,
       v.magnetThickness, v.betweenGrapplerFactor, v.shaftToGrapplerPad, rotation,
-      v.adaptiveNutGrapplerMaxRangeOfMotion, v.adaptiveNutGrapplerTopDeadCenterRotation, v.minMaxArray)
+      v.adaptiveNutGrapplerMaxRangeOfMotion, v.adaptiveNutGrapplerTopDeadCenterRotation, v.minMaxArray, v.threadStartDistance)
 
     const g = om.grappler
     for (const child of om.children) {
@@ -390,7 +392,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
         const geometry = new SledGrapplerGeometry(
           shaftOuterRadius, threadRadius, threadThickness, threadStarts, screwRevolutionsPerSecond,
           acceleration, initialVelocity, initialDistance, keyDistance, grapplerLength, numGrapplers,
-          v.magnetThickness, v.betweenGrapplerFactor, v.shaftToGrapplerPad, 0, grapplerDistance, geometryInfo.offset)
+          v.magnetThickness, v.betweenGrapplerFactor, v.shaftToGrapplerPad, 0, grapplerDistance, geometryInfo.offset, v.threadStartDistance)
         const mirrored = mirrorGeometryX(geometry)
         // setGeometryAt copies the data into the batch's buffers.
         g.pads.setGeometryAt(g.pads.padGeometryIds[i], geometry)

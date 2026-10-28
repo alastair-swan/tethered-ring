@@ -8,16 +8,18 @@ import {
 
 
 // Positions (fractions of screwLength, from 0 to 1) of the rings of vertices for a screw segment:
-// at most 1/segmentsPerMeter apart and at most 1/samplesPerTurn of a turn of the thread apart. If
+// at most 1/segmentsPerMeter apart and, where the screw is threaded (from threadStartDistance on, see
+// launcherPhysics.threadStartDistance), at most 1/samplesPerTurn of a turn of the thread apart. If
 // that would take more than maxSegments, fewer samples per turn are used; returns null if even 3 per
 // turn would not fit (the pitch is then far too fine to draw at that budget).
 export function screwLengthOffsets(screwLength, baseDistanceAlongScrew, initialVelocity, initialDistance,
-  acceleration, revolutionsPerSecond, segmentsPerMeter, samplesPerTurn, maxSegments = Infinity) {
+  acceleration, revolutionsPerSecond, segmentsPerMeter, samplesPerTurn, maxSegments = Infinity, threadStartDistance = -Infinity) {
   revolutionsPerSecond = Math.abs(nonZero(revolutionsPerSecond, 1e-3))
   acceleration = nonZero(acceleration, 1e-3)
   initialVelocity = Math.max(1, initialVelocity)
+  const threadStart = Math.min(screwLength, Math.max(0, threadStartDistance - baseDistanceAlongScrew))  // local
   const timeAt = (d) => threadTime(baseDistanceAlongScrew + d, initialVelocity, initialDistance, acceleration)
-  const turns = revolutionsPerSecond * Math.abs(timeAt(screwLength) - timeAt(0))
+  const turns = revolutionsPerSecond * Math.abs(timeAt(screwLength) - timeAt(threadStart))
   const lengthSegments = Math.ceil(segmentsPerMeter * screwLength)
   if (lengthSegments + turns * samplesPerTurn > maxSegments) {
     samplesPerTurn = (maxSegments - lengthSegments) / Math.max(turns, 1e-9)
@@ -25,12 +27,22 @@ export function screwLengthOffsets(screwLength, baseDistanceAlongScrew, initialV
   }
   const maxStep = screwLength / Math.max(1, lengthSegments)
   const offsets = [0]
-  // The pitch only grows along the screw, so stepping by the pitch at the start of each step is safe.
   for (let d = 0; d < screwLength;) {
-    const metresPerTurn = Math.abs(threadSpeed(baseDistanceAlongScrew + d, initialVelocity, initialDistance, acceleration)) / revolutionsPerSecond
-    // (The floor on the step only matters for a decelerating thread, whose pitch can reach zero.)
-    d = Math.min(screwLength, d + Math.max(maxStep * 1e-3, Math.min(maxStep, metresPerTurn / samplesPerTurn)))
-    offsets.push(d / screwLength)
+    let step = maxStep
+    if (d >= threadStart) {
+      // The pitch only grows along the screw, so stepping by the pitch at the start of each step is safe.
+      // (The floor on the step only matters for a decelerating thread, whose pitch can reach zero.)
+      const metresPerTurn = Math.abs(threadSpeed(baseDistanceAlongScrew + d, initialVelocity, initialDistance, acceleration)) / revolutionsPerSecond
+      step = Math.max(maxStep * 1e-3, Math.min(maxStep, metresPerTurn / samplesPerTurn))
+    }
+    else if (d + step >= threadStart) {
+      // A ring just before and one at the start of the thread, so the flights start square.
+      const before = Math.max(d, threadStart - Math.min(1e-3, maxStep / 2))
+      if (before > d) offsets.push(before / screwLength)
+      step = threadStart - d
+    }
+    d = Math.min(screwLength, d + step)
+    if (d > offsets[offsets.length - 1] * screwLength) offsets.push(d / screwLength)
   }
   return offsets
 }
@@ -53,7 +65,8 @@ class ScrewGeometry extends BufferGeometry {
     radialSegments = 8,
     minLengthSegmentsPerMeter = 4,
     samplesPerTurn = 16,
-    maxLengthSegments = Infinity) {
+    maxLengthSegments = Infinity,
+    threadStartDistance = -Infinity) {
 
     super();
 
@@ -127,7 +140,7 @@ class ScrewGeometry extends BufferGeometry {
     // turns of the thread rather than evenly by length, so a tight pitch is not undersampled (which
     // made the flights alias into a wrong helix angle).
     const lengthOffsets = screwLengthOffsets(screwLength, baseDistanceAlongScrew, initialVelocity, initialDistance,
-      acceleration, revolutionsPerSecond, minLengthSegmentsPerMeter, samplesPerTurn, maxLengthSegments) ?? [0, 1]
+      acceleration, revolutionsPerSecond, minLengthSegmentsPerMeter, samplesPerTurn, maxLengthSegments, threadStartDistance) ?? [0, 1]
     const tubularSegments = lengthOffsets.length - 1
 
     // create buffer data
@@ -301,6 +314,8 @@ class ScrewGeometry extends BufferGeometry {
       const rotations = revolutionsPerSecond * time
       const rateOfChangeInRotationalDistance = 2 * Math.PI * threadRadius * Math.abs(revolutionsPerSecond)
       const rateOfChangeInForwardDisplacement = threadSpeed(distanceAlongScrew, initialVelocity, initialDistance, acceleration)
+      // Before the thread starts (see threadStartDistance) the flights have no height: a plain shaft.
+      const flightRadius = (distanceAlongScrew >= threadStartDistance) ? threadRadius : shaftOuterRadius
       const threadPitch = rateOfChangeInForwardDisplacement / rateOfChangeInRotationalDistance
   
       const threadHalfOfCrossWidth = Math.min(threadThickness * Math.sqrt(threadPitch**2+1) / Math.abs(threadPitch), shaftOuterRadius/2);
@@ -346,7 +361,7 @@ class ScrewGeometry extends BufferGeometry {
           const sin = Math.sin(vv)
           const cos = Math.cos(vv)
           vertexArray[j] = new Vector3()
-          const r = (j==0 || j==3) ? shaftOuterRadius : threadRadius
+          const r = (j==0 || j==3) ? shaftOuterRadius : flightRadius
           vertexArray[j].x = P.x + r * (cos * B.x + sin * N.x)
           vertexArray[j].y = P.y + r * (cos * B.y + sin * N.y)
           vertexArray[j].z = P.z + r * (cos * B.z + sin * N.z)
