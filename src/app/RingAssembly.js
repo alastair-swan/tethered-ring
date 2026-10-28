@@ -5,8 +5,11 @@ import { tetheredRingSystem } from '../ring/tetheredRingSystem.js'
 import { TetherGeometry } from '../ring/tethers.js'
 import tetherVertexShader from '../shaders/tether.vert.glsl?raw'
 import tetherFragmentShader from '../shaders/tether.frag.glsl?raw'
+import { PixelLOD } from '../scene/PixelLOD.js'
 
 const UNIVERSE = { gravitationalConstant: 6.67408e-11 }
+// Distant tether forks are merged once their branches would be less than this far apart on screen.
+const TETHER_MERGE_PIXELS = 0.1
 
 // Owns the tethered ring structure itself: one tetheredRingSystem per ring (presets can request
 // several), their tethers, and the diagnostic markers (planet axis, equator, ring curve, force
@@ -84,16 +87,16 @@ export class RingAssembly {
         const crv = system.crv
         const geometry = new TetherGeometry(this.planetSpec, crv, this.ctv, d, this.specs, this.fastTetherRender && !genKMLFile, genKMLFile, kmlFile, genSpecs, this.planetCoordSys, refCoordSys)
         this.tetherGeometries.push(geometry)
-        const template = new THREE.LineSegments(geometry, this.tetherMaterial)
-        template.name = 'tether'
-        template.renderOrder = 1 // after the planet, so the ring is visible through it
         if (this.fastTetherRender && !genKMLFile) {
-          // One tether geometry, instanced around the ring by rotation about the ring axis.
+          // One tether geometry, instanced around the ring by rotation about the ring axis. Each copy
+          // picks how many of its last forks to merge from how far apart those branches are on screen.
+          const levelGeometries = [geometry, ...geometry.mergedForkGeometries]
+          for (const g of levelGeometries) g.userData.shared = true
           const n = d.numTethers.value
           const k = 2 * Math.PI * 2 / n
           for (let i = 0; i < n / 2; i++) {
             const theta = i * k
-            const tether = template.clone()
+            const tether = this.createTetherLOD(levelGeometries, geometry.forkFanWidths)
             tether.position.setFromSphericalCoords(this.planetRadius + crv.currentMainRingAltitude, -(Math.PI / 2 - crv.currentEquivalentLatitude), theta)
             tether.rotation.y = theta
             list.push(tether)
@@ -116,6 +119,24 @@ export class RingAssembly {
     }
   }
 
+  // Level v is the full geometry (v = 0) or a merged-fork variant (see TetherGeometry). It is used
+  // while the next variant's merged fan (forkFanWidths[v+1]) would be wider than TETHER_MERGE_PIXELS.
+  // PixelLOD with a 1 m size measures pixels per metre at the tether's ring end, where the forks are.
+  createTetherLOD(levelGeometries, forkFanWidths) {
+    const lod = new PixelLOD(1)
+    lod.name = 'tether'
+    levelGeometries.forEach((g, level) => {
+      const nextFan = forkFanWidths[level + 1]
+      lod.addLevel(nextFan ? TETHER_MERGE_PIXELS / nextFan : 0, () => {
+        const line = new THREE.LineSegments(g, this.tetherMaterial)
+        line.name = 'tether'
+        line.renderOrder = 1 // after the planet, so the ring is visible through it
+        return line
+      })
+    })
+    return lod
+  }
+
   disposeTethers() {
     for (const list of this.tethers) {
       for (const tether of list) tether.parent?.remove(tether)
@@ -124,6 +145,7 @@ export class RingAssembly {
     for (const geometry of this.tetherGeometries ?? []) {
       geometry.dispose()
       for (const chunk of geometry.localChunks ?? []) chunk.geometry.dispose()
+      for (const merged of geometry.mergedForkGeometries ?? []) merged.dispose()
     }
     this.tethers = []
     this.tetherGeometries = []

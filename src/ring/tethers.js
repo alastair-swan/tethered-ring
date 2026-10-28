@@ -8,6 +8,32 @@ import {
 import * as tram from '../utils/tram.js'
 import * as kmlutils from '../export/kmlutils.js'
 
+// Indexed line segments from strips of points ({strips, thicknesses, strands}: per strip, its points,
+// per-point thicknesses and its strand count).
+function stripsToGeometry({strips, thicknesses, strands}) {
+  const positions = []
+  const pointThicknesses = []
+  const pointStrands = []
+  const indices = []
+  let n = 0
+  strips.forEach((strip, k) => {
+    strip.forEach((point, i) => {
+      positions.push(point.x, point.y, point.z)
+      pointThicknesses.push(thicknesses[k][i])
+      pointStrands.push(strands[k])
+      if (i > 0) indices.push(n - 1, n)
+      n++
+    })
+  })
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3))
+  geometry.setAttribute('thickness', new BufferAttribute(new Float32Array(pointThicknesses), 1))
+  geometry.setAttribute('strands', new BufferAttribute(new Float32Array(pointStrands), 1))
+  geometry.setIndex(indices)
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
 class TetherGeometry extends BufferGeometry {
 
 	constructor(planetSpec, crv, ctv, dParamWithUnits, specs, fastTetherRender, genKMLFile, kmlFile, genSpecs, planetCoordSys, tetheredRingRefCoordSys) {
@@ -212,6 +238,7 @@ class TetherGeometry extends BufferGeometry {
         this.stripIndex = -1     // '-1' indicates that a strip has not been started for this branch yet
         this.crossSectionalAreaDivider = crossSectionalAreaFraction
         this.cosineFactor = cosineFactor
+        this.strands = 1         // Number of full-detail strands this branch stands for (>1 when forks are merged)
       }
     }
 
@@ -224,6 +251,8 @@ class TetherGeometry extends BufferGeometry {
     const tetherFiberDensity = dParamWithUnits['tetherFiberDensity'].value
     let tetherBranchesLength = [1]  // Using a one element array because we want the function to return a value
     let tetherVolume = [1]
+    const tetherStripStrands = []
+    const fullDetailStrips = {strips: tetherStrips, thicknesses: tetherStripThicknesses, areas: tetherStripCrossSectionalAreas, strands: tetherStripStrands}
 
     const stripGroupStarts = []   // Non-fast mode: first strip index of each tether (for precision-safe chunks)
     if (fastTetherRender) {
@@ -237,7 +266,7 @@ class TetherGeometry extends BufferGeometry {
         const catenaryPoints = currentCatenaryTypes[jModNumTypes]
         const selectedPointB_s = pointB_s[jModNumTypes]
         const θ = j / dParamWithUnits['numTethers'].value * 2.0 * Math.PI
-        makeTetherStrips(θ, referencePoint, catenaryPoints, selectedPointB_s, numTetherPoints, numMainRings, mainRingSpacing, whenToForkVertically, numForkLevels, numTethers, tetherSpanOverlapFactor, tetherFiberDensity, genSpecs, specs, tetherBranchesLength, tetherVolume)
+        makeTetherStrips(θ, referencePoint, catenaryPoints, selectedPointB_s, numTetherPoints, numMainRings, mainRingSpacing, whenToForkVertically, numForkLevels, numTethers, tetherSpanOverlapFactor, tetherFiberDensity, genSpecs, specs, tetherBranchesLength, tetherVolume, fullDetailStrips)
         if (genSpecs) {
           V[j] = tetherVolume[0]
           M[j] = tetherVolume[0] * tetherFiberDensity
@@ -257,7 +286,7 @@ class TetherGeometry extends BufferGeometry {
         const θ = j / dParamWithUnits['numTethers'].value * 2.0 * Math.PI
         const referencePoint = new Vector3(0, 0, 0)
         stripGroupStarts.push({firstStrip: tetherStrips.length, θ})
-        makeTetherStrips(θ, referencePoint, catenaryPoints, selectedPointB_s, numTetherPoints, numMainRings, mainRingSpacing, whenToForkVertically, numForkLevels, numTethers, tetherSpanOverlapFactor, tetherFiberDensity, genSpecs, specs, tetherBranchesLength, tetherVolume)
+        makeTetherStrips(θ, referencePoint, catenaryPoints, selectedPointB_s, numTetherPoints, numMainRings, mainRingSpacing, whenToForkVertically, numForkLevels, numTethers, tetherSpanOverlapFactor, tetherFiberDensity, genSpecs, specs, tetherBranchesLength, tetherVolume, fullDetailStrips)
         if (genSpecs && (j < tetherTypes.length)) {
           V[j] = tetherVolume[0]
           M[j] = tetherVolume[0] * tetherFiberDensity
@@ -269,7 +298,14 @@ class TetherGeometry extends BufferGeometry {
       }
     }
 
-    function makeTetherStrips(θ, referencePoint, catenaryPoints, pointB_s, numTetherPoints, numMainRings, mainRingSpacing, whenToForkVertically, numForkLevels, numTethers, tetherSpanOverlapFactor, tetherFiberDensity, genSpecs, specs, tetherBranchesLength, tetherVolume) {
+    // out: {strips, thicknesses, areas, strands} arrays the strips are appended to.
+    // mergeForks: the last mergeForks fork levels (counting back from the ring) are not split; the
+    // branch continues along the average path of the branches it replaces, and records how many
+    // strands it stands for. Used for distant views, where those branches are less than a pixel apart.
+    // mergeVertical: the vertical fork to the numMainRings rings only forks sideways, heading for the
+    // middle of the rings.
+    function makeTetherStrips(θ, referencePoint, catenaryPoints, pointB_s, numTetherPoints, numMainRings, mainRingSpacing, whenToForkVertically, numForkLevels, numTethers, tetherSpanOverlapFactor, tetherFiberDensity, genSpecs, specs, tetherBranchesLength, tetherVolume, out, mergeForks = 0, mergeVertical = false) {
+      const {strips: tetherStrips, thicknesses: tetherStripThicknesses, areas: tetherStripCrossSectionalAreas, strands: tetherStripStrands} = out
       const tetherSpan = 2 * Math.PI / numTethers * tetherSpanOverlapFactor
 
       // Spherical coordinates (r, ω, θ) are defined using three.js convention, where ω is the polar angle, θ is the equitorial angle 
@@ -320,11 +356,24 @@ class TetherGeometry extends BufferGeometry {
             crossSectionalAreaFraction *= 0.5/numMainRings
           }
           branches.forEach((branch, index) => {
-            if (logOfDistanceFromTether!=whenToForkVertically) {
+            if (logOfDistanceFromTether<=mergeForks) {
+              // Merged fork: one branch heading for the centre of the branches it replaces (the
+              // children's targets are symmetric about the parent's). It starts a new strip because
+              // its strand count differs from the parent's.
+              const merged = new Branch(i, branch.dr_0, branch.dω_0, branch.dθ_0, numTetherPoints, branch.target_dr, branch.target_dω, branch.target_dθ, crossSectionalAreaFraction, 1.0)
+              merged.strands = branch.strands * ((logOfDistanceFromTether!=whenToForkVertically) ? 2 : 2*numMainRings)
+              branches.push(merged)
+            }
+            else if (logOfDistanceFromTether!=whenToForkVertically || mergeVertical) {
               //const checkCrossSectionalAreaFraction =  2**(-logNumStays)
               // Create two new branches (left and right), then delete the original
-              branches.push(new Branch(i, branch.dr_0, branch.dω_0, branch.dθ_0, numTetherPoints, branch.target_dr, branch.target_dω, branch.target_dθ + target_dθ_Alteration, crossSectionalAreaFraction, 1.0))
-              branches.push(new Branch(i, branch.dr_0, branch.dω_0, branch.dθ_0, numTetherPoints, branch.target_dr, branch.target_dω, branch.target_dθ - target_dθ_Alteration, crossSectionalAreaFraction, 1.0))
+              // (With mergeVertical, at the vertical fork each of these stands for numMainRings strands.)
+              const strands = branch.strands * ((logOfDistanceFromTether==whenToForkVertically) ? numMainRings : 1)
+              for (const sign of [1, -1]) {
+                const child = new Branch(i, branch.dr_0, branch.dω_0, branch.dθ_0, numTetherPoints, branch.target_dr, branch.target_dω, branch.target_dθ + sign*target_dθ_Alteration, crossSectionalAreaFraction, 1.0)
+                child.strands = strands
+                branches.push(child)
+              }
             }
             else {
               // For the branching where we also fork vertically, create numMainRings up/down branches to connect to the rings
@@ -377,6 +426,7 @@ class TetherGeometry extends BufferGeometry {
               branch.stripIndex = tetherStrips.push( [] ) - 1
               tetherStripCrossSectionalAreas.push( [] )
               tetherStripThicknesses.push( [] )
+              tetherStripStrands.push(branch.strands)
               // Push the branch's first point onto the tether stirps array 
               const absolutePoint = new Vector3().setFromSphericalCoords(branch_r0, branch_ω0, branch_θ0)
               tetherStrips[branch.stripIndex].push( absolutePoint.sub(referencePoint) )
@@ -417,15 +467,49 @@ class TetherGeometry extends BufferGeometry {
       }
     }
 
+    // Lower-detail variants for distant views, in order of increasing simplification. First (when
+    // there is a vertical fork) the fan to the individual main rings is merged, then the last 1, 2, ...
+    // fork levels as well. forkFanWidths[v] is the width (m) of the fan of branches that variant v
+    // merges away (forkFanWidths[0] = 0 is the full geometry), so a variant can be used once that
+    // width is well under a pixel. Each merged strand carries a 'strands' count so the shader can give
+    // it the combined opacity of the strands it replaces (which, that far away, would have been drawn
+    // over the same pixels anyway).
+    this.mergedForkGeometries = []
+    this.forkFanWidths = [0]
+    if (fastTetherRender && !genKMLFile) {
+      const referencePoint = new Vector3().setFromSphericalCoords(radiusOfPlanet + crv.currentMainRingAltitude, -(Math.PI/2 - crv.currentEquivalentLatitude), 0)
+      const tetherSpan = 2 * Math.PI / numTethers * tetherSpanOverlapFactor
+      const hasVerticalFork = numMainRings > 1 && whenToForkVertically >= 1 && whenToForkVertically <= numForkLevels
+      const verticalFan = hasVerticalFork ? (numMainRings - 1) * mainRingSpacing : 0
+      const addVariant = (fanWidth, mergeForks) => {
+        this.forkFanWidths.push(fanWidth)
+        const out = {strips: [], thicknesses: [], areas: [], strands: []}
+        tetherTypes.forEach((tetherType, j) => {
+          const jModNumTypes = j % currentCatenaryTypes.length
+          const θ = j / numTethers * 2.0 * Math.PI
+          makeTetherStrips(θ, referencePoint, currentCatenaryTypes[jModNumTypes], pointB_s[jModNumTypes], numTetherPoints, numMainRings, mainRingSpacing, whenToForkVertically, numForkLevels, numTethers, tetherSpanOverlapFactor, tetherFiberDensity, false, specs, [0], [0], out, mergeForks, hasVerticalFork)
+        })
+        this.mergedForkGeometries.push(stripsToGeometry(out))
+      }
+      if (hasVerticalFork) addVariant(verticalFan, 0)
+      let lateralFan = 0
+      for (let k = 1; k <= numForkLevels; k++) {
+        lateralFan += 2 * crv.mainRingRadius * tetherSpan / 2**(numForkLevels + 2 - k)
+        addVariant(Math.hypot(lateralFan, verticalFan), k)
+      }
+    }
+
     // Convert all of the tetherStrips into indexed lines
     let numIndices = 0
       
+    const tetherPointStrands = []
     tetherStrips.forEach((strip, stripIndex) => {
       const tetherStripThickness = tetherStripThicknesses[stripIndex]
 
       strip.forEach((point, i) => {
         tetherPoints.push(point)
         tetherThicknesses.push(tetherStripThickness[i])
+        tetherPointStrands.push(tetherStripStrands[stripIndex])
         if (i>0) {
           tetherIndices.push(numIndices-1)
           tetherIndices.push(numIndices)
@@ -449,25 +533,14 @@ class TetherGeometry extends BufferGeometry {
         const endStrip = (lastGroup + 1 < stripGroupStarts.length) ? stripGroupStarts[lastGroup + 1].firstStrip : tetherStrips.length
         const θMid = (stripGroupStarts[firstGroup].θ + stripGroupStarts[lastGroup].θ) / 2
         const origin = new Vector3().setFromSphericalCoords(radiusOfPlanet + crv.currentMainRingAltitude, -(Math.PI/2 - crv.currentEquivalentLatitude), θMid)
-        const positions = []
-        const thicknesses = []
-        const indices = []
-        let n = 0
+        const chunk = {strips: [], thicknesses: [], strands: []}
         for (let k = firstStrip; k < endStrip; k++) {
-          tetherStrips[k].forEach((point, i) => {
-            positions.push(point.x - origin.x, point.y - origin.y, point.z - origin.z)
-            thicknesses.push(tetherStripThicknesses[k][i])
-            if (i > 0) indices.push(n - 1, n)
-            n++
-          })
+          chunk.strips.push(tetherStrips[k].map(point => point.clone().sub(origin)))
+          chunk.thicknesses.push(tetherStripThicknesses[k])
+          chunk.strands.push(tetherStripStrands[k])
         }
-        if (n === 0) continue
-        const geometry = new BufferGeometry()
-        geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3))
-        geometry.setAttribute('thickness', new BufferAttribute(new Float32Array(thicknesses), 1))
-        geometry.setIndex(indices)
-        geometry.computeBoundingSphere()
-        this.localChunks.push({origin, geometry})
+        if (chunk.strips.length === 0) continue
+        this.localChunks.push({origin, geometry: stripsToGeometry(chunk)})
       }
     }
 
@@ -503,6 +576,7 @@ class TetherGeometry extends BufferGeometry {
     const numThicknessComponents = 1
     const thicknessAttribute = new BufferAttribute(new Float32Array(tetherThicknesses), numThicknessComponents)
     this.setAttribute('thickness', thicknessAttribute)
+    this.setAttribute('strands', new BufferAttribute(new Float32Array(tetherPointStrands), 1))
     this.setIndex(tetherIndices)
     // this.setAttribute( 'position', new THREE.Float32BufferAttribute( tetherPoints, 3 ) );
     // this.setAttribute( 'color', new THREE.Float32BufferAttribute( tetherColors, 3 ) );

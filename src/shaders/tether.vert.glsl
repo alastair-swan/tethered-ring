@@ -8,7 +8,10 @@ uniform float tetherDistanceFactor;
 // tracks on-screen size: zooming in or rendering at 4K keeps distant tethers visible as they should be.
 uniform float screenScale;
 attribute float thickness;
+// How many full-detail strands this line stands for (>1 where distant forks are merged).
+attribute float strands;
 varying float apparentThickness;
+varying float vStrands;
 
 void main() {
   vec4 eyeCoord = modelViewMatrix * vec4(position, 1.0);
@@ -16,5 +19,6 @@ void main() {
   #include <logdepthbuf_vertex>
   // Eye space looks down -z, so the distance to the camera is -eyeCoord.z.
   float eyeDistance = -eyeCoord.z;
+  vStrands = strands;
   apparentThickness = thickness * screenScale / (eyeDistance * tetherDistanceFactor);
 }
