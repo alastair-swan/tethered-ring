@@ -246,6 +246,8 @@ export class App {
     const r = this.ring
     this.ecv = new tram.elevatorCarVariables(this.planetSpec, this.d, r.crv)
     this.transitSystem = new transitSystem(r.refCoordSys, this.d, this.specs, false, r.crv, this.ecv, this.planetRadius, r.mainRingCurve)
+    // The tether roots reach the ground (terrain or sea floor) under each tether.
+    r.setTerrain((lat, lon) => this.planet.sampleTerrainHeight(lat, lon))
     // Elevator cables only come down where there is land nearby (on planets with seas).
     if (this.planetSpec.hasOcean) {
       this.transitSystem.setTerrain({
@@ -701,6 +703,7 @@ export class App {
     const renderer = this.renderer
     PixelLOD.beginFrame(renderer.info.render.frame)
     InstancedProxyPool.syncAll(this.camera3d, PixelLOD.viewportHeight)
+    this.ring.update()
     // Tethers and cables: pixel coverage, and haze from the air (not from under the sea).
     StructureLines.update(this.camera3d, PixelLOD.viewportHeight,
       this.planetSpec.hasOcean === true && this.planet.atmosphere.visible && !this.ocean?.cameraUnderSurface)

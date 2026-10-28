@@ -1,0 +1,170 @@
+import * as THREE from 'three'
+import { ecefToGeodetic, ellipsoidSurfaceScale } from '../physics/geodesy.js'
+
+// The roots of the tethers: each tether's trunk below its first fork, which is the same for every copy
+// of the shared tether geometry, run down along its catenary until it meets the ground under it (the
+// terrain: mountains, or the sea floor). A tether under tension cannot hang below the lowest point of
+// its catenary, so where the ground is deeper than that the root ends there (`unreachable`).
+//
+// The terrain streams in after start-up, so each frame CHECKS_PER_FRAME roots re-find their ground
+// (round robin); until a tile covering the ground has loaded, the ground is taken to be at sea level.
+const VERTICES_PER_ROOT = 48
+const CHECKS_PER_FRAME = 24
+const COPIES_PER_CHUNK = 64 // vertices are relative to a nearby origin (precision)
+const HIGHEST_GROUND = 9000 // m
+const MIN_STEP_DROP = 30 // m: the smallest drop in height between ground samples
+const yAxis = new THREE.Vector3(0, 1, 0)
+const _p = new THREE.Vector3()
+
+export class TetherRoots {
+  // profiles: TetherGeometry.rootProfiles (per tether type; null entries have no root).
+  // copies: [{theta, position}], how each copy of the shared tether geometry is placed in the ring
+  // frame (rotated by theta about the ring axis, then moved to position).
+  constructor({ profiles, copies, refCoordSys, ringToPlanetQuaternion, ellipsoid, material }) {
+    this.profiles = profiles
+    this.copies = copies
+    this.quaternion = ringToPlanetQuaternion
+    this.ellipsoid = ellipsoid
+    this.sampleHeight = null
+    this.roots = []    // {copy, type, chunk, slot}
+    this.chunks = []
+    this.meshes = []
+    const types = profiles.map((profile, type) => profile ? type : -1).filter(type => type >= 0)
+    if (types.length === 0) return
+    for (let first = 0; first < copies.length; first += COPIES_PER_CHUNK) {
+      const last = Math.min(copies.length, first + COPIES_PER_CHUNK)
+      const count = (last - first) * types.length
+      const geometry = new THREE.BufferGeometry()
+      const positions = new THREE.BufferAttribute(new Float32Array(count * VERTICES_PER_ROOT * 3), 3)
+      const diameters = new THREE.BufferAttribute(new Float32Array(count * VERTICES_PER_ROOT), 1)
+      geometry.setAttribute('position', positions)
+      geometry.setAttribute('diameter', diameters)
+      geometry.setAttribute('strands', new THREE.BufferAttribute(new Float32Array(count * VERTICES_PER_ROOT).fill(1), 1))
+      const indices = []
+      for (let r = 0; r < count; r++) {
+        for (let v = 1; v < VERTICES_PER_ROOT; v++) indices.push(r * VERTICES_PER_ROOT + v - 1, r * VERTICES_PER_ROOT + v)
+      }
+      geometry.setIndex(indices)
+      const chunk = { geometry, positions, diameters, origin: copies[first].position.clone() }
+      this.chunks.push(chunk)
+      let slot = 0
+      for (let copy = first; copy < last; copy++) {
+        for (const type of types) this.roots.push({ copy, type, chunk, slot: slot++, end: -1 })
+      }
+      const mesh = new THREE.LineSegments(geometry, material)
+      mesh.name = 'tetherRoots'
+      mesh.renderOrder = 1
+      mesh.position.copy(chunk.origin)
+      refCoordSys.add(mesh)
+      this.meshes.push(mesh)
+    }
+    this.unreachable = new Uint8Array(this.roots.length)
+    // Bounds that hold for any ground: the roots down to their catenaries' lowest points.
+    for (let i = 0; i < this.roots.length; i++) this.write(i, this.profiles[this.roots[i].type].points.length - 1)
+    for (const chunk of this.chunks) chunk.geometry.computeBoundingSphere()
+    for (let i = 0; i < this.roots.length; i++) this.check(i)
+    this.next = 0
+  }
+
+  // sampleHeight(latDeg, lonDeg) -> {heightMeters} | null (the rendered terrain), or null.
+  setTerrain(sampleHeight) {
+    this.sampleHeight = sampleHeight
+  }
+
+  get unreachableCount() {
+    return this.unreachable?.reduce((sum, v) => sum + v, 0) ?? 0
+  }
+
+  // Once per frame: a few roots re-find their ground.
+  update() {
+    const n = this.roots.length
+    for (let k = 0; k < Math.min(CHECKS_PER_FRAME, n); k++) {
+      this.check(this.next)
+      this.next = (this.next + 1) % n
+    }
+  }
+
+  // Point `index` (fractional) of a root's profile, in the ring frame, into `target`.
+  profilePoint(root, index, target) {
+    const points = this.profiles[root.type].points
+    const k = Math.min(points.length - 2, Math.floor(index))
+    target.lerpVectors(points[k], points[k + 1], index - k)
+    const copy = this.copies[root.copy]
+    return target.applyAxisAngle(yAxis, copy.theta).add(copy.position)
+  }
+
+  // Height above the ground (m) of point `index` of a root's profile.
+  clearance(root, index) {
+    const p = this.profilePoint(root, index, _p).applyQuaternion(this.quaternion)
+    const r = p.length()
+    const height = r - r * ellipsoidSurfaceScale(p.x, p.y, p.z, this.ellipsoid)
+    if (height > HIGHEST_GROUND || !this.sampleHeight) return height
+    const g = ecefToGeodetic(p.x, p.y, p.z, this.ellipsoid)
+    return height - (this.sampleHeight(g.lat, g.lon)?.heightMeters ?? 0)
+  }
+
+  // Finds where root i meets the ground and redraws it if that has moved.
+  check(i) {
+    const root = this.roots[i]
+    const { heights } = this.profiles[root.type]
+    const last = heights.length - 1
+    let gap = this.clearance(root, 0)
+    let end = last
+    this.unreachable[i] = 0
+    if (gap > 0) {
+      // Step down the profile, by half the remaining clearance (at least MIN_STEP_DROP) at a time.
+      let k = 0
+      for (;;) {
+        const drop = Math.max(MIN_STEP_DROP, gap / 2)
+        let next = k + 1
+        while (next < last && heights[k] - heights[next] < drop) next++
+        const nextGap = this.clearance(root, next)
+        if (nextGap <= 0) {
+          // The ground is between k and next: bisect.
+          let lo = k, hi = next
+          for (let b = 0; b < 8; b++) {
+            const mid = (lo + hi) / 2
+            if (this.clearance(root, mid) > 0) lo = mid
+            else hi = mid
+          }
+          end = hi
+          break
+        }
+        if (next >= last) {
+          this.unreachable[i] = 1
+          break
+        }
+        k = next
+        gap = nextGap
+      }
+    }
+    else end = 0
+    if (Math.abs(end - root.end) > 0.01) this.write(i, end)
+  }
+
+  // Draws root i from its fork down to profile point `end`.
+  write(i, end) {
+    const root = this.roots[i]
+    root.end = end
+    const { areas } = this.profiles[root.type]
+    const { positions, diameters, origin } = root.chunk
+    for (let v = 0; v < VERTICES_PER_ROOT; v++) {
+      const index = end * v / (VERTICES_PER_ROOT - 1)
+      this.profilePoint(root, index, _p).sub(origin)
+      const vertex = root.slot * VERTICES_PER_ROOT + v
+      positions.setXYZ(vertex, _p.x, _p.y, _p.z)
+      const k = Math.min(areas.length - 2, Math.floor(index))
+      const area = areas[k] + (areas[k + 1] - areas[k]) * (index - k)
+      diameters.setX(vertex, 2 * Math.sqrt(area / Math.PI))
+    }
+    positions.needsUpdate = true
+    diameters.needsUpdate = true
+  }
+
+  dispose() {
+    for (const mesh of this.meshes) mesh.parent?.remove(mesh)
+    for (const chunk of this.chunks) chunk.geometry.dispose()
+    this.meshes = []
+    this.chunks = []
+  }
+}

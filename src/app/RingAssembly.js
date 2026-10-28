@@ -4,17 +4,13 @@ import * as markers from '../ring/markers.js'
 import { tetheredRingSystem } from '../ring/tetheredRingSystem.js'
 import { TetherGeometry } from '../ring/tethers.js'
 import { groundDepthBelowSphere } from '../ring/ringGeometry.js'
+import { TetherRoots } from '../ring/TetherRoots.js'
 import { StructureLines } from '../scene/structureLines.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 
 const UNIVERSE = { gravitationalConstant: 6.67408e-11 }
 // Distant tether forks are merged once their branches would be less than this far apart on screen.
 const TETHER_MERGE_PIXELS = 0.1
-// The ring keeps a constant height above sea level (see mainRingCurve), so each tether is lowered
-// with it; where the ground at its anchors is deeper or shallower than below its top, it is designed
-// for that difference, rounded up to this step (so it always reaches the ground) so that nearby
-// tethers share geometry.
-const TETHER_DEPTH_STEP = 50 // m
 
 // Owns the tethered ring structure itself: one tetheredRingSystem per ring (presets can request
 // several), their tethers, and the diagnostic markers (planet axis, equator, ring curve, force
@@ -74,40 +70,42 @@ export class RingAssembly {
   constructTethers({ genSpecs = false, genKMLFile = false, kmlFile = '' } = {}) {
     const d = this.store.derived
     this.tetherGeometries = []
+    this.tetherRoots = []
     for (const system of this.systems) {
       const list = []
       if (d.showTethers.value || genSpecs) {
         const refCoordSys = system.getMesh()
         const crv = system.crv
-        const geometry = new TetherGeometry(this.planetSpec, crv, this.ctv, d, this.specs, this.fastTetherRender && !genKMLFile, genKMLFile, kmlFile, genSpecs, this.planetCoordSys, refCoordSys)
+        const fast = this.fastTetherRender && !genKMLFile
+        const geometry = new TetherGeometry(this.planetSpec, crv, this.ctv, d, this.specs, fast, genKMLFile, kmlFile, genSpecs, this.planetCoordSys, refCoordSys, { separateRoots: fast })
         this.tetherGeometries.push(geometry)
         if (this.fastTetherRender && !genKMLFile) {
-          // One tether geometry per anchor depth (see TETHER_DEPTH_STEP), instanced around the ring by
-          // rotation about the ring axis and lowered with it. Each copy picks how many of its last forks
-          // to merge from how far apart those branches are on screen.
+          // One tether geometry (from the first forks up), instanced around the ring by rotation about
+          // the ring axis and lowered with the ring (see mainRingCurve), so that the first forks are at
+          // a fixed height above sea level. Each copy picks how many of its last forks to merge from how
+          // far apart those branches are on screen. The roots below the first forks reach the ground
+          // under each copy (TetherRoots).
           const n = d.numTethers.value
           const k = 2 * Math.PI * 2 / n
-          const { topDepths, anchorDepths } = this.tetherDepths(geometry, crv, system.ringToPlanetQuaternion, n / 2, k)
-          const byDepth = new Map()
-          const levelsFor = (step) => {
-            if (!byDepth.has(step)) {
-              const g = step === 0 ? geometry : new TetherGeometry(this.planetSpec, crv, new tram.commonTetherVariables(), d, {}, true, false, '', false, this.planetCoordSys, refCoordSys, { anchorDepth: step * TETHER_DEPTH_STEP })
-              if (step !== 0) this.tetherGeometries.push(g)
-              const levels = [g, ...g.mergedForkGeometries]
-              for (const level of levels) level.userData.shared = true
-              byDepth.set(step, { levels, fanWidths: g.forkFanWidths })
-            }
-            return byDepth.get(step)
-          }
+          const levels = [geometry, ...geometry.mergedForkGeometries]
+          for (const level of levels) level.userData.shared = true
+          const reference = new THREE.Vector3().setFromSphericalCoords(this.planetRadius + crv.currentMainRingAltitude, -(Math.PI / 2 - crv.currentEquivalentLatitude), 0)
+          const copies = []
           for (let i = 0; i < n / 2; i++) {
             const theta = i * k
-            const { levels, fanWidths } = levelsFor(Math.ceil(anchorDepths[i] / TETHER_DEPTH_STEP))
-            const tether = this.createTetherLOD(levels, fanWidths)
-            tether.position.setFromSphericalCoords(this.planetRadius + crv.currentMainRingAltitude - topDepths[i], -(Math.PI / 2 - crv.currentEquivalentLatitude), theta)
+            const top = reference.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), theta)
+            const depth = groundDepthBelowSphere(top, system.ringToPlanetQuaternion, this.planetSpec.ellipsoid)
+            const tether = this.createTetherLOD(levels, geometry.forkFanWidths)
+            tether.position.copy(top).multiplyScalar((top.length() - depth) / top.length())
             tether.rotation.y = theta
+            copies.push({ theta, position: tether.position.clone() })
             list.push(tether)
             refCoordSys.add(tether)
           }
+          const roots = new TetherRoots({ profiles: geometry.rootProfiles, copies, refCoordSys, ringToPlanetQuaternion: system.ringToPlanetQuaternion, ellipsoid: this.planetSpec.ellipsoid, material: this.tetherMaterial })
+          if (this.terrainSampler) roots.setTerrain(this.terrainSampler)
+          this.tetherRoots.push(roots)
+          list.push(...roots.meshes)
         }
         else {
           // Exact (per-tether) path: geometry comes in chunks, each relative to its own origin.
@@ -143,32 +141,16 @@ export class RingAssembly {
     return lod
   }
 
-  // For each tether copy: topDepths, the depth of the ground below the equatorial-radius sphere under
-  // its top (the copy is lowered by this, as the ring is), and anchorDepths, how much deeper still the
-  // ground is at its anchors (the deeper of its two; negative where it is shallower). The anchors are
-  // those of the sphere design (`geometry`, whose ground points are at r = a); those of a deeper
-  // design are a little further out, but the ground changes slowly.
-  tetherDepths(geometry, crv, ringToPlanetQuaternion, count, step) {
-    const position = geometry.getAttribute('position')
-    const reference = new THREE.Vector3().setFromSphericalCoords(this.planetRadius + crv.currentMainRingAltitude, -(Math.PI / 2 - crv.currentEquivalentLatitude), 0)
-    const anchors = []
-    const p = new THREE.Vector3()
-    for (let i = 0; i < position.count; i++) {
-      p.fromBufferAttribute(position, i).add(reference)
-      if (p.length() < this.planetRadius + 1) anchors.push(p.clone())
-    }
-    const yAxis = new THREE.Vector3(0, 1, 0)
-    const ellipsoid = this.planetSpec.ellipsoid
-    const topDepths = new Float64Array(count)
-    const anchorDepths = new Float64Array(count).fill(-Infinity)
-    for (let i = 0; i < count; i++) {
-      topDepths[i] = groundDepthBelowSphere(p.copy(reference).applyAxisAngle(yAxis, i * step), ringToPlanetQuaternion, ellipsoid)
-      for (const anchor of anchors) {
-        const depth = groundDepthBelowSphere(p.copy(anchor).applyAxisAngle(yAxis, i * step), ringToPlanetQuaternion, ellipsoid)
-        anchorDepths[i] = Math.max(anchorDepths[i], depth - topDepths[i])
-      }
-    }
-    return { topDepths, anchorDepths }
+  // terrain: sampleHeight(latDeg, lonDeg) -> {heightMeters} | null, so the tether roots reach the
+  // ground (see TetherRoots).
+  setTerrain(sampleHeight) {
+    this.terrainSampler = sampleHeight
+    for (const roots of this.tetherRoots) roots.setTerrain(sampleHeight)
+  }
+
+  // Once per frame.
+  update() {
+    for (const roots of this.tetherRoots) roots.update()
   }
 
   disposeTethers() {
@@ -181,8 +163,10 @@ export class RingAssembly {
       for (const chunk of geometry.localChunks ?? []) chunk.geometry.dispose()
       for (const merged of geometry.mergedForkGeometries ?? []) merged.dispose()
     }
+    for (const roots of this.tetherRoots) roots.dispose()
     this.tethers = []
     this.tetherGeometries = []
+    this.tetherRoots = []
   }
 
   // Rebuilds rings and tethers from the current parameters. Returns KML text when requested.

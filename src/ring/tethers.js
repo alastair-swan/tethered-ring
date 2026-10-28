@@ -8,6 +8,16 @@ import {
 import * as tram from '../utils/tram.js'
 import * as kmlutils from '../export/kmlutils.js'
 
+// Roots (TetherGeometry's rootProfiles) are sampled at most this far apart along the catenary.
+const ROOT_PROFILE_STEP = 100 // m
+
+// Removes the strips at `indices` from {strips, thicknesses, areas, strands}.
+function removeStrips(out, indices) {
+  for (const k of [...indices].sort((a, b) => b - a)) {
+    for (const key of ['strips', 'thicknesses', 'areas', 'strands']) out[key].splice(k, 1)
+  }
+}
+
 // Indexed line segments from strips of points ({strips, thicknesses, strands}: per strip, its points,
 // per-point diameters (m) and its strand count).
 function stripsToGeometry({strips, thicknesses, strands}) {
@@ -36,10 +46,10 @@ function stripsToGeometry({strips, thicknesses, strands}) {
 
 class TetherGeometry extends BufferGeometry {
 
-	// anchorDepth (m): how far below the equatorial-radius sphere the ground is where the tethers are
-	// anchored. The ring is modelled on that sphere, but the ground is the ellipsoid (up to 21 km lower
-	// off the equator), so the tethers are designed for the height they actually span.
-	constructor(planetSpec, crv, ctv, dParamWithUnits, specs, fastTetherRender, genKMLFile, kmlFile, genSpecs, planetCoordSys, tetheredRingRefCoordSys, {anchorDepth = 0} = {}) {
+	// separateRoots (fast mode): leave each tether's root (the trunk below its first fork) out of the
+	// geometry, and describe it in rootProfiles instead, so that each copy's root can be run down to the
+	// ground under it (see src/ring/TetherRoots.js).
+	constructor(planetSpec, crv, ctv, dParamWithUnits, specs, fastTetherRender, genKMLFile, kmlFile, genSpecs, planetCoordSys, tetheredRingRefCoordSys, {separateRoots = false} = {}) {
 		super();
 
     const tetherPoints = []
@@ -52,7 +62,6 @@ class TetherGeometry extends BufferGeometry {
     const currentCatenaryTypes = [[], []]       // Shape of the catenery for the portion of the tethers that are off the ground when the ring is less than fully elevated   
     const verbose = false
     const radiusOfPlanet = planetSpec.ellipsoid.a
-    const groundRadius = radiusOfPlanet - anchorDepth
 
     // Tethered Ring Math
     // Inputs:
@@ -94,7 +103,7 @@ class TetherGeometry extends BufferGeometry {
     // Initially we will assume that PointB is at x=0 on the catenary. This is done just so that we can calculate a temporary "PointP.x", 
     // and then set PointB.x as a percentage of this temporarty PointP.x. 
     const tempPointP = new tram.cateneryVector()
-    tempPointP.y = dParamWithUnits['ringFinalAltitude'].value + anchorDepth
+    tempPointP.y = dParamWithUnits['ringFinalAltitude'].value
     tempPointP.x = c * Math.acos(Math.exp(-tempPointP.y/c))      // Eq 11
     tempPointP.s = c * Math.acosh(Math.exp(tempPointP.y/c))      // Eq 13b
     
@@ -124,7 +133,7 @@ class TetherGeometry extends BufferGeometry {
       pointB.θ = pointB.x / c                              // Eq 12
       pointB.y = c * Math.log(1.0/Math.cos(pointB.x/c))    // Eq 10
       pointB.s = c * Math.acosh(Math.exp(pointB.y/c))      // Eq 13b
-      pointP.y = pointB.y + dParamWithUnits['ringFinalAltitude'].value + anchorDepth
+      pointP.y = pointB.y + dParamWithUnits['ringFinalAltitude'].value
       pointP.x = c * Math.acos(Math.exp(-pointP.y/c))      // Eq 11
       pointP.s = c * Math.acosh(Math.exp(pointP.y/c))      // Eq 13b
       pointP.θ = pointP.x / c                              // Eq 12
@@ -168,11 +177,12 @@ class TetherGeometry extends BufferGeometry {
 
     const r = Math.sqrt(crv.yc**2 + crv.mainRingRadius**2)
 
-    tempPointP.y = r - groundRadius
+    tempPointP.y = r - radiusOfPlanet
     tempPointP.x = c * Math.acos(Math.exp(-tempPointP.y/c))      // Eq 11
     tempPointP.s = c * Math.acosh(Math.exp(tempPointP.y/c))      // Eq 13b
     
     const pointB_s = []
+    const catenaryAt = []   // per type: s -> CatenaryPolarVec3 (any s >= 0, also below the anchor)
     const ω_P = -(Math.PI/2 - crv.currentEquivalentLatitude)   // negative rotation angle because the angle increases in clockwise direction
     
     currentCatenaryTypes.forEach((catenaryType, j) => {
@@ -183,7 +193,7 @@ class TetherGeometry extends BufferGeometry {
       pointB.y = c * Math.log(1.0/Math.cos(pointB.x/c))    // Eq 10
       pointB.s = c * Math.acosh(Math.exp(pointB.y/c))      // Eq 13b
       pointB_s[j] = pointB.s  // We'll need to use this later
-      pointP.y = pointB.y + crv.currentMainRingAltitude + anchorDepth
+      pointP.y = pointB.y + crv.currentMainRingAltitude
       pointP.x = c * Math.acos(Math.exp(-pointP.y/c))      // Eq 11
       pointP.s = c * Math.acosh(Math.exp(pointP.y/c))      // Eq 13b
       pointP.θ = pointP.x / c                                  // Eq 12
@@ -204,20 +214,24 @@ class TetherGeometry extends BufferGeometry {
       // console.log("ctv.tensileForceAtRing", j, ctv.tensileForceAtRing[j], fT)
       // console.log(ctv.inertialForceAtRing[j])
 
-      for (let i = 0; i<=numTetherPoints-1; i++) {
-        const sFraction = i / (numTetherPoints-1)
-        const s = pointB.s + currentTetherLength[j] - finalTetherLength[j] * (1 - sFraction)
+      const fTz = fT.z
+      catenaryAt[j] = (s) => {
         // Compute a distance from the center of the planet and a angle from the ring's axis of symmetry
         const x = 2 * c * Math.atan(Math.exp(s/c)) - (c * Math.PI / 2)   // Eq 15
         const y = c * Math.log(Math.cosh(s/c))                           // Eq 16
-        const r = groundRadius + (y - pointB.y)
-        const ω_anchor = ω_P + (pointP.x-pointB.x) / groundRadius     // Left this unreduced to make it a bit easier to understand the logic
-        const ω = ω_anchor - (x-pointB.x) / groundRadius
+        const r = radiusOfPlanet + (y - pointB.y)
+        const ω_anchor = ω_P + (pointP.x-pointB.x) / radiusOfPlanet     // Left this unreduced to make it a bit easier to understand the logic
+        const ω = ω_anchor - (x-pointB.x) / radiusOfPlanet
         const θ = x / c
-        const tensileForcePerMeterRhoComponentAtX = fT.z / Math.tan(θ + ω_P)
-        const tensileForcePerMeterAtX = Math.sqrt(fT.z**2 + tensileForcePerMeterRhoComponentAtX**2)
+        const tensileForcePerMeterRhoComponentAtX = fTz / Math.tan(θ + ω_P)
+        const tensileForcePerMeterAtX = Math.sqrt(fTz**2 + tensileForcePerMeterRhoComponentAtX**2)
         const crossSectionalArea = tensileForcePerMeterAtX * tetherSpacing / tetherStress
-        catenaryType.push(new tram.CatenaryPolarVec3(r, ω, s, crossSectionalArea))
+        return new tram.CatenaryPolarVec3(r, ω, s, crossSectionalArea)
+      }
+      for (let i = 0; i<=numTetherPoints-1; i++) {
+        const sFraction = i / (numTetherPoints-1)
+        const s = pointB.s + currentTetherLength[j] - finalTetherLength[j] * (1 - sFraction)
+        catenaryType.push(catenaryAt[j](s))
       }
     })
 
@@ -256,7 +270,7 @@ class TetherGeometry extends BufferGeometry {
     let tetherBranchesLength = [1]  // Using a one element array because we want the function to return a value
     let tetherVolume = [1]
     const tetherStripStrands = []
-    const fullDetailStrips = {strips: tetherStrips, thicknesses: tetherStripThicknesses, areas: tetherStripCrossSectionalAreas, strands: tetherStripStrands}
+    const fullDetailStrips = {strips: tetherStrips, thicknesses: tetherStripThicknesses, areas: tetherStripCrossSectionalAreas, strands: tetherStripStrands, trunks: []}
 
     const stripGroupStarts = []   // Non-fast mode: first strip index of each tether (for precision-safe chunks)
     if (fastTetherRender) {
@@ -280,6 +294,7 @@ class TetherGeometry extends BufferGeometry {
           specs['tetherMass_'+j] = {value: M[j], units: "kg"}
         }
       })
+      if (separateRoots) removeStrips(fullDetailStrips, fullDetailStrips.trunks)
     }
     else {
       for (let j = 0; j<dParamWithUnits['numTethers'].value; j++) {
@@ -327,6 +342,7 @@ class TetherGeometry extends BufferGeometry {
 
       // The first "branch" is the main trunck of the tether.
       branches.push(new Branch(0, 0.0, 0.0, 0.0, numTetherPoints, 0.0, 0.0, 0.0, 1.0, 1.0))  // This defines the trunk of the tether
+      const trunk = branches[0]
 
       const mro = (numMainRings - 1)/2
 
@@ -425,6 +441,7 @@ class TetherGeometry extends BufferGeometry {
             if (firstPointFlag) {
               // Start a new array for the strip, add it to the array of arrays, and register its index with the branch object 
               branch.stripIndex = tetherStrips.push( [] ) - 1
+              if (branch === trunk) out.trunks?.push(branch.stripIndex)
               tetherStripCrossSectionalAreas.push( [] )
               tetherStripThicknesses.push( [] )
               tetherStripStrands.push(branch.strands)
@@ -484,12 +501,13 @@ class TetherGeometry extends BufferGeometry {
       const verticalFan = hasVerticalFork ? (numMainRings - 1) * mainRingSpacing : 0
       const addVariant = (fanWidth, mergeForks) => {
         this.forkFanWidths.push(fanWidth)
-        const out = {strips: [], thicknesses: [], areas: [], strands: []}
+        const out = {strips: [], thicknesses: [], areas: [], strands: [], trunks: []}
         tetherTypes.forEach((tetherType, j) => {
           const jModNumTypes = j % currentCatenaryTypes.length
           const θ = j / numTethers * 2.0 * Math.PI
           makeTetherStrips(θ, referencePoint, currentCatenaryTypes[jModNumTypes], pointB_s[jModNumTypes], numTetherPoints, numMainRings, mainRingSpacing, whenToForkVertically, numForkLevels, numTethers, tetherSpanOverlapFactor, tetherFiberDensity, false, specs, [0], [0], out, mergeForks, hasVerticalFork)
         })
+        if (separateRoots) removeStrips(out, out.trunks)
         this.mergedForkGeometries.push(stripsToGeometry(out))
       }
       if (hasVerticalFork) addVariant(verticalFan, 0)
@@ -498,6 +516,34 @@ class TetherGeometry extends BufferGeometry {
         lateralFan += 2 * crv.mainRingRadius * tetherSpan / 2**(numForkLevels + 2 - k)
         addVariant(Math.hypot(lateralFan, verticalFan), k)
       }
+    }
+
+    // Roots (separateRoots): for each tether type, its trunk's catenary sampled from the first fork
+    // down to the catenary's lowest point (s = 0), below which a tether under tension cannot hang.
+    // points are relative to the reference point, as the geometry's are; heights are above the
+    // equatorial-radius sphere; areas are the trunk's cross-sections (m^2). null if the first fork is
+    // still on the spool (the ring is being raised).
+    this.rootProfiles = []
+    if (separateRoots && fastTetherRender) {
+      const referencePoint = new Vector3().setFromSphericalCoords(radiusOfPlanet + crv.currentMainRingAltitude, -(Math.PI/2 - crv.currentEquivalentLatitude), 0)
+      tetherTypes.forEach((tetherType, j) => {
+        const jModNumTypes = j % currentCatenaryTypes.length
+        const θ = j / numTethers * 2.0 * Math.PI
+        const forkS = currentCatenaryTypes[jModNumTypes][numTetherPoints / 2].s
+        if (!(forkS > pointB_s[jModNumTypes])) {
+          this.rootProfiles.push(null)
+          return
+        }
+        const count = Math.max(2, Math.ceil(forkS / ROOT_PROFILE_STEP) + 1)
+        const points = [], areas = [], heights = []
+        for (let k = 0; k < count; k++) {
+          const p = catenaryAt[jModNumTypes](forkS * (1 - k / (count - 1)))
+          points.push(new Vector3().setFromSphericalCoords(p.r, p.ω, θ).sub(referencePoint))
+          areas.push(p.crossSectionalArea)
+          heights.push(p.r - radiusOfPlanet)
+        }
+        this.rootProfiles.push({points, areas, heights})
+      })
     }
 
     // Convert all of the tetherStrips into indexed lines
