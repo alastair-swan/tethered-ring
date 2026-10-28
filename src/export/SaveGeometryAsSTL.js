@@ -23,9 +23,12 @@ export function define_SaveGeometryAsSTL() {
     // link.download = 'Scene.stl';
     // link.click();
 
-    var link = document.createElement('a');
-    link.href = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const url = window.URL.createObjectURL(blob);
+    link.href = url;
     link.download = filename;
     link.click();
+    // Release the blob once the download has been handed to the browser (it used to leak)
+    setTimeout(() => window.URL.revokeObjectURL(url), 0);
   }
 }

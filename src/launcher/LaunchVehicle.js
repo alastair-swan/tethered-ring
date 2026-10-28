@@ -11,7 +11,7 @@ const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model
 const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
 
 export class launchVehicleModel {
-  constructor(dParamWithUnits, myScene, unallocatedModelsList, perfOptimizedThreeJS, gravityAtLauncherLocation) {
+  constructor(dParamWithUnits, myScene, unallocatedModelsList, _unusedLegacyFlag, gravityAtLauncherLocation) {
     const radius = dParamWithUnits['launchVehicleRadius'].value
     const bodyLength = dParamWithUnits['launchVehicleBodyLength'].value
     const flameLength = dParamWithUnits['launchVehicleFlameLength'].value
@@ -151,7 +151,7 @@ export class launchVehicleModel {
       dParamWithUnits['launchSystemForwardScaleFactor'].value * scaleFactor,
       dParamWithUnits['launchSystemUpwardScaleFactor'].value * scaleFactor)
 
-    decorateAndSave(launchVehicleMesh, unallocatedModelsList, objName, scaleFactorVector, launchVehicleNumModels, perfOptimizedThreeJS)
+    decorateAndSave(launchVehicleMesh, unallocatedModelsList, objName, scaleFactorVector, launchVehicleNumModels, _unusedLegacyFlag)
     console.log("Created " + launchVehicleNumModels + " launch vehicle models")
 
     if (showCrew) {
@@ -207,7 +207,7 @@ export class launchVehicleModel {
       bodyMesh.add(secondSide)
     }
 
-    function prepareACallbackFunctionForFBXLoader (myScene, unallocatedModelsList, objName, scaleFactor, n, perfOptimizedThreeJS) {
+    function prepareACallbackFunctionForFBXLoader (myScene, unallocatedModelsList, objName, scaleFactor, n, _unusedLegacyFlag) {
 
       // This is the additional work we want to do later, after the loader gets around to loading our model...
       return function(object) {
@@ -244,7 +244,7 @@ export class launchVehicleModel {
     const loader = new OBJLoader();
 
     const modelScaleFactor = 0.001 // Because Alastair's launch vehicle model used mm instead of meters
-    const addLaunchVehicles = prepareACallbackFunctionForFBXLoader (myScene, unallocatedModelsList, objName, modelScaleFactor, launchVehicleNumModels, perfOptimizedThreeJS)
+    const addLaunchVehicles = prepareACallbackFunctionForFBXLoader (myScene, unallocatedModelsList, objName, modelScaleFactor, launchVehicleNumModels, _unusedLegacyFlag)
         
     //loader.loadAsync('models/LaunchVehicle.obj').then(addLaunchVehicles)
 
@@ -379,7 +379,7 @@ export class launchVehicleModel {
 
     }
 
-    function decorateAndSave(object, unallocatedModelsList, objName, scaleFactorVector, n, perfOptimizedThreeJS) {
+    function decorateAndSave(object, unallocatedModelsList, objName, scaleFactorVector, n, _unusedLegacyFlag) {
       
       object.scale.set(scaleFactorVector.x, scaleFactorVector.y, scaleFactorVector.z)
       object.visible = false

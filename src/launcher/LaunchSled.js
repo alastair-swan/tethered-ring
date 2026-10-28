@@ -7,7 +7,7 @@ const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model
 const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
 
 export class launchSledModel {
-  constructor(dParamWithUnits, myScene, unallocatedModelsList, perfOptimizedThreeJS, massDriverScrewTexture) {
+  constructor(dParamWithUnits, myScene, unallocatedModelsList, _unusedLegacyFlag, massDriverScrewTexture) {
     // Manually Create the Launch Vehicle
     const width = dParamWithUnits['launchSledWidth'].value
     const height = dParamWithUnits['launchSledHeight'].value
@@ -28,7 +28,7 @@ export class launchSledModel {
       dParamWithUnits['launchSystemForwardScaleFactor'].value*1.75,
       dParamWithUnits['launchSystemUpwardScaleFactor'].value)
 
-    decorateAndSave(launchSledMesh, unallocatedModelsList, objName, scaleFactorVector, launchSledNumModels, perfOptimizedThreeJS)
+    decorateAndSave(launchSledMesh, unallocatedModelsList, objName, scaleFactorVector, launchSledNumModels, _unusedLegacyFlag)
 
     // Load the Launch Sled's Mesh from a model, but then proceedurally generate the grapplers
     function prepareACallbackFunctionForFBXLoader (myScene) {
@@ -73,7 +73,7 @@ export class launchSledModel {
       function ( error ) {console.log( 'Error loading launch sled model')}
     )
 
-    function decorateAndSave(object, unallocatedModelsList, objName, scaleFactorVector, n, perfOptimizedThreeJS) {
+    function decorateAndSave(object, unallocatedModelsList, objName, scaleFactorVector, n, _unusedLegacyFlag) {
       object.scale.set(scaleFactorVector.x, scaleFactorVector.y, scaleFactorVector.z)
       object.visible = false
       object.name = objName

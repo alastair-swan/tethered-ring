@@ -9,7 +9,7 @@ const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model
 const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
 
 export class adaptiveNutModel {
-  constructor(dParamWithUnits, myScene, unallocatedModelsList, perfOptimizedThreeJS, massDriverScrewTexture) {
+  constructor(dParamWithUnits, myScene, unallocatedModelsList, _unusedLegacyFlag, massDriverScrewTexture) {
     // Manually Create the Launch Vehicle
     const width = dParamWithUnits['adaptiveNutWidth'].value
     const height = dParamWithUnits['adaptiveNutHeight'].value
@@ -40,7 +40,7 @@ export class adaptiveNutModel {
       dParamWithUnits['launchSystemForwardScaleFactor'].value,
       dParamWithUnits['launchSystemUpwardScaleFactor'].value)
 
-    decorateAndSave(adaptiveNutMesh, myScene, unallocatedModelsList, objName, scaleFactorVector, adaptiveNutNumModels, perfOptimizedThreeJS)
+    decorateAndSave(adaptiveNutMesh, myScene, unallocatedModelsList, objName, scaleFactorVector, adaptiveNutNumModels, _unusedLegacyFlag)
 
     // Load the Launch Sled's Mesh from a model, but then proceedurally generate the grapplers
     function prepareACallbackFunctionForFBXLoader (myScene) {
@@ -242,7 +242,7 @@ export class adaptiveNutModel {
       return new THREE.Mesh(sledGrapplerGeometry, sledGrapplerMaterial)
     }
 
-    function decorateAndSave(object, myScene, unallocatedModelsList, objName, scaleFactorVector, n, perfOptimizedThreeJS) {
+    function decorateAndSave(object, myScene, unallocatedModelsList, objName, scaleFactorVector, n, _unusedLegacyFlag) {
       object.scale.set(scaleFactorVector.x, scaleFactorVector.y, scaleFactorVector.z)
       object.visible = false
       object.name = objName

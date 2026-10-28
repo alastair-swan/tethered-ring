@@ -37,7 +37,7 @@ class SledGrapplerPlacementInfo {
     this.threadStarts = Math.max(1, threadStarts)
     this.revolutionsPerSecond = nonZero(revolutionsPerSecond, 1e-3)
     this.acceleration = nonZero(acceleration, 1e-3)
-    this.initialVelocity = initialVelocity
+    this.initialVelocity = Math.max(1, initialVelocity)
     this.initialDistance = initialDistance
     this.distanceToSledAft = distanceToSledAft
     this.bodyLength = bodyLength
@@ -183,6 +183,8 @@ class SledGrapplerGeometry extends BufferGeometry {
     // Guard against division by zero (threadPitch = Infinity -> NaN vertices) for 0 rev/s or 0 m/s^2.
     revolutionsPerSecond = nonZero(revolutionsPerSecond, 1e-3)
     acceleration = nonZero(acceleration, 1e-3)
+    // A zero initial velocity means a zero thread pitch at the breech (and unbounded tessellation)
+    initialVelocity = Math.max(1, initialVelocity)
 
     this.type = 'SledGrapplerGeometry';
 

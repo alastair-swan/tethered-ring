@@ -227,7 +227,18 @@ export class launcher {
 
   // Pushes the current parameter values into every virtual object class. Called on every update() so that
   // values such as the version number are never captured stale.
+  // Parameters with the trajectory's edge-case clamps applied (so screws/nuts match the trajectory).
+  effectiveParams(dParamWithUnits) {
+    if (this.effectiveForwardAcceleration === undefined) return dParamWithUnits
+    return {
+      ...dParamWithUnits,
+      launcherMassDriverForwardAcceleration: { ...dParamWithUnits['launcherMassDriverForwardAcceleration'], value: this.effectiveForwardAcceleration },
+      launcherMassDriver1InitialVelocity: { ...dParamWithUnits['launcherMassDriver1InitialVelocity'], value: this.effectiveMassDriver1InitialVelocity },
+    }
+  }
+
   configureObjectClasses(dParamWithUnits, planetSpec) {
+    dParamWithUnits = this.effectiveParams(dParamWithUnits)
     const segments = this.massDriverAccelerationScrewSegments
     const length = this.accelerationScrewLength
     this.objectClasses.forEach(objectClass => {
@@ -261,6 +272,7 @@ export class launcher {
   // (Re)builds the pooled models of recyclable classes whose model-defining parameters have changed
   // (e.g. adaptiveNutNumGrapplers). The old pool is released and disposed first.
   buildModelPools(dParamWithUnits) {
+    dParamWithUnits = this.effectiveParams(dParamWithUnits)
     const builders = new Map([
       [virtualLaunchVehicle, () => new launchVehicleModel(dParamWithUnits, this.scene, virtualLaunchVehicle.unallocatedModels, 0, this.gravityAtLauncherLocation)],
       [virtualLaunchSled, () => new launchSledModel(dParamWithUnits, this.scene, virtualLaunchSled.unallocatedModels, 0, this.massDriverScrewTexture)],

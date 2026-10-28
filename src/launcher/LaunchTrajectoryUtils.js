@@ -107,7 +107,12 @@ export function defineUpdateTrajectoryCurves () {
     const launcherMassDriverExitVelocity = Math.max(launcherMassDriver2InitialVelocity, dParamWithUnits['launcherMassDriverExitVelocity'].value)
     const launcherMassDriverAltitude = dParamWithUnits['launcherMassDriverAltitude'].value
     const launcherEvacuatedTubeExitAltitude = dParamWithUnits['launcherEvacuatedTubeExitAltitude'].value
-    const launcherMassDriverForwardAcceleration = Math.max(0.1, dParamWithUnits['launcherMassDriverForwardAcceleration'].value)
+    // A (near) zero acceleration gives a mass driver longer than the planet's circumference, with millions of
+    // screw segments (the page ran out of memory). Raise the acceleration so that mass drivers 1 + 2 are at
+    // most maxMassDriverLength long; such parameter values are outside the model's meaningful range anyway.
+    const maxMassDriverLength = 1e7 // m
+    const minimumForwardAcceleration = Math.max(0.1, (Math.max(1, dParamWithUnits['launcherMassDriverExitVelocity'].value)**2 - Math.max(1, dParamWithUnits['launcherMassDriver1InitialVelocity'].value)**2) / (2 * maxMassDriverLength))
+    const launcherMassDriverForwardAcceleration = Math.max(minimumForwardAcceleration, dParamWithUnits['launcherMassDriverForwardAcceleration'].value)
     const launchVehicleSeaLevelRocketExhaustVelocity = dParamWithUnits['launchVehicleSeaLevelRocketExhaustVelocity'].value
     const launchVehicleVacuumRocketExhaustVelocity = dParamWithUnits['launchVehicleVacuumRocketExhaustVelocity'].value
     const launchVehicleDesiredOrbitalAltitude = dParamWithUnits['launchVehicleDesiredOrbitalAltitude'].value
@@ -118,6 +123,9 @@ export function defineUpdateTrajectoryCurves () {
     const verbose = dParamWithUnits['verboseLogging'].value
 
     forwardAcceleration = launcherMassDriverForwardAcceleration
+    // Values actually used after the edge-case clamps; the screw and nut models use these too (launcher.effectiveParams)
+    this.effectiveForwardAcceleration = launcherMassDriverForwardAcceleration
+    this.effectiveMassDriver1InitialVelocity = launcherMassDriver1InitialVelocity
     // Use the ideal gas formula to calculate the density of the evacuated tube's interior gas.
     // Assume the gas is air at 20 degrees C and evacuatedTubeInteriorPressure Pa.
     const launchVehicleRadius = dParamWithUnits['launchVehicleRadius'].value

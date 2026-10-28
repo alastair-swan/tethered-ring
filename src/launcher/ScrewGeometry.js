@@ -30,6 +30,8 @@ class ScrewGeometry extends BufferGeometry {
     // Guard against division by zero (threadPitch = Infinity -> NaN vertices) for 0 rev/s or 0 m/s^2.
     revolutionsPerSecond = nonZero(revolutionsPerSecond, 1e-3)
     acceleration = nonZero(acceleration, 1e-3)
+    // A zero initial velocity means a zero thread pitch at the breech (and unbounded tessellation)
+    initialVelocity = Math.max(1, initialVelocity)
 
     this.type = 'ScrewGeometry';
 
@@ -112,7 +114,8 @@ class ScrewGeometry extends BufferGeometry {
 
     const minimumTubularSegments = Math.ceil(minLengthSegmentsPerMeter * screwLength)
     // Increase the number of segment based on the pitch of the screw
-    const tubularSegments = Math.ceil(minimumTubularSegments * Math.sqrt(rateOfChangeInRotationalDistance**2 + rateOfChangeInForwardDisplacement**2) / rateOfChangeInForwardDisplacement)
+    // Capped so that a very fine pitch cannot produce an unbounded vertex count
+    const tubularSegments = Math.min(Math.max(minimumTubularSegments, 4096), Math.ceil(minimumTubularSegments * Math.sqrt(rateOfChangeInRotationalDistance**2 + rateOfChangeInForwardDisplacement**2) / rateOfChangeInForwardDisplacement))
 
     // create buffer data
     generateBufferData();
