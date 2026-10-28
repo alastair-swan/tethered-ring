@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 
-export function elevatedEvacuatedTubeDeployment(guidParamWithUnits, guidParam, gui, nonGUIParams) {
+export function elevatedEvacuatedTubeDeployment(guidParamWithUnits, nonGUIParams) {
 
 
   // Sun's Gravitational Parameter
@@ -261,7 +261,6 @@ export function elevatedEvacuatedTubeDeployment(guidParamWithUnits, guidParam, g
   guidParamWithUnits['showMoon'].value = false
   guidParamWithUnits['showStars'].value = false
   guidParamWithUnits['showEarthAxis'].value = false
-  guidParamWithUnits['showBackgroundPatch'].value = false
   guidParamWithUnits['showEarthEquator'].value = false
   guidParamWithUnits['showMainRingCurve'].value = false
   guidParamWithUnits['showGravityForceArrows'].value = false

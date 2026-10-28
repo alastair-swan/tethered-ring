@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 
-export function grapplerEngineeringPresets(guidParamWithUnits, guidParam, gui, nonGUIParams) {
+export function grapplerEngineeringPresets(guidParamWithUnits, nonGUIParams) {
   // Uses Monna Kea launch location
   guidParamWithUnits['finalLocationRingCenterLatitude'].value = 74
   guidParamWithUnits['finalLocationRingCenterLongitude'].value = 203
@@ -14,7 +14,6 @@ export function grapplerEngineeringPresets(guidParamWithUnits, guidParam, gui, n
   guidParamWithUnits['showMoon'].value = false
   guidParamWithUnits['showStars'].value = false
   guidParamWithUnits['showEarthAxis'].value = false
-  guidParamWithUnits['showBackgroundPatch'].value = false
   guidParamWithUnits['showEarthEquator'].value = false
   guidParamWithUnits['showMainRingCurve'].value = false
   guidParamWithUnits['showGravityForceArrows'].value = false

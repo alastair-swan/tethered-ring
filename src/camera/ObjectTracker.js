@@ -1,163 +1,98 @@
+import * as THREE from 'three'
+
+// Things the camera can lock onto. The number keys 0-5 select them in this order.
+export const TRACKABLE_TYPES = ['launchVehicle', 'adaptiveNut', 'launchSled', 'transitVehicle', 'elevatorCar', 'coilCenterMarker']
+
+const SOURCES = {
+  launchVehicle: { system: 'launch', className: 'virtualLaunchVehicles', frame: 'world' },
+  adaptiveNut: { system: 'launch', className: 'virtualAdaptiveNuts', frame: 'world' },
+  launchSled: { system: 'launch', className: 'virtualLaunchSleds', frame: 'world' },
+  transitVehicle: { system: 'transit', className: 'virtualTransitVehicles', frame: 'ring' },
+  elevatorCar: { system: 'transit', className: 'virtualElevatorCars', frame: 'ring' },
+}
+
+const finiteVector = (v) => v && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z)
+
+// Finds the nearest object of a given type and reports where it is (and will be) in world space.
+// Moving objects live in the launch/transit systems' reference frames ("wedges") as virtual
+// objects with getFuturePosition(refFrame, dt) / getFutureFrame(refFrame, dt).
 export class ObjectTracker {
-
-  constructor() {
-
-    this.pressedHotkeyToTrackableObject = new Map ([
-      // The numbers below are the ASCII codes for the hotkeys associated with vatious different types of objects
-      [48, 'launchVehicle'], /*0*/
-      [49, 'adaptiveNut'], /*1*/
-      [50, 'launchSled'], /*2*/
-      [51, 'transitVehicle'], /*3*/
-      [52, 'elevatorCar'], /*4*/
-      [53, 'coilCenterMarker'] /*5*/
-    ])
-
-    // Assuming that the array for values will be created in the same order as the array for keys...
-    this.hotkeyLookupTable = Array.from(this.pressedHotkeyToTrackableObject.keys())
-    this.objectTypeLookupTable = Array.from(this.pressedHotkeyToTrackableObject.values())
-
-    this.closestTrackedObject = []
-    this.closestTrackedObject.length = this.pressedHotkeyToTrackableObject.size
-    this.closestTrackedObject.fill(null, 0, this.closestTrackedObject.length)
-
-    this.trackingPoint = null    // This is the location of the object which was under the sprite when user last pressed the 'P' key  
-    this.cameraPosition = null   // This is the location where the camera should move to when tracking the object
-    this.lastTrackingPoint = null
-    this.trackingFrame = null
-    this.lastTrackingFrame = null
-  
+  // getContext() -> { scene, launchSystem, transitSystem, ringRefCoordSys }
+  constructor(getContext) {
+    this.getContext = getContext
+    this.target = null
   }
 
-  convertHotkeyToObjectIndex(key) {
-    return this.hotkeyLookupTable.indexOf(key)
+  get type() { return this.target?.type ?? null }
+
+  clear() {
+    this.target = null
   }
 
-  convertHotkeyToObjectType(key) {
-    return this.pressedHotkeyToTrackableObject.get(key)
-  }
-
-  convertObjectTypeToIndex(objectType) {
-    return this.objectTypeLookupTable.indexOf(objectType)
-  }
-
-  findNearestObject(dParamWithUnits, scene, objectType, nearestToPosition, tetheredRingRefCoordSys, launchSystemObject, transitSystemObject, trackingPointMarkerMesh, tweeningTime) {
-
-    const objectIndex = this.convertObjectTypeToIndex(objectType)
-    let systemObject
-    let virtualObjectName
-    let isInReferenceFrame = false
-    
-    switch (objectType) {
-      case 'launchVehicle':
-        systemObject = launchSystemObject
-        virtualObjectName = 'virtualLaunchVehicles'
-        isInReferenceFrame = true
-        break
-      case 'adaptiveNut':
-        systemObject = launchSystemObject
-        virtualObjectName = 'virtualAdaptiveNuts'
-        isInReferenceFrame = true
-        break
-      case 'launchSled':
-        systemObject = launchSystemObject
-        virtualObjectName = 'virtualLaunchSleds'
-        isInReferenceFrame = true
-        break
-      case 'transitVehicle':
-        systemObject = transitSystemObject
-        virtualObjectName = 'virtualTransitVehicles'
-        isInReferenceFrame = true
-        break
-      case 'elevatorCar':
-        systemObject = transitSystemObject
-        virtualObjectName = 'virtualElevatorCars'
-        isInReferenceFrame = true
-        break
-      case 'coilCenterMarker':
-        systemObject = launchSystemObject
-        virtualObjectName = 'launchSystemObject'
-        isInReferenceFrame - false
-        break
-    }
-
-    let closestSoFar = -1
-    this.closestTrackedObject[objectIndex] = null
-    if (isInReferenceFrame) {
-      systemObject.refFrames.forEach(refFrame => {
-        refFrame.wedges.forEach(wedge => {
-          Object.entries(wedge).forEach(([objectKey, objectValue]) => {
-            if (objectKey==virtualObjectName) {
-              objectValue.forEach(trackableObject => {
-                let tmpPosition = trackableObject.getFuturePosition(refFrame, 0)
-                if ((objectType=='transitVehicle') || (objectType=='elevatorCar')) {
-                  tmpPosition = tetheredRingRefCoordSys.localToWorld(tmpPosition)
-                }
-                if ((tmpPosition.x!=="NaN") && (tmpPosition.y!=="NaN") && (tmpPosition.z!=="NaN")) {
-                  const distanceAway = nearestToPosition.distanceTo(tmpPosition)
-                  if ((closestSoFar==-1) || (distanceAway<closestSoFar)) {
-                    this.closestTrackedObject[objectIndex] = {trackableObject, refFrame}
-                    closestSoFar = distanceAway
-                  }
-                }
-              })
-            }
-          })
-        })
-      })
-    }
-    else {
-      scene.traverse(child => {
-        if (child.name==='coilCenterMarker') {
-          const tmpLocalPosition = child.position.clone()
-          const tmpPosition = tetheredRingRefCoordSys.localToWorld(tmpLocalPosition)
-          console.log(tmpLocalPosition, tmpPosition)
-          if ((tmpPosition.x!=="NaN") && (tmpPosition.y!=="NaN") && (tmpPosition.z!=="NaN")) {
-            const distanceAway = nearestToPosition.distanceTo(tmpPosition)
-            if ((closestSoFar==-1) || (distanceAway<closestSoFar)) {
-              this.closestTrackedObject[objectIndex] = child
-              closestSoFar = distanceAway
+  *candidates(type) {
+    const ctx = this.getContext()
+    const source = SOURCES[type]
+    if (source) {
+      const system = source.system === 'launch' ? ctx.launchSystem : ctx.transitSystem
+      if (typeof system?.getTrackableObjects === 'function') {
+        for (const entry of system.getTrackableObjects(type)) yield { type, ...entry, frame: source.frame }
+        return
+      }
+      for (const refFrame of system?.refFrames ?? []) {
+        for (const wedge of refFrame.wedges ?? []) {
+          for (const trackableObject of wedge[source.className] ?? []) {
+            yield {
+              type,
+              frame: source.frame,
+              refFrame,
+              getPosition: (dt) => trackableObject.getFuturePosition(refFrame, dt),
+              getFrame: typeof trackableObject.getFutureFrame === 'function' ? (dt) => trackableObject.getFutureFrame(refFrame, dt) : null,
             }
           }
         }
-      })
+      }
     }
-
-    if (this.closestTrackedObject[objectIndex]!==null) {
-      // If the object has a getFuturePosition method, then call that, else just use the object's position
-      let rawPoint
-      if (('trackableObject' in this.closestTrackedObject[objectIndex]) && 
-          ('getFuturePosition' in this.closestTrackedObject[objectIndex].trackableObject) && 
-          (typeof this.closestTrackedObject[objectIndex].trackableObject.getFuturePosition === 'function')) {
-        rawPoint = this.closestTrackedObject[objectIndex].trackableObject.getFuturePosition(this.closestTrackedObject[objectIndex].refFrame, tweeningTime/1000)
+    else if (type === 'coilCenterMarker') {
+      const markers = []
+      ctx.scene.traverse((child) => { if (child.name === 'coilCenterMarker') markers.push(child) })
+      for (const marker of markers) {
+        yield { type, frame: 'world', getPosition: () => marker.getWorldPosition(new THREE.Vector3()), getFrame: null }
       }
-      else {
-        rawPoint = this.closestTrackedObject[objectIndex].position
-      }
-      if ((objectType=='transitVehicle') || (objectType=='elevatorCar')) {
-        this.trackingPoint = tetheredRingRefCoordSys.localToWorld(rawPoint.clone())
-      }
-      else {
-        this.trackingPoint = rawPoint
-      }
-      if (objectType=='coilCenterMarker') {
-        // Find the launcher object in the scene
-        const launcherStart = tetheredRingRefCoordSys.localToWorld(launchSystemObject.feederRailEntrancePosition)
-        const direction = rawPoint.clone().sub(launcherStart).normalize()
-        this.cameraPosition = launcherStart.clone().add(direction.multiplyScalar(1.0 * launcherStart.distanceTo(rawPoint)))
-      }
-      // We can only track one object at a time, so stop tracking the other objects
-      this.pressedHotkeyToTrackableObject.forEach((tableObjectType, tableHotkey) => {
-        if (tableObjectType!==objectType) {
-          this.closestTrackedObject[this.convertHotkeyToObjectIndex(tableHotkey)] = null
-        }
-      })
-      trackingPointMarkerMesh.position.copy(this.trackingPoint)
-      const trackingPointDistanceToCamera = trackingPointMarkerMesh.position.clone().sub(nearestToPosition).length()
-      trackingPointMarkerMesh.scale.set(trackingPointDistanceToCamera/64, trackingPointDistanceToCamera/64, trackingPointDistanceToCamera/64)
-      trackingPointMarkerMesh.visible = dParamWithUnits['showTrackingMarkers'].value
     }
-
   }
 
+  toWorld(entry, position) {
+    if (!position) return null
+    const p = position.clone()
+    return entry.frame === 'ring' ? this.getContext().ringRefCoordSys.localToWorld(p) : p
+  }
 
+  // Selects the object of `type` closest to `nearPoint` (world). Returns true if one was found.
+  findNearest(type, nearPoint) {
+    let best = null
+    let bestDistance = Infinity
+    for (const entry of this.candidates(type)) {
+      const position = this.toWorld(entry, entry.getPosition(0))
+      if (!finiteVector(position)) continue
+      const distance = nearPoint.distanceTo(position)
+      if (distance < bestDistance) {
+        best = entry
+        bestDistance = distance
+      }
+    }
+    this.target = best
+    return best !== null
+  }
+
+  // World position of the tracked object `dt` seconds from now (null if nothing tracked).
+  getPosition(dt = 0) {
+    if (!this.target) return null
+    const position = this.toWorld(this.target, this.target.getPosition(dt))
+    return finiteVector(position) ? position : null
+  }
+
+  // Orientation frame of the tracked object (vehicles only), or null.
+  getFrame(dt = 0) {
+    return this.target?.getFrame ? this.target.getFrame(dt) : null
+  }
 }

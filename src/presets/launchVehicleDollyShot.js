@@ -18,8 +18,7 @@ export function launchVehicleDollyShot(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showLaunchVehicles'].value = true
 
   guidParamWithUnits['displacementMapOverride'].value = true
-  guidParamWithUnits['displacementBias'].value = -900
-  guidParamWithUnits['displacementScale'].value = 0
+  guidParamWithUnits['terrainExaggeration'].value = 0 // flat terrain (was displacementScale = 0)
 
   guidParamWithUnits['pKeyAltitudeFactor'].value = 0
   guidParamWithUnits['massDriverCameraRange'].value = 1000

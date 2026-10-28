@@ -6,7 +6,7 @@ import { toMarsFromEarthLauncherArchitecture } from './toAFromBLauncherArchitect
 import { toVenusFromEarthLauncherArchitecture } from './toVenusFromEarthLauncherArchitecture.js'
 import { toMarsFromMoonLauncherArchitecture } from './toAFromBLauncherArchitecture.js'
 
-export function toMarsHawaiiLauncherPresets(guidParamWithUnits, guidParam, gui, nonGUIParams) {
+export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
 
   // Uses Monna Kea launch location
   guidParamWithUnits['finalLocationRingCenterLatitude'].value = 74.34

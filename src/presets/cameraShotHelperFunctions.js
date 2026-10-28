@@ -7,7 +7,6 @@ export function setAllShowsToFalse(guidParamWithUnits) {
   guidParamWithUnits['showMoon'].value = false
   guidParamWithUnits['showStars'].value = false
   guidParamWithUnits['showEarthAxis'].value = false
-  guidParamWithUnits['showBackgroundPatch'].value = false
   guidParamWithUnits['showEarthEquator'].value = false
   guidParamWithUnits['showMainRingCurve'].value = false
   guidParamWithUnits['showGravityForceArrows'].value = false

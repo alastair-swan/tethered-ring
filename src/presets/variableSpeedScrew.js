@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { myFormat } from '../utils/tram.js'
 
-export function variableSpeedScrew(guidParamWithUnits, guidParam, gui, nonGUIParams) {
+export function variableSpeedScrew(guidParamWithUnits, nonGUIParams) {
   
   const a_a = 80 // m/s2 (acceleration during acceleration)
   const l_d = 82840

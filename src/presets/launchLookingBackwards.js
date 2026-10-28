@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { actualSizeDollyShot } from './actualSizeDollyShot.js'
 import { toMarsFromEarthLauncherArchitecture } from './toAFromBLauncherArchitecture.js'
 
-export function launchLookingBackwards(guidParamWithUnits, guidParam, gui, nonGUIParams) {
+export function launchLookingBackwards(guidParamWithUnits, nonGUIParams) {
 
   // Uses Monna Kea launch location
   guidParamWithUnits['finalLocationRingCenterLatitude'].value = 74.34

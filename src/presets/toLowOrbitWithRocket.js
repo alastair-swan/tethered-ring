@@ -22,7 +22,6 @@ import * as THREE from 'three'
   //   guidParamWithUnits['showMoon'].value = true
   //   guidParamWithUnits['showStars'].value = true
   //   guidParamWithUnits['showEarthAxis'].value = false
-  //   guidParamWithUnits['showBackgroundPatch'].value = false
   //   guidParamWithUnits['showEarthEquator'].value = false
   //   guidParamWithUnits['showMainRingCurve'].value = false
   //   guidParamWithUnits['showGravityForceArrows'].value = false

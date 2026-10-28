@@ -3,7 +3,7 @@ import { actualSizeDollyShot } from './actualSizeDollyShot.js'
 import { showMassDriver } from './cameraShotHelperFunctions.js'
 import { toAFromBLauncherArchitecture } from './toAFromBLauncherArchitecture.js'
 
-export function toOrbitFromMoonLauncherPresets(guidParamWithUnits, guidParam, gui, nonGUIParams) {
+export function toOrbitFromMoonLauncherPresets(guidParamWithUnits, nonGUIParams) {
 
   // Mirror the Hawaii launch location pattern used by toMarsHawaiiLauncherPresets.
   guidParamWithUnits['finalLocationRingCenterLatitude'].value = 74.34

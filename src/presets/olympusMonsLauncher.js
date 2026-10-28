@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { actualSizeDollyShot } from './actualSizeDollyShot.js'
 
-export function olympusMonsLauncher(guidParamWithUnits, guidParam, gui, nonGUIParams) {
+export function olympusMonsLauncher(guidParamWithUnits, nonGUIParams) {
 
 
   actualSizeDollyShot(guidParamWithUnits, nonGUIParams)
@@ -12,7 +12,6 @@ export function olympusMonsLauncher(guidParamWithUnits, guidParam, gui, nonGUIPa
   guidParamWithUnits['launcherMassDriverTubeInnerRadius'].value = 2000
 
   guidParamWithUnits['enableBackgroundAlpha'].value = true
-  //guidParamWithUnits['showBackgroundPatch'].value = true //300
   guidParamWithUnits['showEarthsSurface'].value = false
   guidParamWithUnits['showEarthsAtmosphere'].value = false
   //guidParamWithUnits['showLogo'].value = false

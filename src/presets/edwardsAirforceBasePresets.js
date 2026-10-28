@@ -3,7 +3,7 @@ import { actualSizeDollyShot } from './actualSizeDollyShot.js'
 import { googleEarthStudioProvidedBackground } from './googleEarthStudioProvidedBackground.js'
 import { toMarsFromEarthLauncherArchitecture } from './toAFromBLauncherArchitecture.js'
 
-export function edwardsAirforceBasePresets(guidParamWithUnits, guidParam, gui, nonGUIParams) {
+export function edwardsAirforceBasePresets(guidParamWithUnits, nonGUIParams) {
 
   // Uses Monna Kea launch location
   guidParamWithUnits['finalLocationRingCenterLatitude'].value = 74.34

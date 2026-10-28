@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 
-export function demonstratorLauncher(guidParamWithUnits, guidParam, gui, nonGUIParams) {
+export function demonstratorLauncher(guidParamWithUnits, nonGUIParams) {
 
   // Kilamanjaro, Africa
 
@@ -239,7 +239,6 @@ export function demonstratorLauncher(guidParamWithUnits, guidParam, gui, nonGUIP
   guidParamWithUnits['showMoon'].value = false
   guidParamWithUnits['showStars'].value = false
   guidParamWithUnits['showEarthAxis'].value = false
-  guidParamWithUnits['showBackgroundPatch'].value = false
   guidParamWithUnits['showEarthEquator'].value = false
   guidParamWithUnits['showMainRingCurve'].value = false
   guidParamWithUnits['showGravityForceArrows'].value = false

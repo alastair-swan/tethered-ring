@@ -6,7 +6,7 @@ import { toMarsFromEarthLauncherArchitecture } from './toAFromBLauncherArchitect
 import { toVenusFromEarthLauncherArchitecture } from './toVenusFromEarthLauncherArchitecture.js'
 import { toMarsFromMoonLauncherArchitecture } from './toAFromBLauncherArchitecture.js'
 
-export function launcherSystemUnderwater(guidParamWithUnits, guidParam, gui, nonGUIParams) {
+export function launcherSystemUnderwater(guidParamWithUnits, nonGUIParams) {
 
   // Uses Monna Kea launch location
   guidParamWithUnits['finalLocationRingCenterLatitude'].value = 74.34
