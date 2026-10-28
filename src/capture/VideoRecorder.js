@@ -1,0 +1,169 @@
+// In-browser video encoding using WebCodecs (via mediabunny). Frames are pulled from the renderer's
+// canvas one at a time, so recording is independent of the real-time frame rate: the caller renders a
+// frame, then awaits addFrame() before advancing the simulation by exactly 1/fps seconds.
+//
+// Output is written straight to disk when the File System Access API is available (Chrome/Edge),
+// which keeps multi-gigabyte high-bitrate recordings out of memory. Other browsers buffer the file in
+// memory and download it when recording finishes.
+import {
+  Output,
+  Mp4OutputFormat,
+  MkvOutputFormat,
+  BufferTarget,
+  StreamTarget,
+  CanvasSource,
+  Quality,
+  canEncodeVideo,
+} from 'mediabunny'
+
+// Bits per pixel per frame used to derive the default bitrate. These are deliberately generous:
+// recordings are intermediate/master files, not streaming deliverables.
+const DEFAULT_BITS_PER_PIXEL = {
+  av1: 0.25,
+  hevc: 0.3,
+  vp9: 0.3,
+  avc: 0.45,
+}
+
+// Order of preference when the requested codec is not available. AV1 gives the best quality per bit;
+// H.264 in MP4 plays everywhere.
+export const CODEC_FALLBACK_ORDER = ['av1', 'avc', 'hevc', 'vp9']
+
+export const CONTAINERS = {
+  mp4: { label: 'MP4', extension: '.mp4', mimeType: 'video/mp4', codecs: ['av1', 'avc', 'hevc', 'vp9'] },
+  mkv: { label: 'MKV', extension: '.mkv', mimeType: 'video/x-matroska', codecs: ['av1', 'avc', 'hevc', 'vp9'] },
+}
+
+export const CODEC_LABELS = {
+  av1: 'AV1',
+  avc: 'H.264',
+  hevc: 'H.265',
+  vp9: 'VP9',
+}
+
+export function defaultBitrate(codec, width, height, fps) {
+  return Math.round((DEFAULT_BITS_PER_PIXEL[codec] ?? 0.3) * width * height * fps)
+}
+
+// Encoders require even dimensions for 4:2:0 chroma subsampling.
+export function evenDimension(value) {
+  const v = Math.max(2, Math.round(value))
+  return v % 2 === 0 ? v : v + 1
+}
+
+export function isRecordingSupported() {
+  return typeof window !== 'undefined' && typeof window.VideoEncoder === 'function'
+}
+
+// Returns the codecs (in fallback order) that this browser can encode at the given settings.
+export async function listEncodableCodecs({ width, height, fps, bitrate }) {
+  const supported = []
+  for (const codec of CODEC_FALLBACK_ORDER) {
+    const quality = new Quality({ bitrate: bitrate ?? defaultBitrate(codec, width, height, fps) })
+    try {
+      if (await canEncodeVideo(codec, { width, height, frameRate: fps, quality })) supported.push(codec)
+    } catch {
+      // Treat probe errors as "not supported".
+    }
+  }
+  return supported
+}
+
+// Picks the requested codec if possible, otherwise the first encodable one in CODEC_FALLBACK_ORDER.
+export async function resolveCodec(requested, settings) {
+  const supported = await listEncodableCodecs(settings)
+  if (!supported.length) return null
+  return supported.includes(requested) ? requested : supported[0]
+}
+
+async function openFileTarget(suggestedName, container) {
+  if (typeof window.showSaveFilePicker !== 'function') return null
+  const info = CONTAINERS[container]
+  const handle = await window.showSaveFilePicker({
+    suggestedName,
+    types: [{ description: `${info.label} video`, accept: { [info.mimeType]: [info.extension] } }],
+  })
+  const writable = await handle.createWritable()
+  return { target: new StreamTarget(writable, { chunked: true }), writable, name: handle.name }
+}
+
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = fileName
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+export class VideoRecorder {
+  // options: { canvas, width, height, fps, codec, container, bitrate, fileName, saveToDisk }
+  // codec must already be resolved with resolveCodec(); container is 'mp4' or 'mkv'.
+  constructor(options) {
+    this.options = { ...options }
+    this.frameCount = 0
+    this.output = null
+    this.source = null
+    this.fileTarget = null
+    this.state = 'idle'
+  }
+
+  get fileName() {
+    const { fileName, container } = this.options
+    return fileName.endsWith(CONTAINERS[container].extension) ? fileName : fileName + CONTAINERS[container].extension
+  }
+
+  // Must be called from a user gesture when saveToDisk is true (the save dialog requires one).
+  async start() {
+    const { canvas, codec, container, bitrate, fps, saveToDisk } = this.options
+    if (saveToDisk) this.fileTarget = await openFileTarget(this.fileName, container)
+
+    const format = container === 'mkv'
+      ? new MkvOutputFormat()
+      : new Mp4OutputFormat({ fastStart: this.fileTarget ? false : 'in-memory' })
+    this.bufferTarget = this.fileTarget ? null : new BufferTarget()
+    this.output = new Output({ format, target: this.fileTarget ? this.fileTarget.target : this.bufferTarget })
+    this.source = new CanvasSource(canvas, {
+      codec,
+      quality: new Quality({ bitrate, bitrateMode: 'variable' }),
+      keyFrameInterval: 2,
+      latencyMode: 'quality',
+    })
+    this.output.addVideoTrack(this.source, { frameRate: fps })
+    await this.output.start()
+    this.state = 'recording'
+  }
+
+  // Captures the canvas as the next frame. Await this before rendering the following frame; it
+  // resolves when the encoder is ready for more input.
+  async addFrame() {
+    if (this.state !== 'recording') throw new Error('Recorder is not recording')
+    const { fps } = this.options
+    await this.source.add(this.frameCount / fps, 1 / fps)
+    this.frameCount++
+  }
+
+  // Finalizes the file. Returns { fileName, bytes } where bytes is null for files streamed to disk.
+  async finish() {
+    if (this.state !== 'recording') return null
+    this.state = 'finishing'
+    await this.output.finalize()
+    this.state = 'done'
+    if (this.fileTarget) return { fileName: this.fileTarget.name, bytes: null }
+    const buffer = this.bufferTarget.buffer
+    downloadBlob(new Blob([buffer], { type: CONTAINERS[this.options.container].mimeType }), this.fileName)
+    return { fileName: this.fileName, bytes: buffer.byteLength }
+  }
+
+  async cancel() {
+    if (this.state !== 'recording' && this.state !== 'finishing') return
+    this.state = 'cancelled'
+    try {
+      await this.output.cancel()
+    } finally {
+      if (this.fileTarget) await this.fileTarget.writable.abort().catch(() => {})
+    }
+  }
+}

@@ -40,7 +40,8 @@ const evalExpr = arg('eval', null)
 const server = await createServer({ server: { port: 0 }, logLevel: 'error' })
 await server.listen()
 const port = server.httpServer.address().port
-const url = `http://localhost:${port}/${urlParams ? `?${urlParams}` : ''}`
+const pagePath = arg('page', '/')
+const url = `http://localhost:${port}${pagePath}${urlParams ? `?${urlParams}` : ''}`
 
 const browser = await puppeteer.launch({
   executablePath: findChrome(),

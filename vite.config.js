@@ -8,4 +8,9 @@ export default defineConfig({
       ignored: ['**/assets/**', '**/textures/**', '**/tools/**'],
     },
   },
+  optimizeDeps: {
+    // Pre-bundle dependencies that are only reached through dynamic imports so the first
+    // recording does not trigger a dependency re-optimization and page reload.
+    include: ['mediabunny'],
+  },
 })
