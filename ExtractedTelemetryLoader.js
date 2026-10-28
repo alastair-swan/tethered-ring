@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import * as tram from './Tram.js'
+import * as tram from './tram.js'
 import * as regression from 'regression'
 import bspline from 'b-spline'
 // import { StarshipIFT1 } from './datasets/StarshipIFT1.js'

@@ -1,12 +1,11 @@
-import vitePluginString from 'vite-plugin-string'
+import { defineConfig } from 'vite'
 
-export default {
-  plugins: [
-    vitePluginString()
-  ],
+export default defineConfig({
   server: {
     watch: {
-      usePolling: true
-    }
-  }
-}
+      // assets/ holds several GB of LFS tiles and textures/ holds downloaded imagery.
+      // Neither is source code, so keep them out of the file watcher.
+      ignored: ['**/assets/**', '**/textures/**', '**/tools/**'],
+    },
+  },
+})
