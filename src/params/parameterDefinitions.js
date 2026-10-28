@@ -539,7 +539,7 @@ export function createParameterDefinitions() {
   showEarthsSurface: {value: defaultShows, units: '', autoMap: true, onChange: 'adjustEarthSurfaceVisibility', folder: 'Rendering'},
   showEarthsAtmosphere: {value: true, units: '', autoMap: true, onChange: 'adjustEarthAtmosphereVisibility', folder: 'Rendering'},
   showOcean: {value: true, units: '', autoMap: true, onChange: 'adjustOcean', folder: 'Rendering'},
-  underwaterVisibility: {value: 120, units: 'm', autoMap: true, min: 5, max: 2000, onChange: 'adjustOcean', folder: 'Rendering'},
+  underwaterVisibility: {value: 20000, units: 'm', autoMap: true, min: 100, max: 200000, onChange: 'adjustOcean', folder: 'Rendering'},   // distance at which things underwater have almost faded into the water colour (a visual cue, not realism)
   earthTextureOpacity: {value: 1, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustEarthTextureOpacity', folder: 'Rendering'},
   earthTextureDoubleSided: {value: false, units: '', autoMap: true, onChange: 'adjustEarthTextureSidedness', folder: 'Rendering'},
   tetherMinOpacity: {value: 0.03, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustTetherOpacity', folder: 'Rendering'},

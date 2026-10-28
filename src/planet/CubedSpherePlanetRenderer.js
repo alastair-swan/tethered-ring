@@ -82,6 +82,11 @@ const FACE_NAMES = ['+X', '-X', '+Y', '-Y', '+Z', '-Z'];
 const WGS84_E2 = 2 / 298.257223563 - 1 / (298.257223563 * 298.257223563);
 
 const DEG2RAD = Math.PI / 180;
+// Sea surface (options.water): opacity of deep water, the depth over which it fades in from the
+// coastline, and its colour before a tile's imagery has loaded.
+const WATER_OPACITY = 0.6;
+const WATER_SHALLOWS_DEPTH = 30;
+const WATER_FALLBACK_COLOR = 0x1d5f7d;
 
 // -----------------------------------------------------------------------------
 // Small math / utility helpers
@@ -412,6 +417,9 @@ export class CubedSpherePlanetRenderer {
 
     this.requireKtx2 = options.requireKtx2 === true;
     this.receiveSurfaceShadows = options.receiveSurfaceShadows === true;
+    // A sea surface at sea level over terrain below it (planets with oceans; see _buildWaterGeometry).
+    this.hasWater = options.water === true;
+    this.waterVisible = true;
     this.textureAnisotropy = Math.max(1, options.textureAnisotropy ?? 4);
     this.displacementScaleMultiplier = Math.max(0, options.displacementScaleMultiplier ?? 1);
     // Startup tracing (console logs, resource-timing scans and the ASCII chart)
@@ -1528,6 +1536,7 @@ export class CubedSpherePlanetRenderer {
     tile.mesh = mesh;
     tile.geometry = geometry;
     tile.material = material;
+    this._updateTileWater(tile);
   }
 
   // Per-tile noise offsets: (tileCentre * frequency) mod DETAIL_PERIOD, computed
@@ -1685,6 +1694,10 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     const dir = this._tmpDir;
     const pos = this._tmpA;
     const nor = this._tmpB;
+    // For the sea surface (see _buildWaterGeometry): each vertex at sea level, and its height.
+    const seaPositions = this.hasWater ? new Float32Array(total * 3) : null;
+    const seaNormals = this.hasWater ? new Float32Array(total * 3) : null;
+    const heights = this.hasWater ? new Float32Array(total) : null;
 
     for (let y = 0; y <= seg; y++) {
       const v01 = y / seg;
@@ -1698,12 +1711,17 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
         ellipsoidNormal(pos, this.a, this.b, nor);
 
         const h = this._sampleHeight(tile, u01, v01) * displacementScale;
-        pos.addScaledVector(nor, h);
-
-        // Subtract the centre in float64 before narrowing to float32.
         const index = y * (seg + 1) + x;
         const i3 = index * 3;
         const i2 = index * 2;
+        if (seaPositions) {
+          seaPositions[i3] = pos.x - cx; seaPositions[i3 + 1] = pos.y - cy; seaPositions[i3 + 2] = pos.z - cz;
+          seaNormals[i3] = nor.x; seaNormals[i3 + 1] = nor.y; seaNormals[i3 + 2] = nor.z;
+          heights[index] = h;
+        }
+        pos.addScaledVector(nor, h);
+
+        // Subtract the centre in float64 before narrowing to float32.
         positions[i3] = pos.x - cx; positions[i3 + 1] = pos.y - cy; positions[i3 + 2] = pos.z - cz;
         normals[i3] = nor.x; normals[i3 + 1] = nor.y; normals[i3 + 2] = nor.z;
         uvs[i2] = u01; uvs[i2 + 1] = v01;
@@ -1762,7 +1780,94 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     this._applySkirtDrawRange(geometry);
     geometry.computeBoundingSphere();
     grid.dispose();
+    geometry.userData.waterGeometry = seaPositions
+      ? this._buildWaterGeometry(seaPositions, seaNormals, uvs, heights, seg, reversed)
+      : null;
     return geometry;
+  }
+
+  // The sea surface over this tile: the tile's grid at sea level, with each vertex's depth of water
+  // (negative over land). Its material discards the land and uses the tile's own colour texture, so
+  // the water takes the local colour of the ocean in the imagery and ends at the terrain's coastline.
+  // Null if the tile has no terrain below sea level.
+  _buildWaterGeometry(positions, normals, uvs, heights, seg, reversed) {
+    let anyWater = false;
+    const depths = new Float32Array(heights.length);
+    for (let i = 0; i < heights.length; i++) {
+      depths[i] = -heights[i];
+      if (heights[i] < 0) anyWater = true;
+    }
+    if (!anyWater) return null;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs.slice(0, (seg + 1) * (seg + 1) * 2), 2));
+    geometry.setAttribute('seaDepth', new THREE.BufferAttribute(depths, 1));
+    geometry.setIndex(new THREE.BufferAttribute(this.indexBufferCache.getGridIndexArray(seg, reversed), 1));
+    geometry.computeBoundingSphere();
+    return geometry;
+  }
+
+  // Creates, replaces or removes the tile's sea-surface mesh (a child of the tile mesh, so it follows
+  // the tile's position and visibility).
+  _updateTileWater(tile) {
+    const waterGeometry = tile.mesh?.geometry?.userData.waterGeometry ?? null;
+    if (!waterGeometry) {
+      if (tile.waterMesh) {
+        tile.mesh.remove(tile.waterMesh);
+        tile.waterMesh.material.dispose();
+        tile.waterMesh = null;
+      }
+      return;
+    }
+    if (!tile.waterMesh) {
+      tile.waterMesh = new THREE.Mesh(waterGeometry, this._createWaterMaterial(tile));
+      tile.waterMesh.name = 'seaSurface';
+      tile.waterMesh.frustumCulled = false; // the tile is culled instead
+      tile.waterMesh.renderOrder = 2;       // after the translucent things it covers (e.g. the tube)
+      tile.waterMesh.visible = this.waterVisible;
+      tile.mesh.add(tile.waterMesh);
+    }
+    else {
+      tile.waterMesh.geometry = waterGeometry;
+    }
+  }
+
+  _createWaterMaterial(tile) {
+    const material = new THREE.MeshPhongMaterial({
+      color: tile.texture ? 0xffffff : WATER_FALLBACK_COLOR,
+      map: tile.texture ?? null,
+      specular: 0x7d97a8,
+      shininess: 80,
+      transparent: true,
+      opacity: WATER_OPACITY,
+      depthWrite: false,
+    });
+    material.onBeforeCompile = (shader) => {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+attribute float seaDepth;
+varying float vSeaDepth;`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+vSeaDepth = seaDepth;`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+varying float vSeaDepth;`)
+        .replace('#include <alphatest_fragment>', `if (vSeaDepth <= 0.0) discard; // land
+// Clearer in the shallows, so the coastline is soft.
+diffuseColor.a *= mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed(1)}, 0.0, 1.0));
+#include <alphatest_fragment>`);
+    };
+    material.customProgramCacheKey = () => 'seaSurface';
+    return material;
+  }
+
+  // Shows or hides the sea surface on every tile.
+  setWaterVisible(visible) {
+    this.waterVisible = visible;
+    for (const tile of this.tiles.values()) {
+      if (tile.waterMesh) tile.waterMesh.visible = visible;
+    }
   }
 
   // Skirts are only drawn while the camera is above the terrain. Some scenes put the camera below
@@ -1855,7 +1960,11 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     const oldGeometry = tile.mesh.geometry;
     tile.mesh.geometry = newGeometry;
     tile.geometry = newGeometry;
-    if (oldGeometry && oldGeometry !== newGeometry) oldGeometry.dispose();
+    if (oldGeometry && oldGeometry !== newGeometry) {
+      oldGeometry.dispose();
+      oldGeometry.userData.waterGeometry?.dispose();
+    }
+    this._updateTileWater(tile);
   }
 
   /**
@@ -2267,6 +2376,11 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
       tile.material.color.set(0xffffff);
       tile.material.needsUpdate = true;
     }
+    if (tile.waterMesh && tile.texture && tile.waterMesh.material.map !== tile.texture) {
+      tile.waterMesh.material.map = tile.texture;
+      tile.waterMesh.material.color.set(0xffffff);
+      tile.waterMesh.material.needsUpdate = true;
+    }
     // Use a uniform finish across all tiles; deriving roughness from per-tile
     // terrain variance makes refined regions visibly matte/shiny vs their parent.
     tile.material.roughness = 1;
@@ -2351,7 +2465,11 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     }
     if (tile.mesh && tile.mesh.parent) tile.mesh.parent.remove(tile.mesh);
     if (tile.texture) { tile.texture.dispose(); tile.texture = null; }
-    if (tile.mesh?.geometry) tile.mesh.geometry.dispose();
+    if (tile.mesh?.geometry) {
+      tile.mesh.geometry.dispose();
+      tile.mesh.geometry.userData.waterGeometry?.dispose();
+    }
+    if (tile.waterMesh) { tile.waterMesh.material.dispose(); tile.waterMesh = null; }
     if (tile.material && tile.material !== this.baseMaterial) tile.material.dispose();
     tile.heightSamples = null;
     this.debugStats.gpuBytes = Math.max(0, this.debugStats.gpuBytes - tile.estimatedBytes);

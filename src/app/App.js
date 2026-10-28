@@ -206,8 +206,10 @@ export class App {
   // image hide the sea too).
   applyOceanSettings(d) {
     if (!this.ocean) return
+    const enabled = d.showOcean.value && d.showEarthsSurface.value
     this.ocean.visibility = d.underwaterVisibility.value
-    this.ocean.setEnabled(d.showOcean.value && d.showEarthsSurface.value)
+    this.ocean.setEnabled(enabled)
+    this.planet.setWaterVisible(enabled)
   }
 
   buildRing() {

@@ -1305,7 +1305,7 @@ function bigIslandLauncher(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['launcherRampTurningRadius'].value = 49096
   //guidParamWithUnits['launcherRampUpwardAcceleration'].value = 50       // m/s2
   guidParamWithUnits['launcherMassDriverExitVelocity'].value = 5500     // m/s
-  guidParamWithUnits['launcherMassDriverAltitude'].value = 100         // m
+  guidParamWithUnits['launcherMassDriverAltitude'].value = -150        // m (submerged, moored to the sea floor; as in toMarsHawaii)
   guidParamWithUnits['launcherRampExitAltitude'].value = 4500           // m  (Altitute of Mauna Kea summit (4207) plus ~300 meters)
   guidParamWithUnits['launcherEvacuatedTubeExitAltitude'].value = 15000  // m
   guidParamWithUnits['launchVehiclePropellantMassFlowRate'].value = 514.49 // kg/s  (Based on RS-25)

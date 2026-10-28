@@ -104,6 +104,8 @@ function assetNamesFromUrl() {
  *                         detail for close-up views (default off).
  *   surfaceColor          Flat colour for unloaded tiles / bodies without assets
  *                         (default per body, e.g. reddish for Mars).
+ *   water                 Draw a sea surface over terrain below sea level, coloured
+ *                         by the imagery (default: planetSpec.hasOcean).
  *   fastCameraSpeed       Camera speed (m/s) above which refinement is capped
  *                         at maxLodWhileFast (default Infinity = never).
  *   maxLodWhileFast       See fastCameraSpeed (default Infinity).
@@ -139,6 +141,7 @@ export class Planet {
       assets: assetNames.map(assetFromName),
       doubleSided,
       opacity,
+      water: rendererOptions.water ?? planetSpec.hasOcean === true,
     });
 
     const a = planetSpec.ellipsoid.a;
@@ -168,6 +171,11 @@ export class Planet {
   setVisible(visible) {
     this.surface.visible = !!visible;
     this.lod.setEnabled(!!visible);
+  }
+
+  // Sea surface over terrain below sea level (planets with oceans).
+  setWaterVisible(visible) {
+    this.lod.setWaterVisible(visible)
   }
 
   setAtmosphereVisible(visible) {

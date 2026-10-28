@@ -1,13 +1,15 @@
 import * as THREE from 'three'
 import { ecefToGeodetic } from '../physics/geodesy.js'
 
-// The sea: a translucent water surface at sea level (which tints whatever is under it when seen from
-// above) and an underwater look (fog in the water colour, no sky) while the camera is in the water.
+// The sea, as seen from in it: the underside of the water surface, and an underwater look (fog in the
+// water colour, no sky). From above, the surface is drawn by the planet's tiles in the colour of the
+// ocean in the imagery (see CubedSpherePlanetRenderer._buildWaterGeometry).
 //
-// The surface is a disc of the sea-level ellipsoid around the point below the camera, out to the
-// horizon, rebuilt every frame in float64 relative to that point (a planet-sized sphere would sag by
-// hundreds of metres between vertices, and absolute float32 coordinates would jitter). Rings get
-// geometrically wider away from the camera, so the surface stays smooth at any altitude.
+// The underside is a disc of the sea-level ellipsoid around the point above the camera, out to the
+// horizon, rebuilt in float64 relative to that point (a planet-sized sphere would sag by hundreds of
+// metres between vertices, and absolute float32 coordinates would jitter). Rings get geometrically
+// wider away from the camera, so the surface stays smooth at any depth. It is only drawn while the
+// camera is under the surface.
 //
 // The camera is "under the surface" when it is below sea level and above the sea floor, and "in the
 // water" when, in addition, it is not inside something that keeps the water out (the evacuated
@@ -15,7 +17,6 @@ import { ecefToGeodetic } from '../physics/geodesy.js'
 // water colour); only in the water does everything also fade into the water with distance.
 const RINGS = 64
 const SECTORS = 64
-const SURFACE_COLOR = new THREE.Color(0x1d5f7d)
 const UNDERSIDE_COLOR = new THREE.Color(0x6fb3c9)
 const SHALLOW_WATER_COLOR = new THREE.Color(0x1f6f8c)
 const DEEP_WATER_COLOR = new THREE.Color(0x04131f)
@@ -37,7 +38,7 @@ export class Ocean {
     this.parent = parent
     this.scene = scene
     this.sampleTerrainHeight = sampleTerrainHeight
-    this.visibility = 120   // m: how far you can see underwater
+    this.visibility = 20000 // m: where things underwater have almost faded out (a cue, not realism)
     this.enabled = true
     this.cameraInWater = false
     this.cameraUnderSurface = false
@@ -55,14 +56,15 @@ export class Ocean {
       }
     }
     geometry.setIndex(index)
-    this.material = new THREE.MeshPhongMaterial({
-      color: SURFACE_COLOR, specular: 0x9fc4d8, shininess: 90,
-      transparent: true, opacity: 0.6, depthWrite: false, side: THREE.DoubleSide,
+    // Seen from below (back faces), lit by the daylight coming through it rather than shaded.
+    this.material = new THREE.MeshBasicMaterial({
+      color: UNDERSIDE_COLOR, transparent: true, opacity: 0.85, depthWrite: false, side: THREE.BackSide,
     })
     this.mesh = new THREE.Mesh(geometry, this.material)
     this.mesh.name = 'oceanSurface'
     this.mesh.frustumCulled = false // rebuilt around the camera every frame
     this.mesh.renderOrder = 2       // after the tube and other translucent parts it covers
+    this.mesh.visible = false
     parent.add(this.mesh)
 
     this.fog = new THREE.FogExp2(SHALLOW_WATER_COLOR.clone(), 0)
@@ -70,8 +72,10 @@ export class Ocean {
 
   setEnabled(enabled) {
     this.enabled = enabled
-    this.mesh.visible = enabled
-    if (!enabled) this.setCameraInWater(false)
+    if (!enabled) {
+      this.setCameraInWater(false)
+      this.mesh.visible = false
+    }
   }
 
   // camera: the rendering camera. isDry(localPoint): true where the camera is shielded from the water
@@ -86,6 +90,8 @@ export class Ocean {
     const seaFloor = (geo.alt < 0) ? this.sampleTerrainHeight(geo.lat, geo.lon)?.heightMeters ?? -Infinity : -Infinity
     this.cameraUnderSurface = geo.alt < 0 && geo.alt > seaFloor
     this.setCameraInWater(this.cameraUnderSurface && !isDry(_camera), -geo.alt)
+    this.mesh.visible = this.cameraUnderSurface
+    if (!this.cameraUnderSurface) return
     // Rebuild only when the camera has moved by a noticeable fraction of its height above the sea
     // (the innermost ring is 5% of it); otherwise the existing disc is still centred closely enough.
     const height = Math.abs(geo.alt)
@@ -105,13 +111,9 @@ export class Ocean {
       // FogExp2 reaches ~95% at sqrt(3) / density.
       this.fog.density = Math.sqrt(3) / Math.max(1, this.visibility)
       this.scene.fog = this.fog
-      this.material.color.copy(UNDERSIDE_COLOR)
-      this.material.opacity = 0.85
     }
-    else {
-      if (this.scene.fog === this.fog) this.scene.fog = null
-      this.material.color.copy(SURFACE_COLOR)
-      this.material.opacity = 0.6
+    else if (this.scene.fog === this.fog) {
+      this.scene.fog = null
     }
   }
 
