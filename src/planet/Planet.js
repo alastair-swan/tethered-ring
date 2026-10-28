@@ -6,10 +6,9 @@ import atmosphereFragmentShader from '../shaders/atmosphere.frag.glsl?raw';
 // The atmosphere shell is a sphere of the equatorial radius scaled by this
 // factor (and flattened like the planet). 1.1 / 1.05 reproduces the old look,
 // which scaled by 1.1 and then divided by w = 1.05 in the vertex shader.
-// Top of the atmosphere shell above sea level (m), and the length of air for the sky to reach 63% of
-// its full opacity (see atmosphere.frag.glsl).
+// Top of the atmosphere shell above sea level (m): above it the air is negligible (see
+// atmosphere.frag.glsl).
 const ATMOSPHERE_HEIGHT = 60000;
-const ATMOSPHERE_OPACITY_PATH = 40000;
 
 // Flat surface colours used before tiles stream in, and for bodies that have
 // no baked assets at all.
@@ -154,7 +153,7 @@ export class Planet {
     });
 
     // The atmosphere: a shell ATMOSPHERE_HEIGHT above the sea-level ellipsoid, drawn from inside
-    // (its far side), whose opacity is worked out per pixel from the line of sight through it (see
+    // (its far side), shaded per pixel by single scattering along the line of sight through it (see
     // atmosphere.frag.glsl and updateAtmosphere). Finely tessellated so its edge stays smooth (the
     // chord sag of 256 x 128 segments is about 0.5 km).
     const a = planetSpec.ellipsoid.a;
@@ -163,7 +162,7 @@ export class Planet {
     this.atmosphereUniforms = {
       atmoCamera: { value: new THREE.Vector4() },
       atmoPole: { value: new THREE.Vector4() },
-      atmoParams: { value: new THREE.Vector4(0, ATMOSPHERE_OPACITY_PATH, 0, 0) },
+      atmoParams: { value: new THREE.Vector4(0, 0, a, a + ATMOSPHERE_HEIGHT) },
       atmoSun: { value: new THREE.Vector3(0, 1, 0) },
     };
     this.atmosphere = new THREE.Mesh(
@@ -175,6 +174,10 @@ export class Planet {
         side: THREE.BackSide,
         depthWrite: false,
         transparent: true,
+        // Premultiplied: scattered light + background * (1 - opacity).
+        blending: THREE.CustomBlending,
+        blendSrc: THREE.OneFactor,
+        blendDst: THREE.OneMinusSrcAlphaFactor,
       }),
     );
     this.atmosphere.name = 'atmosphere';
