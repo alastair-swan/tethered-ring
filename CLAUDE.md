@@ -4,59 +4,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-A browser-based Three.js simulation and engineering model of a **Tethered Ring**: a maglev-supported ring structure tethered to the planet, plus transit systems, elevators and a mass-driver/screw space launcher. Background: https://www.project-atlantis.com. Plain ES modules (no TypeScript, no framework), bundled and served by Vite.
+A browser-based Three.js simulation and engineering model of a **Tethered Ring** (a maglev-supported ring tethered to the planet), its transit system and elevators, and a mass-driver space launcher, with in-browser recording of repeatable camera shots. Plain ES modules (no TypeScript, no framework), bundled by Vite. Background: https://www.project-atlantis.com.
 
 ## Commands
 
 ```
 npm install
-npm run dev-sync   # downloads textures into textures/ (gitignored); needed for the legacy planet renderer
-npm run dev        # Vite dev server (polling file watcher), open the printed URL
-npm run build      # vite build -> dist/
-npm run serve      # vite preview of the build
+npm run setup          # git lfs install --local, git lfs pull (assets/), then download textures/
+npm run dev            # Vite dev server
+npm run build          # production build -> dist/ (runtime data folders are not copied)
+npm run lint           # ESLint
+npm test               # node --test (tests/**/*.test.mjs)
+npm run smoke          # headless Chrome/Chromium: loads "/" and fails on console errors
 ```
 
-- There are no tests and no lint/format setup. Prettier and format-on-save are deliberately disabled in `.vscode/settings.json`. Check changes by running the dev server and reading the browser console (F12). A hard refresh (Ctrl+Shift+R) is sometimes needed.
-- `ci:build`/`ci:check` in package.json call `next build` and are leftovers. They don't work for this project.
-- `?enableVR=true` in the URL enables WebXR.
-- `assets/**` is stored in Git LFS (Cloudflare R2, configured in `.lfsconfig`). Run `git lfs pull` to fetch the planet2 tile sets. Don't search or grep inside `assets/`: it's huge and mostly binary.
+- Single test file: `node --test tests/shots/shots.test.mjs`.
+- Headless checks: `SMOKE_GPU=1 node scripts/smoke.mjs --wait 40 --out shot.png --eval "<js>"`. Use `SMOKE_GPU=1` on a machine with a GPU, because the software renderer takes over a minute per terrain tile. `--eval` runs code against `window.tetheredRing` (app, scene, camera, launchSystem, transitSystem, dParamWithUnits, ...). `--page /tests/planet.html` targets a standalone test page.
+- The app must stay usable on Windows. Document every command in both PowerShell and POSIX forms.
+- `assets/**` is Git LFS (several GB) and `textures/` is downloaded. Don't search or grep inside them.
 
-## Architecture
+## Architecture (read docs/ARCHITECTURE.md for detail)
 
-### Parameter flow (the core pattern)
-`main.js` (~4300 lines) is the entry point and orchestrator. It holds almost all state at module level.
-
-1. **`guidParamWithUnits`** (main.js): one big table of every tunable parameter, `{value, units, autoMap, min, max, updateFunction, folder}`. Entries are turned into lil-gui sliders in folders such as Location, Engineering, Launcher, Rocket and Rendering. Each entry's `updateFunction` (e.g. `adjustRingDesign`, `updateLauncher`) rebuilds whatever depends on it.
-2. **`guidParam`**: a flat `{key: value}` mirror that lil-gui binds to.
-3. **`dParamWithUnits`**: derived parameters, recomputed in `updatedParam()` from the GUI values plus computed quantities (material properties, eccentricity, and so on). **Subsystems take `dParamWithUnits`, not the GUI objects.**
-4. **`nonGUIParams`**: flags and callbacks that aren't sliders. Examples: `usePlanet2`, `getRingSpecs`, `startTimerActions`, XHR texture/displacement callbacks, camera shots.
-
-When you add a parameter, add it to `guidParamWithUnits` with its units and an update function, then read it in the subsystem through `dParamWithUnits['name'].value`.
-
-### Presets
-`CapturePresets.applyCapturePreset()` runs at startup. It sets default `nonGUIParams`, then picks a scenario through a **hardcoded `switch (N)`** near the top of the function. To use a different scenario, edit that literal. Scenario functions live in `presets/*.js` (e.g. `toLowOrbitFromEarth`, `toMarsHawaiiLauncherPresets`). They overwrite `guidParamWithUnits[...].value` and `nonGUIParams` entries, and some of them chain to other presets. `cameraPresets.json` holds separate camera views.
-
-### Subsystems
-- **Ring and tethers**: `tethers.js` (`TetherGeometry`, a catenary tether tree), `mainRingCurve.js`, `calcRingParam.js`, `tetheredRingSystem.js`.
-- **Transit system**: `transitsystems.js`, plus per-object model files (`TransitVehicle.js`, `ElevatorCar.js`, `ElevatorCable.js`, `Habitat.js`, ring and tube segments).
-- **Launcher**: `launcher.js` (the `launcher` class) and `launcherAnimate.js`. Trajectory maths is in `LaunchTrajectoryUtils.js`, `launchTrajectoryRocket.js`, `simRocketFlight.js` and `OrbitMath.js`. Hardware models are in `MassDriver*.js`, `AdaptiveNut.js`, `LaunchSled.js`, `LaunchVehicle.js`, `ScrewGeometry.js` and `SledGrapplerGeometry.js`. `EngineeringDetails.js` and `screwEngineering.js` hold engineering calculations. `datasets/StarshipIFT*.js` holds Starship flight telemetry used for comparison plots, which `ExtractedTelemetryLoader.js` and `XYChart.js` load and draw.
-- **`tram.js`**: shared physics and geodesy utilities (`lla2xyz`/`xyz2lla`, WGS84 conversions, `getPlanetSpec`, spec calculations, `lerp`/`clamp`).
-- **Curves**: `SuperCurve.js` and its subclasses (`CatmullRom`, `Circle`, `Ellipse`, `Line`, `Spiral`), plus `SuperCurvePath.js`, re-exported through `SuperCurves.js`. These extend Three.js curves with arc-length parameterisation and orientation frames. Trajectory and track geometry is built from them.
-
-### Model / virtual-object pooling
-Large repeated objects (rail segments, brackets, screws, vehicles) use a two-class pattern per file: a `xxxModel` class builds the Three.js mesh, and a `virtualXxx` class has static state (`className`, `unallocatedModels`, `refFrames`, `isDynamic`, `hasChanged`, `update()`, `addNewVirtualObjects()`). Virtual objects are placed along a curve inside a `referenceFrame` (`ReferenceFrame.js`), which is split into zones ("wedges"). Each frame, only virtual objects near the camera get a real mesh from the `unallocatedModels` pool, and they hand it back when the camera moves away. `transitsystems.js` and `launcher.js` run this allocate/free loop. `dynamicallymanagedobject.js` is the shared base for ring-relative objects.
-
-### Planet renderers
-- `planet.js`: the legacy renderer. Equirectangular and tiled textures from `textures/` (24x12 LR/HR tiles), plus optional XHR texture/displacement callbacks driven by presets.
-- `planet2.js`: the newer cubed-sphere quadtree LOD renderer. It streams KTX2 tiles (transcoder in `basis/`) using a manifest in `assets/<body>/` (earth, moon, hawaii, chimborazo, and others). Turn it on with `nonGUIParams['usePlanet2'] = true` in a preset. Its header comment describes the face, UV and orientation conventions, which **must stay consistent with the Python generator**.
-- `tools/`: offline Python pipeline that bakes planet2 assets (`generate_planet2_lod0_assets.py`, `adaptive_lod.py`, `bake_*`, `fetch_*`, `rebuild_manifest_from_disk.py`). `tools/build_planet2_assets.ps1` is the documented source of truth for rebuilding `assets/earth` (base bake → island cone → eastern fill, merged into one manifest). The scripts use argparse, so run them with `--help` to see options. They need numpy and Pillow, and KTX2 output needs external encoders.
-
-### Output features
-- **Video capture**: CCapture (`components/CCapture`). The resolution is hardcoded in the `startCapturingFramesButton` handler near the bottom of `main.js`. Number keys 0–3 track the launch vehicle, adaptive nut, transit vehicle and elevator car. The README has the ffmpeg encode steps.
-- **KML export**: Google Earth export via `kmlutils.js` and the `genKMLFile` / `genLauncherKMLFile` flags. `googleEarthStudioTools.js` and `components/CameraControl/` handle Google Earth Studio camera paths and backgrounds.
-- **Specs**: the `specs` object collects computed engineering figures (written out when `genSpecsFile` is set).
-- **STL export**: `SaveGeometryAsSTL.js`.
+- **Entry point.** `src/main.js` creates `App` (`src/app/App.js`). App builds the scene from a preset, owns `step(dt)`/`render()`, and implements every GUI/keyboard action. Keyboard bindings live in one table in `src/input/KeyboardShortcuts.js`.
+- **Parameters.** These are data in `src/params/parameterDefinitions.js`, held by `ParameterStore`:
+  - `store.definitions` is the old `guidParamWithUnits`.
+  - `store.derived` is the old `dParamWithUnits`, which subsystems read as `d.name.value`.
+  - Each parameter's `onChange` names a handler in `App.parameterHandlers()`.
+  - To add a parameter: add one line to the definitions, read it in the subsystem, and pick a handler.
+- **Presets.** `src/presets/presets.js` is a registry of `{ id, label, apply(guidParamWithUnits, nonGUIParams) }`. A preset is selected with `?preset=` or the GUI dropdown (which reloads the page). `nonGUIParams` carries construction-time options (camera placement, terrain assets, lighting/shadows).
+- **Time and determinism.** Simulated time comes only from `SimClock`. Animated systems must be pure functions of (parameters, time): no wall clock, no `Math.random()`, no frame-count dependence. This is what makes recorded shots reproducible on other machines. Extra state goes through `getAnimationState()`/`setAnimationState()`.
+- **Planet.** `Planet` (`src/planet/Planet.js`) streams cubed-sphere KTX2 tiles from `assets/<name>/manifest.json`, which are baked by the Python pipeline in `tools/`. There is no other planet renderer.
+- **Large repeated objects.** These use virtual objects placed along curves in a `ReferenceFrame` split into wedges; real meshes are pooled and assigned only to wedges near the camera. ObjectTracker finds trackable objects through `system.refFrames[i].wedges[j][className]` and `getFuturePosition(refFrame, dt)`.
+- **Precision.** World coordinates are about 6.4e6 m and the GPU works in float32, so geometry must stay local to a nearby origin, with the large offset in `Object3D.position`. Never build meshes with absolute planet coordinates.
+- **Rendering.**
+  - The renderer uses a logarithmic depth buffer. Custom ShaderMaterials must include the `logdepthbuf_*` chunks (see `src/shaders/`), imported with `?raw`.
+  - Stars and the Moon are drawn in `SkyPass`.
+- **Shots.** `src/shots/ShotFormat.js` documents the `.shot.json` format. `ShotController` previews, records live takes and renders at a fixed step. `src/capture/VideoRecorder.js` encodes AV1 (falling back to H.264/HEVC/VP9) into MP4/MKV with WebCodecs.
 
 ## Conventions
-- Code style is informal: 2-space indent, mostly no semicolons, and lots of commented-out alternatives and `ToDo` notes. Match the surrounding code and don't reformat files.
-- Units are SI (metres, kg, seconds). Angles in `guidParamWithUnits` are usually degrees and get converted to radians in `dParamWithUnits`.
+
+- SI units throughout. Angles in parameters are degrees; `store.derived` converts where subsystems need radians.
+- The scene frame is X = ECEF y, Y = ECEF z (the polar axis), Z = ECEF x.
+- Match the surrounding code's style: 2-space indent, mostly no semicolons. Prettier is intentionally not used.
+- Bugs found in the pre-refactor code are filed on GitLab (gitlab.bommanager.org/alastair/tethered-ring) with file:line references on the `2025changes` branch. Don't close those issues.
