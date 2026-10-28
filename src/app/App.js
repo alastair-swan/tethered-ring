@@ -207,7 +207,7 @@ export class App {
     if (!this.enableLaunchSystem) return
     const r = this.ring
     const n = this.nonGUIParams
-    this.launchSystem = new Launcher.launcher(this.d, this.clock.time, this.planetCoordSys, this.planetSpec, r.refCoordSys, r.mainRingCurve, r.crv, this.overlays.xyChart, this.clockAdapter(), this.specs, false, '')
+    this.launchSystem = new Launcher.launcher(this.d, this.clock.time, this.planetCoordSys, this.planetSpec, r.refCoordSys, r.mainRingCurve, r.crv, this.overlays.xyChart, null, this.specs, false, '')
     this.launchSystem.drawLaunchTrajectoryLine(this.d, this.planetCoordSys)
 
     // A frame aligned with the end of the launch track, used by presets to place the camera
@@ -247,11 +247,6 @@ export class App {
         .addScaledVector(up, lightFrame.up ?? 0.22)
       this.lighting.setShadowFocus(trackEnd, sunDirection)
     }
-  }
-
-  // The launcher was written against THREE.Clock; give it simulated time instead of wall time.
-  clockAdapter() {
-    return { getElapsedTime: () => this.clock.time, getDelta: () => this.clock.delta }
   }
 
   buildCamera() {
@@ -375,7 +370,6 @@ export class App {
       updateCamerFieldOfView: visibility((p) => { this.camera3d.fov = p.cameraFieldOfView.value; this.camera3d.updateProjectionMatrix() }),
       resizeTrackingMarkers: () => {},
       updateTrackingMode: () => {},
-      updatePerfOptimzation: () => {},
       adjustStarsVisibility: () => {},
       adjustMoonsVisibility: visibility((p) => { this.sky.companionBody.visible = p.showMoon.value }),
       adjustLaunchTrajectoryOpacity: () => {},

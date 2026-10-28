@@ -627,7 +627,6 @@ export function createParameterDefinitions() {
   orbitControlsAutoRotate: {value: false, units: '', autoMap: true, onChange: 'updateOrbitControlsRotateSpeed', folder: 'Rendering'},
   orbitControlsRotateSpeed: {value: 0.1, units: '', autoMap: true, min: -10, max: 10, onChange: 'updateOrbitControlsRotateSpeed', folder: 'Rendering'},
   logZoomRate: {value: -2, units: '', autoMap: true, min: -5, max: -1, onChange: 'updateOrbitControlsRotateSpeed', folder: 'Rendering'},
-  perfOptimizedThreeJS: {value: false, units: '', autoMap: true, min: 5, max: 90, onChange: 'updatePerfOptimzation', folder: 'Rendering'},
   tweeningDuration: {value: 6000, units: '', autoMap: true, min: 0, max: 1000000, onChange: 'updatedParam', folder: 'Rendering'},
   pKeyAltitudeFactor: {value: 1, units: '', autoMap: true, min: 0, max: 2, onChange: 'updatedParam', folder: 'Rendering'},
   controlCameraFromJsonDuringCapture: {value: false, autoMap: true, onChange: 'updatedParam', folder: 'Rendering'},
