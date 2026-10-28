@@ -88,6 +88,8 @@ const DEG2RAD = Math.PI / 180;
 const WATER_OPACITY = 0.12; // looking straight into it (more at grazing angles: see seaNoise.js)
 const WATER_SHALLOWS_DEPTH = 30;
 const WATER_FALLBACK_COLOR = 0x1d5f7d;
+// The underside of the sea as seen from above it (through the water, near the horizon): deep water.
+const WATER_UNDERSIDE_FROM_ABOVE = [0.015, 0.035, 0.06];
 // Sea floor seen from under the surface (linear RGB), and the depth over which it replaces the imagery.
 const SEAFLOOR_COLOR = [0.30, 0.28, 0.22];
 const SEAFLOOR_BLEND_DEPTH = 20;
@@ -1847,6 +1849,10 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
   // Mostly clear (so the tube and cables show through), more opaque at grazing angles, with fine
   // ripples (seaNoise.js) that show where the surface is and how far away; tinted by the imagery's
   // ocean colour and clearer still in the shallows.
+  // Back faces: from above the sea, a view ray that skims the surface near the horizon passes into
+  // the water and, because of the Earth's curvature, comes back out through the underside further on;
+  // there the underside is opaque deep water, so the sky never shows through the sea. From under the
+  // surface the underside is drawn by Ocean.js instead, so back faces are skipped.
   _createWaterMaterial(tile) {
     const material = new THREE.MeshPhongMaterial({
       color: tile.texture ? 0xffffff : WATER_FALLBACK_COLOR,
@@ -1855,10 +1861,12 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
       shininess: 80,
       transparent: true,
       depthWrite: false,
+      side: THREE.DoubleSide,
     });
     const offsets = noiseOffsets(tile.center, SEA_SURFACE_FREQUENCIES);
     material.onBeforeCompile = (shader) => {
       shader.uniforms.seaRippleOffset = { value: offsets };
+      shader.uniforms.seafloorView = this.seafloorView;
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
 attribute float seaDepth;
@@ -1869,12 +1877,17 @@ vSeaDepth = seaDepth;
 vSeaLocal = transformed;`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
+uniform float seafloorView;
 varying float vSeaDepth;
 varying vec3 vSeaLocal;
 ${fbmGlsl('seaRipple', SEA_SURFACE_FREQUENCIES)}
 ${seaSurfaceLookGlsl(WATER_OPACITY)}`)
         .replace('#include <alphatest_fragment>', `if (vSeaDepth <= 0.0) discard; // land
-{
+if (!gl_FrontFacing) {
+  if (seafloorView > 0.5) discard; // under the surface: Ocean.js draws the underside
+  diffuseColor = vec4(${WATER_UNDERSIDE_FROM_ABOVE.map(c => c.toFixed(3)).join(', ')}, 1.0);
+}
+else {
   float ripple = seaRippleFbm(vSeaLocal, length(vViewPosition));
   float shine;
   vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, abs(dot(normalize(vNormal), normalize(vViewPosition))), shine);

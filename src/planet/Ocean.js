@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { ecefToGeodetic } from '../physics/geodesy.js'
 import { fbmGlsl, noiseOffsets, SEA_SURFACE_FREQUENCIES, seaSurfaceLookGlsl } from './seaNoise.js'
+import { SeaDarkening } from './seaDarkening.js'
 
 // The sea, as seen from in it: the underside of the water surface, and an underwater look (fog in the
 // water colour, no sky). From above, the surface is drawn by the planet's tiles in the colour of the
@@ -22,7 +23,12 @@ const UNDERSIDE_COLOR = new THREE.Color(0x6fb3c9)
 const UNDERSIDE_OPACITY = 0.18 // looking straight up through it (more at grazing angles)
 const SHALLOW_WATER_COLOR = new THREE.Color(0x1f6f8c)
 const DEEP_WATER_COLOR = new THREE.Color(0x04131f)
-const DARKENING_DEPTH = 300 // m: below this the underwater fog is at its darkest
+// The water colour goes from slightly darker than SHALLOW just under the surface towards (but never
+// as dark as) DEEP, gently: a fraction SURFACE_DARKENING + (MAX_DARKENING - SURFACE_DARKENING) *
+// (1 - exp(-depth / DARKENING_DEPTH)) of the way.
+const SURFACE_DARKENING = 0.1
+const MAX_DARKENING = 0.7
+const DARKENING_DEPTH = 600 // m
 
 const _camera = new THREE.Vector3()
 const _up = new THREE.Vector3()
@@ -107,6 +113,8 @@ ${seaSurfaceLookGlsl(UNDERSIDE_OPACITY)}`)
     if (!enabled) {
       this.setCameraInWater(false)
       this.mesh.visible = false
+      SeaDarkening.update(false, _origin, 0)
+      if (this.scene.fog === this.fog) this.scene.fog = null
     }
   }
 
@@ -122,6 +130,11 @@ ${seaSurfaceLookGlsl(UNDERSIDE_OPACITY)}`)
     const seaFloor = (geo.alt < 0) ? this.sampleTerrainHeight(geo.lat, geo.lon)?.heightMeters ?? -Infinity : -Infinity
     this.cameraUnderSurface = geo.alt < 0 && geo.alt > seaFloor
     this.setCameraInWater(this.cameraUnderSurface && !isDry(_camera), -geo.alt)
+    // From above the sea, things under it darken with the distance through the water.
+    const a = this.ellipsoid.a, b = this.ellipsoid.b ?? a * (1 - (this.ellipsoid.f || 0))
+    const r = _camera.length()
+    const seaLevelRadius = 1 / Math.sqrt(((_camera.x / r) ** 2 + (_camera.z / r) ** 2) / (a * a) + (_camera.y / r) ** 2 / (b * b))
+    SeaDarkening.update(!this.cameraUnderSurface, this.parent.getWorldPosition(_point), seaLevelRadius)
     this.mesh.visible = this.cameraUnderSurface
     if (!this.cameraUnderSurface) return
     // Rebuild only when the camera has moved by a noticeable fraction of its height above the sea
@@ -138,15 +151,13 @@ ${seaSurfaceLookGlsl(UNDERSIDE_OPACITY)}`)
     if (!inWater && depth <= 0) this.cameraUnderSurface = false
     this.cameraDepth = depth
     // The water colour darkens with depth (also used as the background under the surface).
-    this.fog.color.copy(SHALLOW_WATER_COLOR).lerp(DEEP_WATER_COLOR, Math.min(1, Math.max(0, depth) / DARKENING_DEPTH))
-    if (inWater) {
-      // FogExp2 reaches ~95% at sqrt(3) / density.
-      this.fog.density = Math.sqrt(3) / Math.max(1, this.visibility)
-      this.scene.fog = this.fog
-    }
-    else if (this.scene.fog === this.fog) {
-      this.scene.fog = null
-    }
+    const darkening = SURFACE_DARKENING + (MAX_DARKENING - SURFACE_DARKENING) * (1 - Math.exp(-Math.max(0, depth) / DARKENING_DEPTH))
+    this.fog.color.copy(SHALLOW_WATER_COLOR).lerp(DEEP_WATER_COLOR, darkening)
+    // The fog stays on the scene while the sea is shown (so materials keep the fog code, which also
+    // carries the from-above darkening: see seaDarkening.js); it only fades things in the water.
+    // FogExp2 reaches ~95% at sqrt(3) / density.
+    this.fog.density = inWater ? Math.sqrt(3) / Math.max(1, this.visibility) : 0
+    if (this.enabled) this.scene.fog = this.fog
   }
 
   // Rebuilds the surface disc around the point below the camera (heightAboveSea: |camera altitude|).
@@ -201,7 +212,7 @@ ${seaSurfaceLookGlsl(UNDERSIDE_OPACITY)}`)
   }
 
   dispose() {
-    this.setCameraInWater(false)
+    this.setEnabled(false)
     this.mesh.parent?.remove(this.mesh)
     this.mesh.geometry.dispose()
     this.material.dispose()

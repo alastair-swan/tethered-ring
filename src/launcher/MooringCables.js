@@ -24,9 +24,10 @@ const cylinderGeometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true).transla
 cylinderGeometry.userData.shared = true
 const cableMaterial = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.6, metalness: 0.4 })
 const ANCHOR_SIZE = 20 // m: anchor blocks on the sea floor (oversized, like the tethers, so they show from the tube)
+// Pale and slightly self-lit, so they still show from above the sea through the water's darkening.
 const anchorGeometry = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0)
 anchorGeometry.userData.shared = true
-const anchorMaterial = new THREE.MeshStandardMaterial({ color: 0x2a2724, roughness: 0.9 })
+const anchorMaterial = new THREE.MeshStandardMaterial({ color: 0xd9d3c4, emissive: 0x3a3832, roughness: 0.9 })
 let lineMaterial = new THREE.LineBasicMaterial({ color: 0x505050, transparent: true, opacity: 0.6 })
 const _p = new THREE.Vector3()
 const _q = new THREE.Quaternion()
