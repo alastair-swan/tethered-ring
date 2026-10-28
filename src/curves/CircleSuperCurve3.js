@@ -1,6 +1,6 @@
 import { Vector3 } from 'three'
 import { Quaternion } from 'three'
-import { SuperCurve } from './SuperCurve.js';
+import { SuperCurve, quaternionFromFrame } from './SuperCurve.js';
 import * as tram from '../utils/tram.js'
 
 class CircleSuperCurve3 extends SuperCurve {
@@ -28,7 +28,9 @@ class CircleSuperCurve3 extends SuperCurve {
     this.centerToPointOnCircle = pointOnCircle.clone().sub(centerPoint)
     this.radius = this.centerToPointOnCircle.length()
     this.normalizedCenterToPointOnCircle = this.centerToPointOnCircle.clone().normalize()
-    this.binormal = this.axisOfRotation.normalize()
+    // Copy before normalising so the caller's vector is not mutated
+    this.axisOfRotation = axisOfRotation.clone().normalize()
+    this.binormal = this.axisOfRotation.clone()
     this.duration = 0;
 
   }
@@ -117,15 +119,7 @@ class CircleSuperCurve3 extends SuperCurve {
 
   getQuaternionAt(d, objectForward = new Vector3(0, 1, 0), objectUpward = new Vector3(0, 0, 1), optionalTarget = new Quaternion() ) {
 
-    const q1 = optionalTarget
-    const tangent = this.getTangentAt(d)
-    const normal = this.getNormalAt(d)
-    q1.setFromUnitVectors(objectForward, tangent)
-    const rotatedObjectUpwardVector = objectUpward.clone().applyQuaternion(q1)
-    const q2 = new Quaternion
-    q2.setFromUnitVectors(rotatedObjectUpwardVector, normal)
-    q2.multiply(q1)
-    return q2
+    return quaternionFromFrame(this.getTangentAt(d), this.getNormalAt(d), objectForward, objectUpward, optionalTarget)
   }
 
   getStartFinishZoneIndices(sphereCenter, sphereRadius) {
@@ -158,7 +152,7 @@ class CircleSuperCurve3 extends SuperCurve {
       dValues.push(dValues[0])
     }
     if (dValues.length>=2) {
-      dValues.sort()
+      dValues.sort((x, y) => x - y)  // numeric sort (the default sort compares strings)
       return [dValues[0], dValues[dValues.length-1]]
     }
     else {
@@ -171,8 +165,12 @@ class CircleSuperCurve3 extends SuperCurve {
 
     const zeroVector = this.getPointAt(0).sub(this.centerPoint)
     const pointVector = point.clone().sub(this.centerPoint)
-    const angle = Math.asin(zeroVector.clone().cross(pointVector).dot(this.axisOfRotation)/zeroVector.length()/pointVector.length())
-    //const posAngle = (Math.PI*2 + angle) % (Math.PI*2)
+    // atan2 gives the full signed angle (asin was only valid below 90 degrees and NaN-prone at +/-1)
+    const sinPart = zeroVector.clone().cross(pointVector).dot(this.axisOfRotation)
+    const cosPart = zeroVector.dot(pointVector)
+    let angle = Math.atan2(sinPart, cosPart)
+    // The arc always runs in the positive sense from its d=0 point, so measure the angle in [0, 2pi).
+    if (angle < 0) angle += 2 * Math.PI
     const dValue = angle * this.radius / this.length
     return dValue
 

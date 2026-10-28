@@ -7,6 +7,7 @@ import {
 } from 'three'
 
 import { CylindricalVector3 } from '../utils/tram.js'
+import { nonZero } from './launcherPhysics.js'
 
 
 class SledGrapplerPlacementInfo {
@@ -33,9 +34,9 @@ class SledGrapplerPlacementInfo {
     this.shaftRadius = shaftRadius
     this.threadRadius = threadRadius
     this.threadThickness = threadThickness
-    this.threadStarts = threadStarts
-    this.revolutionsPerSecond = revolutionsPerSecond
-    this.acceleration = acceleration
+    this.threadStarts = Math.max(1, threadStarts)
+    this.revolutionsPerSecond = nonZero(revolutionsPerSecond, 1e-3)
+    this.acceleration = nonZero(acceleration, 1e-3)
     this.initialVelocity = initialVelocity
     this.initialDistance = initialDistance
     this.distanceToSledAft = distanceToSledAft
@@ -178,6 +179,10 @@ class SledGrapplerGeometry extends BufferGeometry {
     offset = new CylindricalVector3(0, 0, 0)) {
 
     super();
+
+    // Guard against division by zero (threadPitch = Infinity -> NaN vertices) for 0 rev/s or 0 m/s^2.
+    revolutionsPerSecond = nonZero(revolutionsPerSecond, 1e-3)
+    acceleration = nonZero(acceleration, 1e-3)
 
     this.type = 'SledGrapplerGeometry';
 

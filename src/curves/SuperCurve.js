@@ -2,6 +2,37 @@ import { MathUtils } from 'three';
 import { Vector2 } from 'three'
 import { Vector3 } from 'three'
 import { Matrix4 } from 'three'
+import { Quaternion } from 'three'
+
+const _t = /*@__PURE__*/ new Vector3()
+const _n = /*@__PURE__*/ new Vector3()
+const _b = /*@__PURE__*/ new Vector3()
+const _objRight = /*@__PURE__*/ new Vector3()
+const _mWorld = /*@__PURE__*/ new Matrix4()
+const _mObj = /*@__PURE__*/ new Matrix4()
+
+/**
+ * Returns the rotation that maps an object's forward axis onto `tangent` and its upward axis onto
+ * (the component of) `normal` perpendicular to the tangent. The inputs do not need to be unit length
+ * or exactly orthogonal; they are orthonormalised here. This replaces the two chained
+ * setFromUnitVectors() calls used previously, which were given non-unit vectors and picked an
+ * arbitrary rotation axis when the rotated up vector was anti-parallel to the normal.
+ */
+export function quaternionFromFrame(tangent, normal, objectForward = new Vector3(0, 1, 0), objectUpward = new Vector3(0, 0, 1), optionalTarget = new Quaternion()) {
+	_t.copy(tangent).normalize()
+	_n.copy(normal).addScaledVector(_t, -_n.copy(normal).dot(_t))
+	if (_n.lengthSq() < 1e-24) {
+		// Degenerate normal: pick any vector perpendicular to the tangent
+		_n.set(Math.abs(_t.x) < 0.9 ? 1 : 0, Math.abs(_t.x) < 0.9 ? 0 : 1, 0).cross(_t)
+	}
+	_n.normalize()
+	_b.crossVectors(_t, _n)
+	_objRight.crossVectors(objectForward, objectUpward).normalize()
+	_mWorld.makeBasis(_b, _t, _n)
+	_mObj.makeBasis(_objRight, objectForward, objectUpward)
+	_mWorld.multiply(_mObj.transpose())
+	return optionalTarget.setFromRotationMatrix(_mWorld)
+}
 
 
 /**

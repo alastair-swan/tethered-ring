@@ -1,3 +1,4 @@
+export { SuperCurve, quaternionFromFrame } from './SuperCurve.js';
 export { SuperCurvePath } from './SuperCurvePath.js';
 export { CatmullRomSuperCurve3 } from './CatmullRomSuperCurve3.js';
 export { CircleSuperCurve3 } from './CircleSuperCurve3.js';

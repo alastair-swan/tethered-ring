@@ -79,16 +79,17 @@ export function analyzeLauncherTerrainDisplacement(launchSystemObject, planetMes
   //console.log(launchSystemObject.launchRampCurve[0])
   for (let i = 0; i<1; i+=0.0025) {
     const point = launchSystemObject.launchRampCurve[0].getPoint(i)
-    const latitude = Math.asin(point.y / point.length())
-    const altitude = point.length() - planetSpec.radiusAtLatitude(latitude)  // This is the altitude above sea level of the ramp section of the launcher
+    // Altitude above the ellipsoid, measured along the geodetic normal. (This used to subtract a radius
+    // evaluated at the geocentric latitude, an error of up to ~70 m.)
+    const geo = tram.ecefToGeodetic(point.x, point.y, point.z, planetSpec.ellipsoid)
+    const altitude = geo.alt  // This is the altitude above sea level of the ramp section of the launcher
     const terrainResult = sampleTerrainDisplacement(point)
     if (terrainResult !== null) {
       //console.print(i.toFixed(2), altitude, terrainResult.displacement, `tile(${terrainResult.ti},${terrainResult.tj})`, `px=${terrainResult.px}`, `py=${terrainResult.py}`, `tex=${terrainResult.texValue.toFixed(4)}`)
       console.print(i.toFixed(5), altitude, terrainResult.displacement)
       // Place a debug sphere at the terrain surface point
-      const direction = point.clone().normalize()
-      const terrainRadius = planetSpec.radiusAtLatitude(latitude) + terrainResult.displacement
-      const terrainPoint = direction.multiplyScalar(terrainRadius)
+      const terrainECEF = tram.geodeticToECEF(geo.lat, geo.lon, terrainResult.displacement, planetSpec.ellipsoid)
+      const terrainPoint = new THREE.Vector3(terrainECEF.x, terrainECEF.y, terrainECEF.z)
       const sphere = new THREE.Mesh(
         new THREE.SphereGeometry(50, 8, 8),
         new THREE.MeshBasicMaterial({ color: 0xff0000 })

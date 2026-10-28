@@ -1,3 +1,4 @@
+import { nonZero } from './launcherPhysics.js'
 import {
   Float32BufferAttribute,
   BufferGeometry,
@@ -25,6 +26,10 @@ class ScrewGeometry extends BufferGeometry {
     minLengthSegmentsPerMeter = 4) {
 
     super();
+
+    // Guard against division by zero (threadPitch = Infinity -> NaN vertices) for 0 rev/s or 0 m/s^2.
+    revolutionsPerSecond = nonZero(revolutionsPerSecond, 1e-3)
+    acceleration = nonZero(acceleration, 1e-3)
 
     this.type = 'ScrewGeometry';
 

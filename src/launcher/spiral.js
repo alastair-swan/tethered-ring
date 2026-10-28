@@ -15,7 +15,7 @@ function arcLength(theta, r0, a) {
 }
 
 // Invert S(θ)=s on a known bracket [0, thetaHi] via bisection
-function thetaFromArcLength(s, r0, a, tol = 1e-18) {
+function thetaFromArcLength(s, r0, a, relTol = 1e-12) {
   if (s <= 0) return 0
   if (a === 0) return s / r0
 
@@ -45,7 +45,9 @@ function thetaFromArcLength(s, r0, a, tol = 1e-18) {
     const Smid = arcLength(mid, r0, a)
     if (Smid < s) lo = mid
     else hi = mid
-    if (hi - lo <= tol) break
+    // Relative tolerance: the old absolute 1e-18 rad was below float64 resolution, so every call ran
+    // all 200 iterations.
+    if (hi - lo <= relTol * hi) break
   }
 
   return 0.5 * (lo + hi)

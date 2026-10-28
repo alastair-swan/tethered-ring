@@ -1,6 +1,6 @@
 import { SuperCurve } from './SuperCurve.js';
 import * as SuperCurves from './SuperCurves.js';
-import { Quaternion } from 'three'
+import { Quaternion, Vector3 } from 'three'
 
 // **************************************************************
 //	SuperCurved Path - a SuperCurve path is simply a array of connected
@@ -40,7 +40,9 @@ class SuperCurvePath extends SuperCurve {
 
     if ( ! startPoint.equals( endPoint ) ) {
 
-      this.superCurves.push( new SuperCurves[ 'LineSuperCurve' ]( endPoint, startPoint ) );
+      // Use the radial direction as the line's up vector (the scene's curves are planet-centred)
+      const up = endPoint.clone().normalize()
+      this.superCurves.push( new SuperCurves.LineSuperCurve3( endPoint, startPoint, up, up ) );
 
     }
 
@@ -213,7 +215,8 @@ class SuperCurvePath extends SuperCurve {
     let newTotalNumZones = 0
     this.superCurves.forEach((subCurve, index) => {
       const subCurveLength = Math.abs(subCurve.getLength())
-      this.numZones[index] = 1 + Math.max(0, Math.round((totalNumZones - numSubCurves) * (subCurveLength - zoneRoughLength) / (curvesTotalLength - numSubCurves * zoneRoughLength)))
+      const denominator = curvesTotalLength - numSubCurves * zoneRoughLength
+      this.numZones[index] = 1 + ((denominator > 0) ? Math.max(0, Math.round((totalNumZones - numSubCurves) * (subCurveLength - zoneRoughLength) / denominator)) : 0)
       newTotalNumZones += this.numZones[index]
     })
     // Hacky...
@@ -232,9 +235,8 @@ class SuperCurvePath extends SuperCurve {
     this.superCurves.forEach((subCurve, index) => {
       this.startZone[index] = startDiv
       startDiv += this.numZones[index]
-      if (this.numZones[index]==0) {
-        console.log("Error: numZones cannot be zero")
-        this.subdivide(totalNumZones)  // Debug call
+      if (!(this.numZones[index] > 0)) {
+        console.error("SuperCurvePath.subdivide: sub-curve " + index + " received no zones")
       }
     })
 
@@ -365,8 +367,9 @@ class SuperCurvePath extends SuperCurve {
     const numZones = this.numZones[result.relevantCurveIndex]
     const startZone = this.startZone[result.relevantCurveIndex]
     const length = result.relevantCurve.getLength()
-    const d = result.relevantCurve.tTod(deltaT - result.relevantCurveStartTime) / length
-    const zoneIndex = startZone + Math.floor(d * numZones)
+    const d = (length > 0) ? result.relevantCurve.tTod(Math.max(0, deltaT - result.relevantCurveStartTime)) / length : 0
+    // Clamp to the zones owned by this sub-curve (deltaT beyond the end used to give numZones)
+    const zoneIndex = startZone + Math.max(0, Math.min(numZones-1, Math.floor(d * numZones)))
     return zoneIndex
 
   }
@@ -432,7 +435,9 @@ class SuperCurvePath extends SuperCurve {
     for ( let i = 0, l = json.superCurves.length; i < l; i ++ ) {
 
       const superCurve = json.superCurves[ i ];
-      this.superCurves.push( new SuperCurves[ superCurve.type ]().fromJSON( superCurve ) );
+      const SuperCurveClass = SuperCurves[ superCurve.type ];
+      if ( ! SuperCurveClass ) throw new Error( `SuperCurvePath.fromJSON: unsupported curve type "${superCurve.type}"` );
+      this.superCurves.push( new SuperCurveClass().fromJSON( superCurve ) );
 
     }
 

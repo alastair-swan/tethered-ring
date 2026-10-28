@@ -322,6 +322,14 @@ export function adjustedTimeSinceStart(slowDownPassageOfTime, timeSinceStart,
   return Math.max(0, timeSinceStart - launcherStartDelayInSeconds) * slowDownPassageOfTime
 }
 
+// Returns x with its magnitude raised to at least `min` (0 maps to +min). Used to keep the screw and
+// grappler geometry finite when the GUI sets screw speed or acceleration to 0: a non-rotating screw or
+// a non-accelerating sled has no meaningful variable-pitch thread, so the geometry is only indicative.
+export function nonZero(x, min) {
+  if (!Number.isFinite(x)) return min
+  return (x < 0) ? Math.min(x, -min) : Math.max(x, min)
+}
+
 export function calculateThreadStarts(baseDistanceAlongScrew, theadStarts) {
   // ToDo: This is a proof of concept. We need to implement a more accurate algorithm for adjusting the number of thread starts as the vehicle progresses down the launcher.
   //return (baseDistanceAlongScrew<2000) ? 1 : (baseDistanceAlongScrew<5000) ? 2 : (baseDistanceAlongScrew<20000) ? 4 : 8

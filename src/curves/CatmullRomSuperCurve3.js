@@ -1,6 +1,6 @@
 import { Vector3 } from 'three'
 import { Quaternion } from 'three'
-import { SuperCurve } from './SuperCurve.js';
+import { SuperCurve, quaternionFromFrame } from './SuperCurve.js';
 
 /**
  * Centripetal CatmullRom Curve - which is useful for avoiding
@@ -123,6 +123,7 @@ class CatmullRomSuperCurve3 extends SuperCurve {
 	setPoints( points ) {
 
 		this.points = points
+		this.needsUpdate = true  // arc lengths (and the zone sample cache) must be recomputed
 
 	}
 
@@ -340,8 +341,7 @@ class CatmullRomSuperCurve3 extends SuperCurve {
       const tangent = this.getTangent(t)
       const position = this.getPoint(t)
       const binormal = tangent.clone().cross(position).normalize()
-      const normal = binormal.clone().cross(tangent)
-      return normal
+      return optionalTarget.crossVectors(binormal, tangent)
     }
     else {
   		return this.getRawNormal(t, optionalTarget).normalize();
@@ -364,8 +364,7 @@ class CatmullRomSuperCurve3 extends SuperCurve {
     if (this.normalMode === 'alwaysAway') {
       const tangent = this.getTangent(t)
       const position = this.getPoint(t)
-      const binormal = tangent.clone().cross(position).normalize()
-      return binormal
+      return optionalTarget.crossVectors(tangent, position).normalize()
     }
     else {
   		return this.getRawBinormal(t, optionalTarget).normalize();
@@ -492,15 +491,7 @@ class CatmullRomSuperCurve3 extends SuperCurve {
 
 	getQuaternion( t, objectForward = new Vector3(0, 1, 0), objectUpward = new Vector3(0, 0, 1), optionalTarget = new Quaternion() ) {
 
-		const q1 = optionalTarget
-		const tangent = this.getTangent(t)
-		const normal = this.getNormal(t)
-		q1.setFromUnitVectors(objectForward, tangent)
-		const rotatedObjectUpwardVector = objectUpward.clone().applyQuaternion(q1)
-		const q2 = new Quaternion
-		q2.setFromUnitVectors(rotatedObjectUpwardVector, normal)
-		q2.multiply(q1)
-		return q2
+		return quaternionFromFrame(this.getTangent(t), this.getNormal(t), objectForward, objectUpward, optionalTarget)
 		
 	}
 
@@ -511,27 +502,41 @@ class CatmullRomSuperCurve3 extends SuperCurve {
 	
 	}
 
+	// Returns [dStart, dFinish], the range of arc-length fractions of the curve that lie inside the
+	// sphere, or [] if none. The curve is sampled at 1001 evenly spaced arc-length positions; the samples
+	// are cached (Float64Array) and only recomputed when the curve's points/arc lengths change, instead
+	// of calling getPointAt() 1001 times per curve per reference frame every frame.
 	getStartFinishZoneIndices( sphereCenter, sphereRadius ) {
 
-		let startDValue = null
-		let finishDValue = null
-		// ToDo: Need a more efficient and reliable algorithm here...
-		for (let d = 0; d<=1; d+=0.001) {
-			const point = this.getPointAt(d)
-			const distance = point.distanceTo(sphereCenter)
-			if (distance < sphereRadius) {
-				if (startDValue === null) {
-					startDValue = d
-				}
-				finishDValue = d
+		const numSamples = 1001
+		const lengths = this.getLengths()
+		if ( this._zoneSamplesKey !== lengths ) {
+			const samples = new Float64Array( numSamples * 3 )
+			const p = new Vector3()
+			for ( let i = 0; i < numSamples; i ++ ) {
+				this.getPointAt( i / ( numSamples - 1 ), p )
+				samples[ i * 3 ] = p.x
+				samples[ i * 3 + 1 ] = p.y
+				samples[ i * 3 + 2 ] = p.z
+			}
+			this._zoneSamples = samples
+			this._zoneSamplesKey = lengths
+		}
+		const samples = this._zoneSamples
+		const cx = sphereCenter.x, cy = sphereCenter.y, cz = sphereCenter.z
+		const r2 = sphereRadius * sphereRadius
+		let start = -1
+		let finish = -1
+		for ( let i = 0; i < numSamples; i ++ ) {
+			const dx = samples[ i * 3 ] - cx
+			const dy = samples[ i * 3 + 1 ] - cy
+			const dz = samples[ i * 3 + 2 ] - cz
+			if ( dx * dx + dy * dy + dz * dz < r2 ) {
+				if ( start === - 1 ) start = i
+				finish = i
 			}
 		}
-		if ((startDValue === null) || (finishDValue === null)) {
-			return []
-		}
-		else {
-			return [startDValue, finishDValue]
-		}
+		return ( start === - 1 ) ? [] : [ start / ( numSamples - 1 ), finish / ( numSamples - 1 ) ]
 
 	}
 
