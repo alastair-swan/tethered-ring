@@ -330,6 +330,30 @@ export function nonZero(x, min) {
   return (x < 0) ? Math.min(x, -min) : Math.max(x, min)
 }
 
+// The screw thread's phase and pitch at a distance along the screw are set by the adaptive nut's
+// motion: its centre starts at initialDistance (half the nut's length) moving at initialVelocity and
+// accelerates uniformly, and the thread at each point matches the nut's speed as its centre passes.
+// The thread behind initialDistance is only ever run over by the nut's rear grapplers; it continues
+// at the initial pitch (as if the nut had been moving at initialVelocity before launch), so the pitch
+// is continuous and never zero there. (It used to have no solution there: the thread ran straight
+// along the screw, and the grapplers divided by a zero pitch.)
+//
+// threadTime returns the time (s) in the convention the screw and grappler geometry have always used:
+// the negative root of d = d0 + v0 t + a t^2 / 2, which mirrors the helix (t = -t_launch - 2 v0 / a).
+// threadSpeed returns the matching signed forward speed (m/s), v0 + a t, whose magnitude is the
+// nut's speed. Callers apply nonZero() / Math.max(1, ...) to acceleration and initialVelocity.
+export function threadTime(distance, initialVelocity, initialDistance, acceleration) {
+  const ahead = distance - initialDistance
+  if (ahead >= 0) return (-initialVelocity - Math.sqrt(Math.max(0, initialVelocity**2 + 2 * acceleration * ahead))) / acceleration
+  return -2 * initialVelocity / acceleration - ahead / initialVelocity
+}
+
+export function threadSpeed(distance, initialVelocity, initialDistance, acceleration) {
+  const ahead = distance - initialDistance
+  if (ahead >= 0) return -Math.sqrt(Math.max(0, initialVelocity**2 + 2 * acceleration * ahead))
+  return -initialVelocity
+}
+
 export function calculateThreadStarts(baseDistanceAlongScrew, theadStarts) {
   // ToDo: This is a proof of concept. We need to implement a more accurate algorithm for adjusting the number of thread starts as the vehicle progresses down the launcher.
   //return (baseDistanceAlongScrew<2000) ? 1 : (baseDistanceAlongScrew<5000) ? 2 : (baseDistanceAlongScrew<20000) ? 4 : 8

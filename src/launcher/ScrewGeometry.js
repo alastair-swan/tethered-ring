@@ -1,4 +1,4 @@
-import { nonZero } from './launcherPhysics.js'
+import { nonZero, threadTime, threadSpeed } from './launcherPhysics.js'
 import {
   Float32BufferAttribute,
   BufferGeometry,
@@ -6,6 +6,34 @@ import {
   Vector3
 } from 'three'
 
+
+// Positions (fractions of screwLength, from 0 to 1) of the rings of vertices for a screw segment:
+// at most 1/segmentsPerMeter apart and at most 1/samplesPerTurn of a turn of the thread apart. If
+// that would take more than maxSegments, fewer samples per turn are used; returns null if even 3 per
+// turn would not fit (the pitch is then far too fine to draw at that budget).
+export function screwLengthOffsets(screwLength, baseDistanceAlongScrew, initialVelocity, initialDistance,
+  acceleration, revolutionsPerSecond, segmentsPerMeter, samplesPerTurn, maxSegments = Infinity) {
+  revolutionsPerSecond = Math.abs(nonZero(revolutionsPerSecond, 1e-3))
+  acceleration = nonZero(acceleration, 1e-3)
+  initialVelocity = Math.max(1, initialVelocity)
+  const timeAt = (d) => threadTime(baseDistanceAlongScrew + d, initialVelocity, initialDistance, acceleration)
+  const turns = revolutionsPerSecond * Math.abs(timeAt(screwLength) - timeAt(0))
+  const lengthSegments = Math.ceil(segmentsPerMeter * screwLength)
+  if (lengthSegments + turns * samplesPerTurn > maxSegments) {
+    samplesPerTurn = (maxSegments - lengthSegments) / Math.max(turns, 1e-9)
+    if (samplesPerTurn < 3) return null
+  }
+  const maxStep = screwLength / Math.max(1, lengthSegments)
+  const offsets = [0]
+  // The pitch only grows along the screw, so stepping by the pitch at the start of each step is safe.
+  for (let d = 0; d < screwLength;) {
+    const metresPerTurn = Math.abs(threadSpeed(baseDistanceAlongScrew + d, initialVelocity, initialDistance, acceleration)) / revolutionsPerSecond
+    // (The floor on the step only matters for a decelerating thread, whose pitch can reach zero.)
+    d = Math.min(screwLength, d + Math.max(maxStep * 1e-3, Math.min(maxStep, metresPerTurn / samplesPerTurn)))
+    offsets.push(d / screwLength)
+  }
+  return offsets
+}
 
 class ScrewGeometry extends BufferGeometry {
 
@@ -23,7 +51,9 @@ class ScrewGeometry extends BufferGeometry {
     revolutionsPerSecond = 1,
     acceleration = 0,
     radialSegments = 8,
-    minLengthSegmentsPerMeter = 4) {
+    minLengthSegmentsPerMeter = 4,
+    samplesPerTurn = 16,
+    maxLengthSegments = Infinity) {
 
     super();
 
@@ -93,29 +123,12 @@ class ScrewGeometry extends BufferGeometry {
     // const uvsTag = []
     // const indicesTag = []
 
-    // Estimate how many length segments we will need to properly represent the screw
-    const distanceAlongScrew = baseDistanceAlongScrew + 0.5 * screwLength
-    //0 = 0.5 * a * t**2 + v0 * t - d
-    const cA = 0.5 * acceleration
-    const cB = initialVelocity
-    const cC = initialDistance - distanceAlongScrew
-    let time
-    if (cB**2 - 4*cA*cC < 0) {
-      time = 0
-    }
-    else {
-      const time0 = (-cB + Math.sqrt(cB**2 - 4*cA*cC)) / (2*cA)
-      const time1 = (-cB - Math.sqrt(cB**2 - 4*cA*cC)) / (2*cA)
-      time = Math.max(time0, time1)
-    }
-    const rotations = revolutionsPerSecond * time
-    const rateOfChangeInRotationalDistance = 2 * Math.PI * threadRadius * Math.abs(revolutionsPerSecond)
-    const rateOfChangeInForwardDisplacement = initialVelocity + acceleration * time   // We're going to assume that the launch sled does not start from zero velocity because this would require an thread pitch of zero, which is not manufacturable.
-
-    const minimumTubularSegments = Math.ceil(minLengthSegmentsPerMeter * screwLength)
-    // Increase the number of segment based on the pitch of the screw
-    // Capped so that a very fine pitch cannot produce an unbounded vertex count
-    const tubularSegments = Math.min(Math.max(minimumTubularSegments, 4096), Math.ceil(minimumTubularSegments * Math.sqrt(rateOfChangeInRotationalDistance**2 + rateOfChangeInForwardDisplacement**2) / rateOfChangeInForwardDisplacement))
+    // Where along the screw to place each ring of vertices (fractions of screwLength). Placed by
+    // turns of the thread rather than evenly by length, so a tight pitch is not undersampled (which
+    // made the flights alias into a wrong helix angle).
+    const lengthOffsets = screwLengthOffsets(screwLength, baseDistanceAlongScrew, initialVelocity, initialDistance,
+      acceleration, revolutionsPerSecond, minLengthSegmentsPerMeter, samplesPerTurn, maxLengthSegments) ?? [0, 1]
+    const tubularSegments = lengthOffsets.length - 1
 
     // create buffer data
     generateBufferData();
@@ -144,8 +157,7 @@ class ScrewGeometry extends BufferGeometry {
 
       const twoPi = 2 * Math.PI
 
-      for ( let i = 0; i <= tubularSegments; i++) {
-        const screwSegmentLengthOffset = i / tubularSegments
+      for (const screwSegmentLengthOffset of lengthOffsets) {
         generateSegmentsAndUVs( screwSegmentLengthOffset, screwLength, 0);
       }
       // Need an extra vertices at each end of the screw to construct the flat surfaces that cap the ends
@@ -285,24 +297,10 @@ class ScrewGeometry extends BufferGeometry {
 
       // Figure out the start angle and end angle given the thickness, pitch, and the number of starts of the thread.
       const distanceAlongScrew = baseDistanceAlongScrew + screwSegmentLengthOffset * screwLength
-      //0 = 0.5 * a * t**2 + v0 * t - d
-      const cA = 0.5 * acceleration
-      const cB = initialVelocity
-      const cC = initialDistance - distanceAlongScrew
-      let time
-      if (cB**2 - 4*cA*cC < 0) {
-        time = 0
-      }
-      else {
-        time = (-cB - Math.sqrt(cB**2 - 4*cA*cC)) / (2*cA)
-      }
-      // const time0 = (-cB + Math.sqrt(cB**2 - 4*cA*cC)) / (2*cA)
-      // const time1 = (-cB - Math.sqrt(cB**2 - 4*cA*cC)) / (2*cA)
-      // const time = Math.max(time0, time1)
-  
+      const time = threadTime(distanceAlongScrew, initialVelocity, initialDistance, acceleration)
       const rotations = revolutionsPerSecond * time
       const rateOfChangeInRotationalDistance = 2 * Math.PI * threadRadius * Math.abs(revolutionsPerSecond)
-      const rateOfChangeInForwardDisplacement = initialVelocity + acceleration * time   // We're going to assume that the launch sled does not start from zero velocity because this would require an thread pitch of zero, which is not manufacturable.
+      const rateOfChangeInForwardDisplacement = threadSpeed(distanceAlongScrew, initialVelocity, initialDistance, acceleration)
       const threadPitch = rateOfChangeInForwardDisplacement / rateOfChangeInRotationalDistance
   
       const threadHalfOfCrossWidth = Math.min(threadThickness * Math.sqrt(threadPitch**2+1) / Math.abs(threadPitch), shaftOuterRadius/2);

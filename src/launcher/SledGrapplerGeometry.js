@@ -7,7 +7,7 @@ import {
 } from 'three'
 
 import { CylindricalVector3 } from '../utils/tram.js'
-import { nonZero } from './launcherPhysics.js'
+import { nonZero, threadTime, threadSpeed } from './launcherPhysics.js'
 
 
 class SledGrapplerPlacementInfo {
@@ -60,26 +60,11 @@ class SledGrapplerPlacementInfo {
     this.launchSledGrapplerTopDeadCenterRotation = launchSledGrapplerTopDeadCenterRotation
     this.minMaxArray = minMaxArray
 
-    this.cA = 0.5 * this.acceleration
-    this.cB = this.initialVelocity
-    this.cBSqrd = this.initialVelocity**2
 
     const midwayGrapplerDistance = this.bodyLength / 2
     const midwayGPlus = midwayGrapplerDistance + this.grapplerMidOffset
-    const cC = this.initialDistance - (this.distanceToSledAft + midwayGPlus)
-    this.midwayTime = this.calcTime(this.cA, this.cB, this.cBSqrd, cC)
+    this.midwayTime = threadTime(this.distanceToSledAft + midwayGPlus, this.initialVelocity, this.initialDistance, this.acceleration)
 
-  }
-
-  calcTime(cA, cB, cBSqrd, cC) {
-    let time
-    if (cBSqrd - 4*cA*cC < 0) {
-      time = (-cB - 0) / (2*cA)
-    }
-    else {
-      time = (-cB - Math.sqrt(cBSqrd - 4*cA*cC)) / (2*cA)
-    }
-    return time
   }
 
   // ToDo: I don't think we need launchSledGrapplerRangeFactor as a parameter. It should be a property of the class.
@@ -90,11 +75,9 @@ class SledGrapplerPlacementInfo {
     // Grappler distance is the distance from the back of the adaptive nut to back of the grappler pad.
     // We need the distance to the middle of the grappler pad. We'll call this "gPlus"
     const gPlus = grapplerDistance + this.grapplerMidOffset
-    const cC = this.initialDistance - (this.distanceToSledAft + gPlus)
+    const time = threadTime(this.distanceToSledAft + gPlus, this.initialVelocity, this.initialDistance, this.acceleration)
 
-    const time = this.calcTime(this.cA, this.cB, this.cBSqrd, cC)
-
-    const rateOfChangeInForwardDisplacement = this.initialVelocity + this.acceleration * time   // We're going to assume that the launch sled does not start from zero velocity because this would require an thread pitch of zero, which is not manufacturable.
+    const rateOfChangeInForwardDisplacement = threadSpeed(this.distanceToSledAft + gPlus, this.initialVelocity, this.initialDistance, this.acceleration)
     const rateOfChangeInRotationalDistance1 = 2 * Math.PI * this.shaftRadius * Math.abs(this.revolutionsPerSecond)
     const rateOfChangeInRotationalDistance2 = 2 * Math.PI * this.threadRadius * Math.abs(this.revolutionsPerSecond)
     const innerThreadPitch = rateOfChangeInForwardDisplacement / rateOfChangeInRotationalDistance1
@@ -236,9 +219,6 @@ class SledGrapplerGeometry extends BufferGeometry {
 
     function generateBufferData() {
 
-      const cA = 0.5 * acceleration
-      const cB = initialVelocity
-      const cBSqrd = initialVelocity**2
       const rateOfChangeInRotationalDistance1 = 2 * Math.PI * shaftRadius * Math.abs(revolutionsPerSecond)
       const rateOfChangeInRotationalDistance2 = 2 * Math.PI * threadRadius * Math.abs(revolutionsPerSecond)
       const gList = []
@@ -254,17 +234,6 @@ class SledGrapplerGeometry extends BufferGeometry {
 
       let g = grapplerDistance
 
-      function calcTime(cA, cB, cBSqrd, cC) {
-        let time
-        if (cBSqrd - 4*cA*cC < 0) {
-          time = (-cB - 0) / (2*cA)
-        }
-        else {
-          time = (-cB - Math.sqrt(cBSqrd - 4*cA*cC)) / (2*cA)
-        }
-        return time
-      }
-
       // g, gPlus, and midwayGPlus are all distances measured from the start of the screw.
       const midwayGPlus = g + grapplerMidOffset
       const averageRadius = (shaftRadius + threadRadius) / 2
@@ -277,8 +246,7 @@ class SledGrapplerGeometry extends BufferGeometry {
         // Figure out the screw's rotation at the locaton of each grappler
         // 0 = 0.5 * a * t**2 + v0 * t + d0 - d
         const gPlus = g + betweenGrapplerSpacing/2 + i * segmentSpacing
-        const cC = initialDistance - (distanceToSledAft + gPlus)
-        const time = calcTime(cA, cB, cBSqrd, cC)
+        const time = threadTime(distanceToSledAft + gPlus, initialVelocity, initialDistance, acceleration)
         gList[i] = gPlus
         rotations[i] = additionalRotation + revolutionsPerSecond * time
       }
@@ -298,8 +266,7 @@ class SledGrapplerGeometry extends BufferGeometry {
         // Reduce the arc length of the grappler's magnetic pad by a factor of grapplerPadLengthFactor
         const fullGPlus = g + betweenGrapplerSpacing/2 + i * segmentSpacing
         const gPlus = (fullGPlus - midwayGPlus)*grapplerPadLengthFactor + midwayGPlus
-        const cC = initialDistance - (distanceToSledAft + gPlus)
-        const time = calcTime(cA, cB, cBSqrd, cC)
+        const time = threadTime(distanceToSledAft + gPlus, initialVelocity, initialDistance, acceleration)
 
         rotations[i] = additionalRotation + revolutionsPerSecond * time
         
@@ -311,7 +278,7 @@ class SledGrapplerGeometry extends BufferGeometry {
         nearestThread[i] = (threadStarts-1) - Math.floor(rotationsWithTwistFrac * threadStarts)
 
         gList[i] = gPlus
-        const rateOfChangeInForwardDisplacement = initialVelocity + acceleration * time   // We're going to assume that the launch sled does not start from zero velocity because this would require an thread pitch of zero, which is not manufacturable.
+        const rateOfChangeInForwardDisplacement = threadSpeed(distanceToSledAft + gPlus, initialVelocity, initialDistance, acceleration)
         innerThreadPitch[i] = rateOfChangeInForwardDisplacement / rateOfChangeInRotationalDistance1
         outerThreadPitch[i] = rateOfChangeInForwardDisplacement / rateOfChangeInRotationalDistance2
       }

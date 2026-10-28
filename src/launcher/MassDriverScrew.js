@@ -1,16 +1,18 @@
 import * as THREE from 'three'
-import { ScrewGeometry } from './ScrewGeometry.js'
+import { ScrewGeometry, screwLengthOffsets } from './ScrewGeometry.js'
 import * as tram from '../utils/tram.js'
 import { VirtualObject, parameterSignature } from './VirtualObject.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 
 // Screw levels of detail, chosen by the screw's on-screen diameter in pixels. Each thread level is
-// tessellated so a lengthwise step spans roughly 3 px at its threshold; below the last thread level
-// the threads are sub-pixel and the screw is drawn as a plain cylinder.
+// tessellated so a lengthwise step spans roughly 3 px at its threshold, and with at least
+// samplesPerTurn steps per turn of the thread (the pitch is very fine near the breech). maxSegments
+// bounds the vertex count; a segment whose pitch is too fine for that budget is drawn as a cylinder
+// at that level, as are all screws below the last thread level (the threads are sub-pixel there).
 const SCREW_LEVELS = [
-  { minPixels: 48, segmentsPerMeter: 16, cost: 'expensive' },  // full detail (close-ups)
-  { minPixels: 12, segmentsPerMeter: 4, cost: 'expensive' },
-  { minPixels: 3, segmentsPerMeter: 1, cost: 'cheap' },
+  { minPixels: 48, segmentsPerMeter: 16, samplesPerTurn: 48, maxSegments: 8192, cost: 'expensive' },  // full detail (close-ups)
+  { minPixels: 12, segmentsPerMeter: 4, samplesPerTurn: 12, maxSegments: 2048, cost: 'expensive' },
+  { minPixels: 3, segmentsPerMeter: 1, samplesPerTurn: 4, maxSegments: 512, cost: 'cheap' },
   { minPixels: 0.75, cylinder: true, cost: 'cheap' },
 ]
 
@@ -135,7 +137,10 @@ function screwGeometryFor(group, levelIndex) {
   const segment = group.screwSegment
   const level = SCREW_LEVELS[levelIndex]
   let geometry
-  if (level.cylinder) {
+  const threadsFit = !level.cylinder && screwLengthOffsets(segment.screwLength, segment.baseDistanceAlongScrew,
+    v.launcherMassDriver1InitialVelocity, v.initialDistance, v.launcherMassDriverForwardAcceleration,
+    v.launcherMassDriverScrewRevolutionsPerSecond, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments) !== null
+  if (!threadsFit) {
     // Thread envelope, slightly thinner than the tips to account for the gaps between flights.
     geometry = new THREE.CylinderGeometry(v.threadRadius * 0.9, v.threadRadius * 0.9, segment.screwLength, 12, 1, false)
   }
@@ -144,7 +149,7 @@ function screwGeometryFor(group, levelIndex) {
       segment.screwLength, v.shaftOuterRadius, v.shaftInnerRadius, v.threadRadius, v.threadThickness,
       v.threadTaperRatio, segment.threadStarts, segment.baseDistanceAlongScrew, v.launcherMassDriver1InitialVelocity,
       v.initialDistance, v.launcherMassDriverScrewRevolutionsPerSecond, v.launcherMassDriverForwardAcceleration,
-      segment.radialSegments, level.segmentsPerMeter)
+      segment.radialSegments, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments)
   }
   cache.set(levelIndex, geometry)
   return geometry
