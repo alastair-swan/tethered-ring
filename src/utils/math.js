@@ -250,9 +250,7 @@ export function diffTwoCurves(curve1, curve2, maxTime) {
         sumOfSquares += (d1.y - d2.y) ** 2
       }
     }
-    else {
-      debugger
-    }
+    // Samples whose x values do not line up are skipped.
   }
 
   let rootMeanSquaredError = Math.sqrt(sumOfSquares / smallerLength)

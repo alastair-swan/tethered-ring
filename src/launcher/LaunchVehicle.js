@@ -435,7 +435,7 @@ export class virtualLaunchVehicle {
     virtualLaunchVehicle.numObjects = dParamWithUnits['showLaunchVehicles'].value ? dParamWithUnits['numVirtualLaunchVehicles'].value : 0
 
     virtualLaunchVehicle.planetSpec = planetSpec
-    virtualLaunchVehicle.planetRadius = tram.radiusAtLatitude(dParamWithUnits['launcherRampEndLatitude'].value*Math.PI/180, planetSpec.ellipsoid)
+    virtualLaunchVehicle.planetRadius = tram.radiusAtLatitude(dParamWithUnits['launcherRampEndLatitude'].value, planetSpec.ellipsoid)
 
     virtualLaunchVehicle.tInc = dParamWithUnits['launchVehicleSpacingInSeconds'].value
     virtualLaunchVehicle.sidewaysOffset = dParamWithUnits['launchVehicleSidewaysOffset'].value

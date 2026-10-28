@@ -231,6 +231,7 @@ export function simRocketFlight(simInputParameters, scene, verbose) {
       // (Note: Potentially good inforamtion on rocket engine performance analysys here: https://exrocketman.blogspot.com/2024/07/requests-for-rocket-engine-estimator.html)
       // We need to limit the acceleration to avoid exceeding the structural load limit on the booster, so solve the following eqauation for acceleration:
       // rocketStage1StructuralLoadLimit <= aerodynamicDrag + acceleration * (rocketStage2DryMass + rocketStage2PropellantMass + rocketPayloadMass)
+      // FUDGE FACTOR (no source data): drag is multiplied by 6 when computing the structural load margin.
       const maxAllowableAcceleration = (structuralLoadLimit - aerodynamicDrag*6) / load
       // Next solve for the maximum allowable thrust
       const maxAllowableThrust = maxAllowableAcceleration * mTotal
@@ -241,9 +242,12 @@ export function simRocketFlight(simInputParameters, scene, verbose) {
       const maximumPossibleThrust = (numSeaLevelEngines+numVacuumEngines) * (inertialThrust + pressureThrust)
       engineParams.targetThrust = maxAllowableThrust / (numSeaLevelEngines+numVacuumEngines)
       if (maximumPossibleThrust > maxAllowableThrust) {
-        thrust = maxAllowableThrust
         engineParams.targetThrust = maxAllowableThrust / (numSeaLevelEngines+numVacuumEngines)
-        propellantFlowRate = tram.solveForMassFlowRate(engineParams) * (numSeaLevelEngines+numVacuumEngines)
+        // Use the thrust the solver actually achieved together with its mass flow rate, so thrust is
+        // never produced without the matching propellant consumption.
+        const solution = tram.solveForMassFlowRate(engineParams)
+        thrust = solution.thrust * (numSeaLevelEngines+numVacuumEngines)
+        propellantFlowRate = solution.mdot * (numSeaLevelEngines+numVacuumEngines)
       }
       else {
         thrust = maximumPossibleThrust
@@ -275,7 +279,8 @@ export function simRocketFlight(simInputParameters, scene, verbose) {
         break
       case 1:
         // MECO and Stage Separation
-        // Reduce stage 2 thrust and exhaust velocity during hot staging
+        // Reduce stage 2 thrust and exhaust velocity during hot staging.
+        // FUDGE FACTOR (no source data): 0.25 x exhaust velocity and 0.25 x flow rate (1/16 thrust).
         averageExhaustVelocity = 0.25*tram.lerp(averageSeaLevelEngineExhaustVelocity, averageVacuumEngineExhaustVelocity, numVacuumEngines/(numSeaLevelEngines+numVacuumEngines))
         propellantFlowRate = 0.25*maxPropellantFlowRate
         thrust = propellantFlowRate * averageExhaustVelocity
@@ -320,8 +325,11 @@ export function simRocketFlight(simInputParameters, scene, verbose) {
         thrust = propellantFlowRate * averageExhaustVelocity
         mTotal = rocketStage2DryMass + rocketStage2PropellantMass + rocketPayloadMass
         //console.log(t, 'coe.trueAnomaly', coe.trueAnomaly)
-        const reachedPerigee = (coe.trueAnomaly>=0)
-        if (reachedPerigee) {
+        // Burn prograde until the speed reaches circular orbital speed at the current radius (the old
+        // test, trueAnomaly >= 0, was always true so the burn lasted a single time step).
+        const circularSpeed = Math.sqrt(planetSpec.gravitationalParameter / RV.R.length())
+        const circularized = (RV.V.length() >= circularSpeed) || (rocketStage2PropellantMass <= 0)
+        if (circularized) {
           rocketState = 5
         }
         break
@@ -343,7 +351,8 @@ export function simRocketFlight(simInputParameters, scene, verbose) {
     const dragVector = vehicleVelocityRelativeToAir.clone().normalize().multiplyScalar(-aerodynamicDrag)
     const rotationAxis = new THREE.Vector3().crossVectors(R0, downrangeDirection).normalize()
 
-    const flightProfile = 2
+    // Profiles 0 and 2 steer using the extracted Starship telemetry; without it use the closed-loop profile 1.
+    const flightProfile = empiricalData ? 2 : 1
     let minAngle, maxAngle
     switch (flightProfile) {
     case 0:
@@ -464,7 +473,8 @@ export function simRocketFlight(simInputParameters, scene, verbose) {
     // Calculate the change in position and velocity
     RV = RV_from_R0V0Aandt(RV.R, RV.V, acceleration, tStep)
     if (!RV.R.isFinite()) {
-      debugger
+      console.error('simRocketFlight: non-finite state vector at t =', t)
+      break
     }
 
     // Record telemery for plots...
@@ -485,8 +495,11 @@ export function simRocketFlight(simInputParameters, scene, verbose) {
       if (coe.eccentricity<1) {
         apogeeAltitudeVersusTimeData.push(new THREE.Vector3(t, Math.max(0, apogeeDistance-planetRadius), 0))
         perigeeAltitudeVersusTimeData.push(new THREE.Vector3(t, Math.max(0, perigeeDistance), 0))
-        closeApsisVersusTimeData.push(new THREE.Vector3(t, Math.max(0, closeApsis), 0))
-        farApsisVersusTimeData.push(new THREE.Vector3(t, Math.max(0, farApsis), 0))
+        // closeApsis/farApsis are position vectors; plot their altitudes (Math.max(0, Vector3) was NaN).
+        if (closeApsis && farApsis) {
+          closeApsisVersusTimeData.push(new THREE.Vector3(t, Math.max(0, closeApsis.length() - planetRadius), 0))
+          farApsisVersusTimeData.push(new THREE.Vector3(t, Math.max(0, farApsis.length() - planetRadius), 0))
+        }
       }
       convectiveHeatingVersusTimeData.push(new THREE.Vector3(t, qconv, 0))
       radiativeHeatingVersusTimeData.push(new THREE.Vector3(t, qrad, 0))
@@ -495,7 +508,7 @@ export function simRocketFlight(simInputParameters, scene, verbose) {
       
       angularMomentumVectorVersusTimeData.push(new THREE.Vector3(t, coe.angularMomentumVector, 0))
       eccentricityVersusTimeData.push(new THREE.Vector3(t, coe.eccentricity, 0))
-      rightAscensionOfAscendingNodeVersusTimeData.push(new THREE.Vector3(t, coe.rightAscensionOfAscendingNode, 0))
+      rightAscensionOfAscendingNodeVersusTimeData.push(new THREE.Vector3(t, coe.rightAscensionOfTheAscendingNode, 0))
       inclinationVersusTimeData.push(new THREE.Vector3(t, coe.inclination, 0))
       argumentOfPerigeeVersusTimeData.push(new THREE.Vector3(t, coe.argumentOfPerigee, 0))
       trueAnomalyVersusTimeData.push(new THREE.Vector3(t, coe.trueAnomaly, 0))
@@ -539,8 +552,9 @@ export function simRocketFlight(simInputParameters, scene, verbose) {
     
   }
 
-  const rootMeanSquaredErrorSpeed = tram.diffTwoCurves(empiricalData.starshipSpeed, airSpeedVersusTimeData, speedMaxTime)
-  const rootMeanSquaredErrorAlt = tram.diffTwoCurves(empiricalData.starshipAltitude, altitudeVersusTimeData, altMaxTime)
+  // The fit-to-telemetry errors are only available when Starship telemetry was loaded.
+  const rootMeanSquaredErrorSpeed = empiricalData ? tram.diffTwoCurves(empiricalData.starshipSpeed, airSpeedVersusTimeData, speedMaxTime) : NaN
+  const rootMeanSquaredErrorAlt = empiricalData ? tram.diffTwoCurves(empiricalData.starshipAltitude, altitudeVersusTimeData, altMaxTime) : NaN
 
   return {
     freeFlightConversionCurveControlPoints,
@@ -790,8 +804,10 @@ export function simRocketFlight(simInputParameters, scene, verbose) {
     const rotationMatrix = computeRotationMatrix(RA, i, w)
   
     // Apply rotation to transform into inertial space
-    const periapsisInertial = applyMatrixToVector(rotationMatrix, periapsisOrbital)
-    const apoapsisInertial = applyMatrixToVector(rotationMatrix, apoapsisOrbital)
+    // The orbital elements are expressed in a pole-up frame (x=three z, y=three x, z=three y); map back.
+    const toThree = (v) => new THREE.Vector3(v.y, v.z, v.x)
+    const periapsisInertial = toThree(applyMatrixToVector(rotationMatrix, periapsisOrbital))
+    const apoapsisInertial = toThree(applyMatrixToVector(rotationMatrix, apoapsisOrbital))
   
     return { periapsisInertial, apoapsisInertial }
   }

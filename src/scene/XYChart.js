@@ -239,8 +239,22 @@ export class XYChart extends THREE.Group {
     this.legendY = y
   }
   
+  // Removes and disposes every child mesh with the given name (used for legend text).
+  removeNamedMeshes(name) {
+    const doomed = this.children.filter(child => child.name === name)
+    doomed.forEach(child => {
+      this.remove(child)
+      if (child.geometry) child.geometry.dispose()
+      if (child.material) child.material.dispose()
+    })
+    // Also drop queued but not yet rendered text with this name
+    this.textDescriptions = this.textDescriptions.filter(td => td.name !== name)
+  }
+
   drawLegend(fontSize=18, legendTextSpacing=24) {
 
+    // Replace (not accumulate) the legend text meshes each time the legend is redrawn.
+    this.removeNamedMeshes('legend')
     const n = this.curveInfo.length
     this.curveInfo.forEach((curve, i) => {
        this.textDescriptions.push({text: curve.legendText, name: 'legend', x: this.legendX+4, y: this.legendY+legendTextSpacing*(n-i), fontSize: fontSize, rotation: 0, anchor:'bottom-left', color: curve.color})
@@ -251,17 +265,23 @@ export class XYChart extends THREE.Group {
 
   clearCurves() {
     this.curveInfo.forEach(curve => {
-      this.remove(this.getObjectByName(curve.name+'_label'))
+      this.removeNamedMeshes(curve.name+'_label')
       this.remove(curve.mesh)
+      curve.mesh.geometry.dispose()
+      curve.mesh.material.dispose()
     })
     this.curveInfo = []
+    this.removeNamedMeshes('legend')
   }
 
   removeCurve(curveName) {
     const index = this.curveInfo.map(function (o) {return o.name}).indexOf(curveName)
     if (index>=0) {
-      this.remove(this.getObjectByName(curveName+'_label'))
-      this.remove(this.curveInfo[index].mesh)
+      this.removeNamedMeshes(curveName+'_label')
+      const mesh = this.curveInfo[index].mesh
+      this.remove(mesh)
+      mesh.geometry.dispose()
+      mesh.material.dispose()
       this.curveInfo.splice(index, 1)
     }
   }
@@ -277,6 +297,8 @@ export class XYChart extends THREE.Group {
     let largestX = null
     let largestY = null
     const localLegendText = legendText || (curveName + ' (' + curveScaledUnits + ')')
+    // Linear factor from raw units to the chart's scaled units (used by verbose printouts).
+    const unitScale = (typeof(remapY)==="function") ? remapY(1) - remapY(0) : remapY
 
     curveXYPoints.forEach(point => {
       if (!isFinite(point.x) || !isFinite(point.y) || !isFinite(point.z)) {
@@ -293,7 +315,6 @@ export class XYChart extends THREE.Group {
         }
         else {
           remappedY = point.y * remapY
-          debugger
         }
         if ((point.x >= this.minX) && (point.x <= this.maxX) && (remappedY >= this.minY) && (remappedY <= this.maxY)) {
           const currentPoint = new THREE.Vector3((point.x-this.minX)*xScale, (remappedY-this.minY)*yScale, 0)
@@ -317,9 +338,10 @@ export class XYChart extends THREE.Group {
       const index = existingCurves.indexOf(curveName)
       curveLine = this.curveInfo[index].mesh
       // Recreate the line's geometry using the new points
-      curveLine.geometry.setFromPoints(culledCurvePoints)
+      curveLine.geometry.dispose()
+      curveLine.geometry = new THREE.BufferGeometry().setFromPoints(culledCurvePoints)
       //curveLine.material.color = curveColor
-      this.curveInfo[index] = {name: curveName, units: curveUnits, remapY: remapY, scaledUnits: curveScaledUnits, color: curveColor, colorName: curveColorName, legendText: localLegendText, largestX: largestX, largestY: largestY, mesh: curveLine}
+      this.curveInfo[index] = {yScale: unitScale, name: curveName, units: curveUnits, remapY: remapY, scaledUnits: curveScaledUnits, color: curveColor, colorName: curveColorName, legendText: localLegendText, largestX: largestX, largestY: largestY, mesh: curveLine}
     }
     else {
       const curveGeometry = new THREE.BufferGeometry().setFromPoints(culledCurvePoints);
@@ -327,7 +349,7 @@ export class XYChart extends THREE.Group {
       curveLine = new THREE.Line(curveGeometry, curveMaterial);
       curveLine.name = curveName
       this.add(curveLine);
-      this.curveInfo.push({name: curveName, units: curveUnits, remapY: remapY, scaledUnits: curveScaledUnits, color: curveColor, colorName: curveColorName, legendText: localLegendText, largestX: largestX, largestY: largestY, mesh: curveLine})
+      this.curveInfo.push({yScale: unitScale, name: curveName, units: curveUnits, remapY: remapY, scaledUnits: curveScaledUnits, color: curveColor, colorName: curveColorName, legendText: localLegendText, largestX: largestX, largestY: largestY, mesh: curveLine})
     }
     curveLine.geometry.computeBoundingSphere() // This checks for invalid values in the geometry
 

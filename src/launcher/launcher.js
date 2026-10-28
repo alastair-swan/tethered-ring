@@ -43,8 +43,8 @@ export class launcher {
     this.mu = planetSpec.gravitationalParameter
 
     // Local gravitational acceleration at the launcher site (used to tilt the passenger pose).
-    const launcherLatitudeInRadians = dParamWithUnits['launcherRampEndLatitude'].value * Math.PI / 180
-    const launcherRadius = tram.radiusAtLatitude(launcherLatitudeInRadians, planetSpec.ellipsoid) + dParamWithUnits['launcherMassDriverAltitude'].value
+    // radiusAtLatitude takes geodetic latitude in degrees.
+    const launcherRadius = tram.radiusAtLatitude(dParamWithUnits['launcherRampEndLatitude'].value, planetSpec.ellipsoid) + dParamWithUnits['launcherMassDriverAltitude'].value
     this.gravityAtLauncherLocation = this.mu / (launcherRadius * launcherRadius)
 
     this.xyChart = xyChart
@@ -399,7 +399,7 @@ export class launcher {
 
     this.versionNumber++
 
-    this.planetRadius = tram.radiusAtLatitude(dParamWithUnits['launcherRampEndLatitude'].value*Math.PI/180, planetSpec.ellipsoid)
+    this.planetRadius = tram.radiusAtLatitude(dParamWithUnits['launcherRampEndLatitude'].value, planetSpec.ellipsoid)
 
     switch (dParamWithUnits['launchTrajectorySelector'].value) {
       default:

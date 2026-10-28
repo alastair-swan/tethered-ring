@@ -418,37 +418,35 @@ export function solveForMassFlowRate({
   mdot_max, // Peak mass flow rate (kg/s)
   ve_max,   // Peak exhaust velocity (m/s)
 }) {
+  // Thrust increases monotonically with mass flow rate, so bisect on mdot in [0, mdot_max].
+  // Returns {mdot, thrust} so the caller can use the thrust that is actually achievable: when the
+  // requested thrust exceeds the engine's maximum the result is clamped to mdot_max (it used to
+  // return 0 on non-convergence, giving full thrust with zero propellant flow).
   const maxIterations = 100
   const tolerance = 1e-6
-
-  for (let j=0; j<3; j++) {
-    let mdot_low = 0   // Lower bound for flow rate
-    let mdot_high = mdot_max // Upper bound
-    let mdot = (mdot_low + mdot_high) / 2  // Initial midpoint
-
-    for (let i = 0; i < maxIterations; i++) {
-      const {inertialThrust, pressureThrust, ve} = tram.calculateThrustAndExitVelocity({
-        Pc_max, Pe, P0, Ae, Tc, gamma, R, M, mdot_max, mdot
-      })
-      const thrust = inertialThrust + pressureThrust
-
-      let error = thrust - targetThrust
-      if (j==1) console.log("Thrust", thrust, "targetThrust", targetThrust, "mdot: " + mdot + " error: " + error)
-
-      if (Math.abs(error) < tolerance) return mdot // Converged solution
-
-      if (error > 0) {
-        mdot_high = mdot // Reduce upper bound
-      } else {
-        mdot_low = mdot // Increase lower bound
-      }
-  
-      mdot = (mdot_low + mdot_high) / 2 // Update midpoint
-    }
-    return 0
-    if (j==1) debugger
+  const thrustAt = (mdot) => {
+    const {inertialThrust, pressureThrust} = calculateThrustAndExitVelocity({
+      Pc_max, Pe, P0, Ae, Tc, gamma, R, M, mdot_max, mdot
+    })
+    return inertialThrust + pressureThrust
   }
-  //throw new Error("Solution did not converge")
+  if (!(mdot_max > 0) || !(targetThrust > 0)) return {mdot: 0, thrust: 0}
+  const maxThrust = thrustAt(mdot_max)
+  if (targetThrust >= maxThrust) return {mdot: mdot_max, thrust: maxThrust}
+
+  let mdot_low = 0   // Lower bound for flow rate
+  let mdot_high = mdot_max // Upper bound
+  let mdot = (mdot_low + mdot_high) / 2
+  let thrust = thrustAt(mdot)
+  for (let i = 0; i < maxIterations; i++) {
+    const error = thrust - targetThrust
+    if (Math.abs(error) < tolerance) break
+    if (error > 0) mdot_high = mdot
+    else mdot_low = mdot
+    mdot = (mdot_low + mdot_high) / 2
+    thrust = thrustAt(mdot)
+  }
+  return {mdot, thrust}
 }
 
 export function getAerodynamicDrag(airDensity, coefficientOfDrag, speed, radius, length) {
@@ -486,11 +484,9 @@ export function cycloid3D(s, r, startPos, initialDirection) {
   const topOfCirclePos = startPos.clone().applyAxisAngle(rotationAxis, rollingPointPhi).multiplyScalar(topOfCircleR/planetRadius)
   const cycloidTangent = (theta==Math.PI) ? initialDirection.clone() : topOfCirclePos.clone().sub(cycloidPosition).normalize()
 
-  if (cycloidPosition.x=="NaN" || cycloidPosition.y=="NaN" || cycloidPosition.z=="NaN") {
-    debugger
-  }
-  if (cycloidTangent.x=="NaN" || cycloidTangent.y=="NaN" || cycloidTangent.z=="NaN") {
-    debugger
+  if (Number.isNaN(cycloidPosition.x + cycloidPosition.y + cycloidPosition.z) ||
+      Number.isNaN(cycloidTangent.x + cycloidTangent.y + cycloidTangent.z)) {
+    console.warn('cycloid3D produced NaN', s, r)
   }
   return { cycloidPosition, cycloidTangent }
 }

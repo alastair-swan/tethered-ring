@@ -439,7 +439,7 @@ export function defineUpdateTrajectoryCurvesRocket () {
     
     if (dParamWithUnits['showApogeeAltitudeVersusTime'].value) {
       this.xyChart.removeCurve("Orbital Apogee Altitude")
-      this.xyChart.addCurve("Orbital Apogee Altitude", "m", "100's km", apogeeAltitudeVersusTimeData, (y)=>y*5e-4, 0x0000ff, "Bright Blue", "Orbital Apogee Distance (100's km)")
+      this.xyChart.addCurve("Orbital Apogee Altitude", "m", "100's km", apogeeAltitudeVersusTimeData, (y)=>y*1e-5, 0x0000ff, "Bright Blue", "Orbital Apogee Altitude (100's km)")
     }
     
     if (dParamWithUnits['showPerigeeAltitudeVersusTime'].value) {

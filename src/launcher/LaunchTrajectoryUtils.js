@@ -175,8 +175,9 @@ export function defineUpdateTrajectoryCurves () {
     
     // For the launchRamp, make a triangle ABC where A is the center of the planet, B is the end of the ramp, and C is the center of the circle that defines the allowable turning radius
     //const triangleSideAB = this.planetRadius + launcherRampExitAltitude
-    const lat = dParamWithUnits['launcherRampEndLatitude'].value*Math.PI/180
-    const lon = dParamWithUnits['launcherRampEndLongitude'].value*Math.PI/180
+    // geodeticToECEF takes degrees (these used to be passed in radians).
+    const lat = dParamWithUnits['launcherRampEndLatitude'].value
+    const lon = dParamWithUnits['launcherRampEndLongitude'].value
     const launcherRampEndLocation = tram.geodeticToECEF(lat, lon, launcherRampExitAltitude, planetSpec.ellipsoid)
     const launcherRampEndDistance = (new THREE.Vector3(launcherRampEndLocation.x, launcherRampEndLocation.y, launcherRampEndLocation.z)).length()
     const launcherRampStartLocation = tram.geodeticToECEF(lat, lon, launcherMassDriverAltitude, planetSpec.ellipsoid) // Not perfectly accurate as launcherMassDriverAltitude is not located at the end of the ramp, but close enough

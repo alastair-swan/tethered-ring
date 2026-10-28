@@ -147,113 +147,90 @@ export function define_RV_from_R0V0Aandt() {
   }
 }
 
+// Classical orbital elements from a state vector (Curtis, "Orbital Mechanics for Engineering
+// Students", Algorithm 4.1).
+//
+// R and V are THREE.Vector3 in the planet's (three.js) coordinate system, whose polar axis is +Y and
+// whose x axis of the equatorial reference (the "vernal equinox" direction for RAAN) is +Z, matching
+// the ECEF mapping used by src/physics/geodesy.js (ECEF x = three z, ECEF y = three x, ECEF z = three y).
+// mu is the gravitational parameter (m^3/s^2). Angles are in radians.
+export function orbitalElementsFromStateVector(R, V, mu) {
+  // Re-express in a right-handed frame with the pole as the third axis.
+  const r3 = [R.z, R.x, R.y]
+  const v3 = [V.z, V.x, V.y]
+  const dot = (p, q) => p[0]*q[0] + p[1]*q[1] + p[2]*q[2]
+  const cross = (p, q) => [p[1]*q[2] - p[2]*q[1], p[2]*q[0] - p[0]*q[2], p[0]*q[1] - p[1]*q[0]]
+  const len = (p) => Math.sqrt(dot(p, p))
+  const acosClamped = (x) => Math.acos(Math.max(-1, Math.min(1, x)))
+
+  const eps = 1.e-10
+  const r = len(r3)
+  const v = len(v3)
+  const vr = dot(r3, v3) / r
+  const H = cross(r3, v3)
+  const h = len(H)
+
+  // Equation 4.7: inclination
+  const incl = acosClamped(H[2] / h)
+
+  // Equation 4.8: node line N = K x H (K is the polar unit vector)
+  const N = [-H[1], H[0], 0]
+  const n = len(N)
+
+  // Equation 4.9: right ascension of the ascending node, quadrant from the sign of N_y
+  let RA = 0
+  if (n > eps * h) {
+    RA = acosClamped(N[0] / n)
+    if (N[1] < 0) RA = 2*Math.PI - RA
+  }
+
+  // Equation 4.10: eccentricity vector
+  const k1 = (v*v - mu/r) / mu
+  const k2 = r * vr / mu
+  const E = [k1*r3[0] - k2*v3[0], k1*r3[1] - k2*v3[1], k1*r3[2] - k2*v3[2]]
+  const e = len(E)
+
+  // Equation 4.12: argument of perigee (0 for circular or equatorial orbits)
+  let w = 0
+  if ((n > eps * h) && (e > eps)) {
+    w = acosClamped(dot(N, E) / n / e)
+    if (E[2] < 0) w = 2*Math.PI - w
+  }
+
+  // Equation 4.13a: true anomaly
+  let TA
+  if (e > eps) {
+    TA = acosClamped(dot(E, r3) / e / r)
+    if (vr < 0) TA = 2*Math.PI - TA
+  }
+  else if (n > eps * h) {
+    // Circular, inclined: argument of latitude measured from the node line
+    TA = acosClamped(dot(N, r3) / n / r)
+    if (cross(N, r3)[2] < 0) TA = 2*Math.PI - TA
+  }
+  else {
+    // Circular, equatorial: true longitude
+    TA = Math.atan2(r3[1], r3[0]) * Math.sign(H[2] || 1)
+    if (TA < 0) TA += 2*Math.PI
+  }
+
+  // Equation 2.61 (a < 0 for a hyperbola)
+  const a = h*h / mu / (1 - e*e)
+
+  return {
+    'angularMomentumVector': h,
+    'eccentricity': e,
+    'rightAscensionOfTheAscendingNode': RA,
+    'inclination': incl,
+    'argumentOfPerigee': w,
+    'trueAnomaly': TA,
+    'semimajorAxis': a
+  }
+}
+
 export function define_orbitalElementsFromStateVector() {
   return function (R, V) {
-    // This function computes the classical orbital elements (coe)
-    // from the state vector (R,V) using Algorithm 4.1.
-
-    // mu - gravitational parameter (kmˆ3/sˆ2)
-    // R - position vector in the geocentric equatorial frame
-    // (km)
-    // V - velocity vector in the geocentric equatorial frame
-    // (km)
-    // r, v - the magnitudes of R and V
-    // vr - radial velocity component (km/s)
-    // H - the angular momentum vector (kmˆ2/s)
-    // h - the magnitude of H (kmˆ2/s)
-    // incl - inclination of the orbit (rad)
-    // N - the node line vector (kmˆ2/s)
-    // n - the magnitude of N
-    // cp - cross product of N and R
-    // RA - right ascension of the ascending node (rad)
-    // E - eccentricity vector
-    // e - eccentricity (magnitude of E)
-    // eps - a small number below which the eccentricity is
-    // considered to be zero
-    // w - argument of perigee (rad)
-    // TA - true anomaly (rad)
-    // a - semimajor axis (km)
-    // pi - 3.1415926...
-    // coe - vector of orbital elements [h e RA incl w TA a]
-
-    // User M-functions required: None
-    const eps = 1.e-10
-    const r = R.length()
-    const v = V.length()
-    const vr = R.clone().dot(V) / r
-    const H = R.clone().cross(V)
-    const h = H.length()
-
-    // Equation 4.7:
-    const incl = Math.acos(H.z/h)
-
-    // Equation 4.8:
-    const N = new Vector3(0, 0, 1).cross(H)
-    const n = N.length()
-
-    // Equation 4.9:
-    let RA
-    if (n != 0) {
-      RA = Math.acos(N.x/n)
-      if (N.z < 0) {
-        RA = 2*Math.PI - RA
-      }
-    }
-    else {
-      RA = 0
-    }
-
-    // Equation 4.10:
-    const E = R.clone().multiplyScalar((v**2 - this.mu/r)).sub(V.clone().multiplyScalar(r*vr)).multiplyScalar(1/this.mu)
-    const e = E.length()
-
-    // Equation 4.12 (incorporating the case e = 0):
-    let w
-    if (n != 0) {
-      if (e > eps) {
-        w = Math.acos(N.clone().dot(E)/n/e)
-        if (E.z < 0) {
-          w = 2*Math.PI - w
-        }
-      }
-      else {
-        w = 0
-      }
-    }
-    else {
-      w = 0
-    }
-
-    // Equation 4.13a (incorporating the case e = 0):
-    let TA
-    if (e > eps) {
-      TA = Math.acos(E.clone().dot(R)/e/r)
-      if (vr < 0) {
-        TA = 2*Math.PI - TA
-      }
-    }
-    else {
-      const cp = N.clone().cross(R)
-      if (cp.z >= 0) {
-        TA = Math.acos(N.clone().dot(R)/n/r)
-      }
-      else {
-        TA = 2*Math.PI - Math.acos(N.clone().dot(R)/n/r)
-      }
-    }
-
-    // Equation 2.61 (a < 0 for a hyperbola):
-    const a = h**2/this.mu/(1 - e**2)
-
-    return {
-      'angularMomentumVector': h,
-      'eccentricity': e,
-      'rightAscensionOfTheAscendingNode': RA,
-      'inclination': incl,
-      'argumentOfPerigee': w,
-      'trueAnomaly': TA,
-      'semimajorAxis': a
-    }
+    return orbitalElementsFromStateVector(R, V, this.mu)
   }
 }
 

@@ -1,5 +1,4 @@
 // Geodetic <-> ECEF conversions and ellipsoid radius helpers.
-import * as THREE from 'three'
 import { latLonAlt, Vector3 } from '../utils/math.js'
 
 export function xyz2lla(x,y,z) {
@@ -33,18 +32,18 @@ export function xyz2lla(x,y,z) {
   const p = Math.sqrt(Math.pow(ECEF_x,2.0)+Math.pow(ECEF_y,2))
   let h_old = 0.0
   // first guess with h=0 meters
-  let theta = Math.atan2(z,p*(1.0-Math.pow(e,2.0)))
+  let theta = Math.atan2(ECEF_z,p*(1.0-Math.pow(e,2.0)))
   let cs = Math.cos(theta)
   let sn = Math.sin(theta)
   let N = Math.pow(equitorialRadiusOfEarth,2.0)/Math.sqrt(Math.pow(equitorialRadiusOfEarth*cs,2.0)+Math.pow(b*sn,2.0))
-  let h = p/cs - N
+  let h = p*cs + ECEF_z*sn - equitorialRadiusOfEarth*Math.sqrt(1 - e*e*sn*sn)
   while (Math.abs(h-h_old) > 1.0e-6) {
       h_old = h
       theta = Math.atan2(ECEF_z,p*(1.0-Math.pow(e,2.0)*N/(N+h)))
       cs = Math.cos(theta)
       sn = Math.sin(theta)
       N = Math.pow(equitorialRadiusOfEarth,2.0)/Math.sqrt(Math.pow(equitorialRadiusOfEarth*cs,2.0)+Math.pow(b*sn,2.0))
-      h = p/cs - N
+      h = p*cs + ECEF_z*sn - equitorialRadiusOfEarth*Math.sqrt(1 - e*e*sn*sn)
   }
   const lla = new latLonAlt(theta * 180 / Math.PI, clambda * 180 / Math.PI, h)
   //llh = {'lon':clambda, 'lat':theta, 'height': h}
@@ -81,104 +80,91 @@ export function lla2xyz(lat, lon, alt) {
 
 }
 
+// Geocentric radius (distance from the planet's centre to the ellipsoid surface) at a given
+// geodetic latitude. `lat` is in DEGREES. `ellipsoid` is {a, f} (semi-major axis, flattening).
 export function radiusAtLatitude(lat, ellipsoid) {
-  const { a, f } = ellipsoid; // Semi-major and semi-minor axes
-  const radLat = (lat * Math.PI) / 180; // Convert latitude to radians
+  const a = ellipsoid.a
+  const b = a * (1 - (ellipsoid.f || 0)) // Semi-minor axis
+  const radLat = (lat * Math.PI) / 180
 
-  const cosLat = Math.cos(radLat);
-  const sinLat = Math.sin(radLat);
+  const cosLat = Math.cos(radLat)
+  const sinLat = Math.sin(radLat)
 
-  const numerator = (a * a * cosLat) ** 2 + (f * f * sinLat) ** 2;
-  const denominator = (a * cosLat) ** 2 + (f * sinLat) ** 2;
+  const numerator = (a * a * cosLat) ** 2 + (b * b * sinLat) ** 2
+  const denominator = (a * cosLat) ** 2 + (b * sinLat) ** 2
 
-  return Math.sqrt(numerator / denominator);
+  return Math.sqrt(numerator / denominator)
 }
 
+// Converts three.js planet coordinates (x east of Greenwich, y = north pole, z = Greenwich meridian)
+// to geodetic latitude/longitude (degrees) and altitude above the ellipsoid (m).
 export function ecefToGeodetic(x, y, z, ellipsoid) {
 
-  //return tram.xyz2lla(x, y, z)
-  const ECEF_x = z; // Map Three.js's Z-axis to ECEF X-axis
-  const ECEF_y = x; // Map Three.js's X-axis to ECEF Y-axis
-  const ECEF_z = y; // Map Three.js's Y-axis to ECEF Z-axis
+  const ECEF_x = z // Map Three.js's Z-axis to ECEF X-axis
+  const ECEF_y = x // Map Three.js's X-axis to ECEF Y-axis
+  const ECEF_z = y // Map Three.js's Y-axis to ECEF Z-axis (polar axis)
 
-  const { a, f } = ellipsoid;
-  const e2 = 2 * f - f * f; // Square of eccentricity
-  const b = a * (1 - f); // Semi-minor axis
+  const a = ellipsoid.a
+  const f = ellipsoid.f || 0
+  const e2 = 2 * f - f * f // Square of eccentricity
 
-  const p = Math.sqrt(ECEF_x * ECEF_x + ECEF_y * ECEF_y);
-  const lon = Math.atan2(ECEF_y, ECEF_x); // Longitude
+  const p = Math.sqrt(ECEF_x * ECEF_x + ECEF_y * ECEF_y)
+  const lon = Math.atan2(ECEF_y, ECEF_x)
 
-  let lat = Math.atan2(z, p * (1 - e2)); // Initial latitude
-  let N, alt;
-
-  for (let i = 0; i < 5; i++) { // Iterative refinement
-      N = a / Math.sqrt(1 - e2 * Math.sin(lat) * Math.sin(lat));
-      lat = Math.atan2(ECEF_z + e2 * N * Math.sin(lat), p);
+  // Initial estimate (Bowring-style seed) uses the polar component.
+  let lat = Math.atan2(ECEF_z, p * (1 - e2))
+  for (let i = 0; i < 10; i++) { // Iterative refinement (converges to < 1e-12 rad in a few steps)
+    const sinLat = Math.sin(lat)
+    const N = a / Math.sqrt(1 - e2 * sinLat * sinLat)
+    const newLat = Math.atan2(ECEF_z + e2 * N * sinLat, p)
+    if (Math.abs(newLat - lat) < 1e-14) { lat = newLat; break }
+    lat = newLat
   }
 
-  N = a / Math.sqrt(1 - e2 * Math.sin(lat) * Math.sin(lat));
-  alt = p / Math.cos(lat) - N;
+  // h = p*cos(lat) + z*sin(lat) - a*sqrt(1 - e2*sin^2(lat)) is valid everywhere, including the poles
+  // (the textbook p/cos(lat) - N is 0/0 there).
+  const sinLat = Math.sin(lat)
+  const alt = p * Math.cos(lat) + ECEF_z * sinLat - a * Math.sqrt(1 - e2 * sinLat * sinLat)
 
   return {
-      lat: (lat * 180) / Math.PI, // Convert to degrees
-      lon: (lon * 180) / Math.PI, // Convert to degrees
-      alt,
-  };
+    lat: (lat * 180) / Math.PI, // Convert to degrees
+    lon: (lon * 180) / Math.PI, // Convert to degrees
+    alt,
+  }
 }
 
+// Converts geodetic latitude/longitude (DEGREES) and altitude (m) to three.js planet coordinates.
 export function geodeticToECEF(lat, lon, alt, ellipsoid) {
 
-  //return tram.lla2xyz(lat, lon, alt)
+  const a = ellipsoid.a
+  const f = ellipsoid.f || 0
+  const e2 = 2 * f - f * f // Square of eccentricity
 
-  const { a, f } = ellipsoid;
-  const e2 = 2 * f - f * f; // Square of eccentricity
+  const radLat = (lat * Math.PI) / 180
+  const radLon = (lon * Math.PI) / 180
 
-  const radLat = (lat * Math.PI) / 180;
-  const radLon = (lon * Math.PI) / 180;
+  const sinLat = Math.sin(radLat)
+  const cosLat = Math.cos(radLat)
+  const cosLon = Math.cos(radLon)
+  const sinLon = Math.sin(radLon)
 
-  const sinLat = Math.sin(radLat);
-  const cosLat = Math.cos(radLat);
-  const cosLon = Math.cos(radLon);
-  const sinLon = Math.sin(radLon);
+  const N = a / Math.sqrt(1 - e2 * sinLat * sinLat)
 
-  const N = a / Math.sqrt(1 - e2 * sinLat * sinLat);
+  const ECEF_x = (N + alt) * cosLat * cosLon
+  const ECEF_y = (N + alt) * cosLat * sinLon
+  const ECEF_z = ((1 - e2) * N + alt) * sinLat
 
-  const ECEF_x = (N + alt) * cosLat * cosLon;
-  const ECEF_y = (N + alt) * cosLat * sinLon;
-  const ECEF_z = ((1 - e2) * N + alt) * sinLat;
+  const x = ECEF_y // Map ECEF Y-axis to Three.js X-axis
+  const y = ECEF_z // Map ECEF Z-axis to Three.js Y-axis
+  const z = ECEF_x // Map ECEF X-axis to Three.js Z-axis
 
-  const x = ECEF_y; // Map ECEF Y-axis to Three.js X-axis
-  const y = ECEF_z; // Map ECEF Z-axis to Three.js Y-axis
-  const z = ECEF_x; // Map ECEF X-axis to Three.js Z-axis
-
-  return { x, y, z };
-
-
-  function geodeticToECEF(lat, lon, alt) {
-    // WGS84 ellipsoid parameters
-    const a = 6378137.0; // Semi-major axis in meters
-    const f = 1 / 298.257223563; // Flattening
-    const e2 = 2 * f - f * f; // Square of eccentricity
-
-    // Convert degrees to radians
-    const radLat = (lat * Math.PI) / 180;
-    const radLon = (lon * Math.PI) / 180;
-
-    // Calculate the prime vertical radius of curvature
-    const sinLat = Math.sin(radLat);
-    const cosLat = Math.cos(radLat);
-    const cosLon = Math.cos(radLon);
-    const sinLon = Math.sin(radLon);
-
-    const N = a / Math.sqrt(1 - e2 * sinLat * sinLat);
-
-    // Calculate ECEF coordinates
-    const x = (N + alt) * cosLat * cosLon;
-    const y = (N + alt) * cosLat * sinLon;
-    const z = ((1 - e2) * N + alt) * sinLat;
-
-    return { x, y, z };
+  return { x, y, z }
 }
 
+// Geocentric latitude (angle from the equatorial plane, measured at the planet's centre) to
+// geodetic latitude, both in DEGREES.
+export function geocentricToGeodeticLatitude(latGeocentric, ellipsoid) {
+  const f = ellipsoid.f || 0
+  const oneMinusE2 = (1 - f) * (1 - f)
+  return Math.atan(Math.tan(latGeocentric * Math.PI / 180) / oneMinusE2) * 180 / Math.PI
 }
-
