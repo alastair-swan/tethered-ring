@@ -7,6 +7,9 @@ import { PixelLOD } from '../scene/PixelLOD.js'
 // Lift fans per instanced chunk (each chunk picks its own level of detail).
 const LIFT_FAN_CHUNK = 32
 
+// On-screen tube diameter (px) below which a tube segment is drawn as a line.
+const TUBE_LINE_BELOW_PIXELS = 1
+
 export class massDriverTubeModel {
   // Each model along the mass driver curve is unique, since the pitch of the mass driver's drive thread changes along it's length
   // so instead of dynamically allocating models from a pool of identical unallocated models, we need to create a unique model for each portion of the mass driver curve.
@@ -144,7 +147,17 @@ export class massDriverTubeModel {
     //const tubeMesh = new THREE.Mesh(massDriverTubeGeometry, (!aboveGround) ? this.massDriverTubeMaterial1 : this.massDriverTubeMaterial2)
     const tubeMesh = new THREE.Mesh(massDriverTubeGeometry, massDriverTubeMaterial)
     tubeMesh.name = "massDriverTubeSegment"
-    const massDriverTubeMesh = new THREE.Group().add(tubeMesh)
+    // Once the tube is under about a pixel across, draw it as a line along its centre instead, so the
+    // track stays visible from far away (as a 1 px line) without exaggerating its size up close.
+    const tubeLod = new PixelLOD(2 * this.radius * exagerateTubeFactor, { extent: tubeSegmentLength / 2 })
+    tubeLod.name = 'massDriverTube'
+    tubeLod.addLevel(TUBE_LINE_BELOW_PIXELS, tubeMesh)
+    tubeLod.addLevel(0, () => {
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(tubePoints), this.massDriverTubeMaterial5)
+      line.name = 'massDriverTubeLine'
+      return line
+    })
+    const massDriverTubeMesh = new THREE.Group().add(tubeLod)
     const liftFansPerSegment = Math.round(tubeSegmentLength / this.liftFanRoughSpacing)
 
     if (this.showLiftFans) {

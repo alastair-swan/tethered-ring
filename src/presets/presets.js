@@ -1243,7 +1243,7 @@ function bigIslandLauncher(guidParamWithUnits, nonGUIParams) {
 
   guidParamWithUnits['launchVehicleScaleFactor'].value = 1
   guidParamWithUnits['launchSledScaleFactor'].value = 1
-  guidParamWithUnits['launcherMassDriverTubeInnerRadius'].value = 100
+  // (This preset used a 100 m tube radius so the track showed up from far away; it now uses the real size.)
   guidParamWithUnits['numVirtualLaunchVehicles'].value = 1
   guidParamWithUnits['numVirtualLaunchSleds'].value = 1
   guidParamWithUnits['launcherMassDriver1InitialVelocity'].value = 2
