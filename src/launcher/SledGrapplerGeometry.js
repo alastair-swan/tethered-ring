@@ -11,9 +11,14 @@ import { nonZero, threadTime, threadSpeed } from './launcherPhysics.js'
 
 // A pad that has not yet reached the threaded part of the screw (see launcherPhysics.threadStartDistance)
 // cannot engage. It is shaped and posed for the start of the thread instead: this returns how far to
-// shift the thread distances for a pad starting at padStartDistance along the screw.
+// shift the thread distances for a pad starting at padStartDistance along the screw (0 if the screw is
+// never threaded, see isOnThread).
 function shiftToThread(padStartDistance, threadStartDistance) {
-  return Math.max(0, threadStartDistance - padStartDistance)
+  return Number.isFinite(threadStartDistance) ? Math.max(0, threadStartDistance - padStartDistance) : 0
+}
+
+function isOnThread(padStartDistance, threadStartDistance) {
+  return padStartDistance >= threadStartDistance
 }
 
 
@@ -119,7 +124,7 @@ class SledGrapplerPlacementInfo {
     const rangeLimit2 = Math.max(0, maxRotationAwayFromMidPoint - launchSledGrapplerRangeFactor / Math.abs(outerThreadPitch))
     const rotationAwayLimit = Math.min(rangeLimit1, rangeLimit2)
 
-    if ((shift > 0) || (Math.abs(time - this.midwayTime) > 0.01)) {
+    if (!isOnThread(this.distanceToSledAft + grapplerDistance, this.threadStartDistance) || (Math.abs(time - this.midwayTime) > 0.01)) {
       // Not on the thread yet, or too far (in thread phase) from the middle grappler: disengaged.
       this.switchoverSignal = 1
     }

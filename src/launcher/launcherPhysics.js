@@ -356,16 +356,21 @@ export function threadSpeed(distance, initialVelocity, initialDistance, accelera
 
 // Distance along the screw from which the thread can drive the nut. A grappler pad engages by sitting
 // in the groove between two adjacent flights, so the groove must fit the pad and the clearance it
-// lifts away by. The groove is measured square to the flight faces at the shaft surface, where it is
-// narrowest: (lead / threadStarts) * cos(leadAngle) - threadThickness, with lead = speed / rev/s and
-// tan(leadAngle) = lead / (2 pi shaftRadius). Near the breech the nut is slow, the lead is tiny and
-// the flights would overlap; there the screw is a plain shaft and the pads stay disengaged.
+// lifts away by. The groove is measured square to the flight faces at the pad's inner edge (radius
+// padInnerRadius, where it is narrowest), as (lead / threadStarts) * cos(leadAngle) - flight thickness,
+// with lead = speed / rev/s, tan(leadAngle) = lead / (2 pi padInnerRadius), and the flight thickness
+// tapering from threadThickness at the shaft to threadThickness * threadTaperRatio at the tips.
+// Near the breech the nut is slow, the lead is tiny and the flights would overlap; there the screw is
+// a plain shaft and the pads stay disengaged.
 // Returns -Infinity if the thread is valid from the breech, Infinity if a pad can never fit.
 export function threadStartDistance({ initialVelocity, initialDistance, acceleration, revolutionsPerSecond,
-  threadStarts, shaftRadius, threadThickness, padThickness }) {
+  threadStarts, shaftRadius, threadRadius, threadThickness, threadTaperRatio, padInnerRadius, padThickness }) {
   initialVelocity = Math.max(1, initialVelocity)
-  const width = threadThickness + padThickness
-  const circumference = 2 * Math.PI * shaftRadius
+  const radius = Math.min(threadRadius, Math.max(shaftRadius, padInnerRadius))
+  const heightFraction = (threadRadius > shaftRadius) ? (radius - shaftRadius) / (threadRadius - shaftRadius) : 0
+  const flightThickness = threadThickness * (1 - (1 - threadTaperRatio) * heightFraction)
+  const width = flightThickness + padThickness
+  const circumference = 2 * Math.PI * radius
   const n = Math.max(1, threadStarts)
   if (circumference <= n * width) return Infinity
   const minimumLead = n * width * circumference / Math.sqrt(circumference**2 - (n * width)**2)
@@ -386,7 +391,10 @@ export function screwThreadStartDistance(dParamWithUnits) {
     // (calculateThreadStarts can add starts further along; the thread always starts well before that.)
     threadStarts: calculateThreadStarts(0, p('launcherMassDriverScrewThreadStarts')),
     shaftRadius: p('launcherMassDriverScrewShaftOuterRadius'),
+    threadRadius: p('launcherMassDriverScrewThreadRadius'),
     threadThickness: p('launcherMassDriverScrewThreadThickness'),
+    threadTaperRatio: p('launcherMassDriverScrewThreadTaperRatio'),
+    padInnerRadius: p('launcherMassDriverScrewShaftOuterRadius') + p('adaptiveNutShaftToGrapplerPad'),
     padThickness: p('adaptiveNutGrapplerMagnetThickness') + p('adaptiveNutGrapplerPadLiftAwayDistance'),
   })
 }

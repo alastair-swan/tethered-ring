@@ -310,12 +310,15 @@ class ScrewGeometry extends BufferGeometry {
 
       // Figure out the start angle and end angle given the thickness, pitch, and the number of starts of the thread.
       const distanceAlongScrew = baseDistanceAlongScrew + screwSegmentLengthOffset * screwLength
-      const time = threadTime(distanceAlongScrew, initialVelocity, initialDistance, acceleration)
+      // Before the thread starts (see threadStartDistance) the flights have no height and the vertices
+      // keep the phase of the thread's start, so the shaft there is a plain, untwisted cylinder.
+      const threaded = distanceAlongScrew >= threadStartDistance
+      const flightRadius = threaded ? threadRadius : shaftOuterRadius
+      const phaseDistance = threaded ? distanceAlongScrew : (Number.isFinite(threadStartDistance) ? threadStartDistance : 0)
+      const time = threadTime(phaseDistance, initialVelocity, initialDistance, acceleration)
       const rotations = revolutionsPerSecond * time
       const rateOfChangeInRotationalDistance = 2 * Math.PI * threadRadius * Math.abs(revolutionsPerSecond)
-      const rateOfChangeInForwardDisplacement = threadSpeed(distanceAlongScrew, initialVelocity, initialDistance, acceleration)
-      // Before the thread starts (see threadStartDistance) the flights have no height: a plain shaft.
-      const flightRadius = (distanceAlongScrew >= threadStartDistance) ? threadRadius : shaftOuterRadius
+      const rateOfChangeInForwardDisplacement = threadSpeed(phaseDistance, initialVelocity, initialDistance, acceleration)
       const threadPitch = rateOfChangeInForwardDisplacement / rateOfChangeInRotationalDistance
   
       const threadHalfOfCrossWidth = Math.min(threadThickness * Math.sqrt(threadPitch**2+1) / Math.abs(threadPitch), shaftOuterRadius/2);
