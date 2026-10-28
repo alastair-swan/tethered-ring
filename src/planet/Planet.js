@@ -86,8 +86,9 @@ function assetNamesFromUrl() {
  *   maxConcurrentTileLoads  Parallel tile downloads (default 8).
  *   maxCachedTiles        Resident tile budget (default 320).
  *   maxTileGpuBytes       Estimated texture+height byte budget (default 700 MiB).
- *   tileSseThreshold      Screen-space error, in pixels, that triggers refinement
- *                         (default 3.5; smaller = sharper, more tiles).
+ *   tileSseThreshold      Refine when one colour texel would cover more than this many pixels (default 1.5;
+ *                         smaller = sharper, more tiles).
+ *   tileTextureSize       Colour tile resolution assumed for LOD selection (default 256)
  *   maxAvailableTileLod   Deepest LOD to use before the manifest is loaded, and
  *                         the geometric refinement depth for bodies without
  *                         assets (default 6; manifests override it).

@@ -297,7 +297,6 @@ export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
     // helps the enhancement layer fill in faster without immediately churning.
     nonGUIParams['maxCachedTiles'] = 2200
     nonGUIParams['maxTileGpuBytes'] = 1536 * 1024 * 1024
-    nonGUIParams['tileSseThreshold'] = 3.5
     nonGUIParams['maxAvailableTileLod'] = 11
 
     // Prioritize the selected launch region and its surrounding enhancement cone.

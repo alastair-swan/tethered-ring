@@ -368,7 +368,9 @@ export class CubedSpherePlanetRenderer {
 
     // Screen-space-error refine threshold, in pixels, with hysteresis so tiles
     // do not flicker between expand/collapse at the boundary.
-    this.sseThreshold = options.tileSseThreshold ?? 3.5;
+    this.sseThreshold = options.tileSseThreshold ?? 1.5;
+    // Colour tile resolution (texels per side) assumed when choosing LOD before a tile has loaded.
+    this.tileTextureSize = options.tileTextureSize ?? 256;
     this.hysteresisExpand = 1.25;
     this.hysteresisCollapse = 0.75;
 
@@ -1375,12 +1377,13 @@ export class CubedSpherePlanetRenderer {
   }
 
   // Approximate world-space geometric error: half a tile's surface span.
+  // World-space size (m) of the detail a tile can show. With streamed imagery that is one colour
+  // texel, so a tile is refined once its texels would be magnified beyond sseThreshold pixels.
+  // Without assets only the silhouette matters, so it is one geometry segment.
   _tileGeometricError(tile) {
     const tileSpan = 2 / Math.pow(2, tile.lod); // in cube-face [-1,1] units
-    // Without streamed textures/heights only the silhouette matters, so the
-    // error is the (much smaller) per-segment span.
-    const scale = this.hasAssets ? 0.5 : 0.5 / this.segments;
-    return scale * tileSpan * this.meanRadius;
+    const tileArc = tileSpan * (Math.PI / 4) * this.meanRadius; // a whole face spans ~pi/2 radians
+    return this.hasAssets ? tileArc / this.tileTextureSize : tileArc / this.segments;
   }
 
   // True if the tile's surface footprint overlaps a location-of-interest disc.

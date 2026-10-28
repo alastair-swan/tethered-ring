@@ -1374,7 +1374,6 @@ function bigIslandLauncher(guidParamWithUnits, nonGUIParams) {
     // Big Island is in view
     nonGUIParams['maxCachedTiles'] = 1500
     nonGUIParams['maxTileGpuBytes'] = 1536 * 1024 * 1024
-    nonGUIParams['tileSseThreshold'] = 3.5
     nonGUIParams['maxAvailableTileLod'] = 11
 
     // Prioritize Hawaii launch region and immediate surroundings.
