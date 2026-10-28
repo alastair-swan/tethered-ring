@@ -166,6 +166,18 @@ The shot file format is documented at the top of `src/shots/ShotFormat.js`. A sh
 - `npm run lint` runs ESLint.
 - `npm run smoke` loads the full app in headless Chrome/Chromium and fails on any console error. Use `SMOKE_GPU=1` with real hardware; the software renderer takes over a minute to decode a single terrain tile. `--eval "<js>"` runs code against `window.tetheredRing` and prints the result, and `--page /tests/planet.html` targets a standalone test page.
 
+## Sun, sky and atmosphere
+
+- **Sun position.** `src/physics/solar.js` gives the subsolar point from the day of year and UTC time (NOAA approximation; effects longer than a year are ignored). `App.updateSun()` points the sun light along it every step, from the `sunDayOfYear` / `sunTimeOfDayUTC` parameters plus the simulated time. Left automatic, `App.resolveSunDate()` picks a repeatable daytime for the preset's opening view. Presets that place the sun themselves, and other bodies, keep their own.
+- **Sun disc.** `SkyPass` draws the sun's disc and glow beyond the Moon. Seen through the air, the atmosphere shader draws it instead, because the sky is drawn over the sky pass.
+- **Night side.** The planet's terrain and sea darken to 5% on the night side, with a soft twilight band (`CubedSpherePlanetRenderer._configureDaylight`). Objects keep their lighting, so they stay visible at night.
+- **Atmosphere.** A shell 60 km above the ellipsoid, drawn from inside (its far side) and shaded per pixel by ray-marched single scattering (`src/shaders/atmosphere.frag.glsl`):
+  - Rayleigh and Mie scattering with exponential density.
+  - Sunlight attenuated along its path to each sample by the Chapman function.
+  - Output is premultiplied over the background, dimmed by the air's transmittance, so stars fade by day.
+  - From space it is the limb glow; from inside it is the sky. There is no switch-over between the two.
+  - Like the sea fog, it is solved against the ellipsoid relative to the camera, with the large terms in float64 (`Planet.updateAtmosphere`).
+
 ## The sea
 
 On planets with oceans (`planetSpec.hasOcean`), the planet renderer draws the sea surface from above (see the table above). `src/planet/Ocean.js` handles being in the sea. When the camera is below sea level and above the sea floor, there is no sky: the background is the water colour, which darkens with depth, and the underside of the surface is drawn around the camera. When the camera is also in the water, rather than inside the evacuated tube (`launcher.isInsideTube`), everything fades into the water colour with distance (`underwaterVisibility`, a visual cue rather than realism).

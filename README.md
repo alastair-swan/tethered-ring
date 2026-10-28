@@ -63,6 +63,10 @@ Level of detail is chosen from each object's size in real screen pixels, so a 4K
 
 Open the browser developer tools (F12) for console output. `window.tetheredRing` exposes the app objects (scene, camera, launch and transit systems, parameters) for inspection.
 
+### Sun and time of day
+
+The sun is placed from a date: **Rendering → sunDayOfYear** (1–366) and **sunTimeOfDayUTC** (hours) set where it is when the simulation starts, and it then moves with simulated time. Each preset starts at its own repeatable daytime for its opening view (mid-morning to mid-afternoon local time, with the sun well up); change the two values to see the scene at another time, including night and sunset. The atmosphere's colour (blue sky, sunsets, the glow around the sun) follows from the sun's position.
+
 ## Controls
 
 Mouse: drag to orbit, right-drag to pan, wheel to zoom. The **Controls** panel holds every parameter, grouped by subsystem. Press the **Keyboard shortcuts** button for the full list; the most useful keys are:
