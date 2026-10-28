@@ -288,7 +288,19 @@ export class launcher {
           this.saveGeometryAsSTL(saveModel, 'massDriverScrew.stl')
         }
         const threadRadius = dParamWithUnits['launcherMassDriverScrewThreadRadius'].value
-        virtualMassDriverScrew.createPooledModel = () => createScrewModelPair(this.massDriverScrewMaterials, threadRadius)
+        // Distant screws are plain cylinders; draw all of them with one instanced mesh.
+        virtualMassDriverScrew.cylinderPool?.dispose()
+        const nominalLength = this.accelerationScrewLength / Math.max(1, this.massDriverAccelerationScrewSegments)
+        const cylinderGeometry = new THREE.CylinderGeometry(threadRadius * 0.9, threadRadius * 0.9, nominalLength, 12, 1, false)
+        const cylinderPool = new InstancedProxyPool({
+          name: 'massDriverScrew',
+          parent: this.scene,
+          size: 2 * threadRadius,
+          levels: [{ geometry: cylinderGeometry, material: this.massDriverScrewMaterials[0], minPixels: 0 }],
+        })
+        cylinderPool.nominalLength = nominalLength
+        virtualMassDriverScrew.cylinderPool = cylinderPool
+        virtualMassDriverScrew.createPooledModel = () => createScrewModelPair(this.massDriverScrewMaterials, threadRadius, cylinderPool)
         const screwModels = virtualMassDriverScrew.createPooledModel()
         screwModels.visible = false
         virtualMassDriverScrew.unallocatedModels.push(screwModels)

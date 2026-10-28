@@ -97,7 +97,9 @@ export class massDriverScrewModel {
 
 // Builds the pooled screw model: a group holding the left and right screws, each a PixelLOD whose
 // levels share per-level geometry for the screw segment the model is currently placed at.
-export function createScrewModelPair(materials, threadRadius) {
+// cylinderPool: optional InstancedProxyPool drawing the far (cylinder) level of every screw in one
+// draw call; without it each screw draws its own cylinder mesh.
+export function createScrewModelPair(materials, threadRadius, cylinderPool = null) {
   const group = new THREE.Group()
   group.name = 'massDriverScrews'
   // Per-model state lives in plain properties: Object3D.clone() would JSON-copy userData.
@@ -110,6 +112,11 @@ export function createScrewModelPair(materials, threadRadius) {
     if (side === 1) lod.scale.set(-1, 1, 1)
     SCREW_LEVELS.forEach((level, levelIndex) => {
       lod.addLevel(level.minPixels, () => {
+        if (level.cylinder && cylinderPool) {
+          const proxy = cylinderPool.createProxy()
+          proxy.scale.y = lod.parent.screwSegment.screwLength / cylinderPool.nominalLength
+          return proxy
+        }
         const mesh = new THREE.Mesh(screwGeometryFor(lod.parent, levelIndex), materials[0])
         mesh.name = 'massDriverScrew'
         return mesh

@@ -19,6 +19,9 @@ const _objectPosition = new THREE.Vector3()
 export class PixelLOD extends THREE.LOD {
   // Drawing-buffer height in pixels; the App keeps this up to date.
   static viewportHeight = 1080
+  // Multiplies every threshold (1 = as designed; >1 switches to coarser levels sooner). Set by the
+  // graphics-quality setting; always 1 while recording.
+  static lodBias = 1
   // Maximum lazy level builds per frame (Infinity while recording).
   static buildBudget = 2
   static _buildsThisFrame = 0
@@ -78,7 +81,7 @@ export class PixelLOD extends THREE.LOD {
     const distance = Math.max(1e-3, _cameraPosition.distanceTo(_objectPosition) - this.extent)
     // projectionMatrix[5] = 1 / tan(fovY / 2); half the viewport spans that.
     const pixelsPerRadian = camera.projectionMatrix.elements[5] * PixelLOD.viewportHeight / 2
-    return this.size / distance * pixelsPerRadian
+    return this.size / distance * pixelsPerRadian / PixelLOD.lodBias
   }
 
   update(camera) {
@@ -103,7 +106,10 @@ export class PixelLOD extends THREE.LOD {
   // Drops built levels (e.g. when the parameters they were built from change).
   reset({ dispose = true } = {}) {
     for (const level of this.pixelLevels) {
-      if (level.object) {
+      if (level.object?.instancedProxyPool) {
+        level.object.instancedProxyPool.releaseProxy(level.object)
+      }
+      else if (level.object) {
         this.remove(level.object)
         if (dispose) level.object.traverse(o => { if (o.geometry && !o.geometry.userData?.shared) o.geometry.dispose() })
       }

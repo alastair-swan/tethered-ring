@@ -106,6 +106,27 @@ Rings, tubes, rails, screws and vehicles are spread along curves tens of thousan
 
 The object tracker walks `system.refFrames[i].wedges[j][className]` to find trackable objects, so vehicles and elevator cars must stay discoverable there. Each provides `getFuturePosition(refFrame, dt)` (and `getFutureFrame` for orientation).
 
+## Level of detail and performance
+
+Detail is chosen from projected size in drawing-buffer pixels, not distance:
+
+- `src/scene/PixelLOD.js` is a `THREE.LOD` whose levels have pixel thresholds. three.js calls its `update(camera)` during rendering. Levels are built lazily; expensive builds are limited per frame (`PixelLOD.buildBudget`) except while recording. `PixelLOD.viewportHeight` (set by `App.setRenderSize`) and `PixelLOD.lodBias` (set by the quality setting) feed the calculation.
+- `src/scene/InstancedProxyPool.js` draws many identical objects with one `InstancedMesh` per detail level. The code that places them still works with ordinary `Object3D` proxies; `syncAll()` (called from `App.render`) copies visible, in-frustum proxies into instances relative to the camera.
+- `src/app/GraphicsQuality.js` sets the pixel ratio, LOD bias and terrain threshold. In Auto mode it adapts the render resolution to the frame time. Recording forces full quality.
+
+Where it is used:
+
+| Object | Technique |
+|---|---|
+| Screws | PixelLOD per screw: 16/4/1 segments per metre, then a cylinder; geometry shared by the left/right pair |
+| Adaptive nut grapplers | Two BatchedMeshes per nut (pads, hardware) inside PixelLODs; placement skipped when not drawn |
+| Lift fans | Instanced per chunk of 32 fans with full, low-poly and hidden levels |
+| Brackets | InstancedProxyPool with full and low-detail (4-segment arcs) shapes |
+| Transit ring segments | Instanced layers (`src/ring/RingInstancedLayer.js`) |
+| Planet | Screen-space texel error, skirts for crack-free LOD transitions |
+
+Use `npm run profile` to measure a change (see the README).
+
 ## Floating-point precision
 
 Three.js builds each object's model-view matrix in float64 on the CPU, but the GPU works in float32. At planet scale (6.4e6 m) a float32 has a resolution of about 0.5 m. Every mesh therefore keeps its vertex positions small, relative to a nearby origin, and puts the large offset in its `position`. That covers terrain tiles (relative to the tile centre), ring and track segments, the tethers and the trajectory line (in chunks). Do not create geometry with absolute planet coordinates. Shot camera paths are interpolated in float64 for the same reason.

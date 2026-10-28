@@ -5,10 +5,12 @@ import { App } from './app/App.js'
 //   ?preset=<id>      scene preset to load (see src/presets/presets.js)
 //   ?enableVR=true    enable WebXR
 //   ?planetAssets=a,b override the planet tile sets to stream
+//   ?quality=auto|high|balanced|low  graphics quality (otherwise the last choice, default auto)
 const url = new URL(window.location.href)
 const app = new App(document.querySelector('#simContainer'), {
   presetId: url.searchParams.get('preset') ?? undefined,
   enableVR: url.searchParams.get('enableVR') === 'true',
+  quality: url.searchParams.get('quality') ?? undefined,
 })
 
 try {

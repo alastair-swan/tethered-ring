@@ -1,7 +1,7 @@
 // Headless smoke test: starts the Vite dev server, loads the app in Chrome/Chromium,
 // waits for it to render, then reports console errors and saves a screenshot.
 //
-//   npm run smoke -- [--url-params "preset=default"] [--wait 15] [--out smoke.png]
+//   npm run smoke -- [--url-params "preset=default"] [--wait 15] [--out smoke.png] [--width 1280 --height 720 --dpr 1]
 //
 // Set CHROME_PATH if Chrome/Chromium/Edge is not found automatically.
 import { createServer } from 'vite'
@@ -36,6 +36,10 @@ const waitSeconds = Number(arg('wait', '15'))
 const urlParams = arg('url-params', '')
 const out = arg('out', 'smoke.png')
 const evalExpr = arg('eval', null)
+// Viewport in CSS pixels and device pixel ratio, e.g. --width 1920 --height 1080 --dpr 2 for a 4K screen.
+const width = Number(arg('width', '1280'))
+const height = Number(arg('height', '720'))
+const deviceScaleFactor = Number(arg('dpr', '1'))
 
 const server = await createServer({ server: { port: 0 }, logLevel: 'error' })
 await server.listen()
@@ -48,9 +52,9 @@ const browser = await puppeteer.launch({
   headless: true,
   // SMOKE_GPU=1 uses the real GPU (much faster KTX2/terrain); the default software renderer works anywhere.
   args: process.env.SMOKE_GPU
-    ? ['--enable-gpu', '--use-angle=' + (process.env.SMOKE_ANGLE ?? 'gl-egl'), '--ignore-gpu-blocklist', '--window-size=1280,720']
-    : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--window-size=1280,720'],
-  defaultViewport: { width: 1280, height: 720 },
+    ? ['--enable-gpu', '--use-angle=' + (process.env.SMOKE_ANGLE ?? 'gl-egl'), '--ignore-gpu-blocklist', `--window-size=${width},${height}`]
+    : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', `--window-size=${width},${height}`],
+  defaultViewport: { width, height, deviceScaleFactor },
 })
 
 const errors = []

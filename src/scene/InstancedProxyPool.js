@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { PixelLOD } from './PixelLOD.js'
 
 const _cameraPosition = new THREE.Vector3()
 const _proxyPosition = new THREE.Vector3()
@@ -27,7 +28,7 @@ export class InstancedProxyPool {
     this.parent = parent
     this.castShadow = castShadow
     this.levels = [...levels].sort((a, b) => b.minPixels - a.minPixels)
-    this.proxies = []
+    this.proxies = new Set()
     this.capacity = 0
     this.meshes = []
     this._allocate(capacity)
@@ -56,8 +57,14 @@ export class InstancedProxyPool {
     const proxy = new THREE.Object3D()
     proxy.name = this.name
     proxy.instancedProxyPool = this
-    this.proxies.push(proxy)
+    this.proxies.add(proxy)
     return proxy
+  }
+
+  // Stops drawing a proxy that is no longer needed.
+  releaseProxy(proxy) {
+    proxy.parent?.remove(proxy)
+    this.proxies.delete(proxy)
   }
 
   static syncAll(camera, viewportHeight) {
@@ -67,11 +74,11 @@ export class InstancedProxyPool {
   sync(camera, viewportHeight) {
     camera.updateMatrixWorld()
     _cameraPosition.setFromMatrixPosition(camera.matrixWorld)
-    const pixelsPerRadian = camera.projectionMatrix.elements[5] * viewportHeight / 2
+    const pixelsPerRadian = camera.projectionMatrix.elements[5] * viewportHeight / 2 / PixelLOD.lodBias
     // Copies outside the view are skipped (the instanced meshes themselves cannot be culled).
     _frustum.setFromProjectionMatrix(_viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse))
     _sphere.radius = this.size
-    if (this.proxies.length > this.capacity) this._allocate(Math.ceil(this.proxies.length * 1.5))
+    if (this.proxies.size > this.capacity) this._allocate(Math.ceil(this.proxies.size * 1.5))
     for (const mesh of this.meshes) {
       mesh.position.copy(_cameraPosition)
       if (mesh.parent) {
@@ -104,7 +111,7 @@ export class InstancedProxyPool {
   dispose() {
     for (const mesh of this.meshes) { mesh.parent?.remove(mesh); mesh.dispose() }
     this.meshes = []
-    this.proxies = []
+    this.proxies.clear()
     InstancedProxyPool.pools.delete(this)
   }
 }

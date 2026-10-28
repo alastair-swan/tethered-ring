@@ -67,7 +67,11 @@ async function profileScene({ frames = 120, warmup = 30 } = {}) {
   const top = Object.entries(byName).sort((a, b) => b[1].triangles - a[1].triangles).slice(0, 12)
     .map(([name, e]) => [name, e.objects, Math.round(e.triangles), e.vertices])
   const stat = (a) => a.length ? { mean: +(a.reduce((s, v) => s + v, 0) / a.length).toFixed(2), max: +Math.max(...a).toFixed(2) } : null
+  const buffer = renderer.getDrawingBufferSize(new THREE.Vector2())
   return {
+    drawingBuffer: `${buffer.x}x${buffer.y}`,
+    pixelRatio: +renderer.getPixelRatio().toFixed(2),
+    quality: app.quality ? { mode: app.quality.mode, renderScale: +app.quality.renderScale.toFixed(2) } : null,
     msPerFrameWall: +wall.toFixed(2),
     cpu: Object.fromEntries(['step', 'launcher', 'transit', 'planet', 'camera', 'render'].map(k => [k, stat(timings[k])])),
     gpu: stat(timings.gpu),

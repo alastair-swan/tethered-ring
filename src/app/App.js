@@ -13,6 +13,7 @@ import { Overlays } from '../scene/Overlays.js'
 import { backgroundScene } from '../scene/backgroundScene.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
+import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
 import { RingAssembly } from './RingAssembly.js'
 import { transitSystem } from '../transit/transitsystems.js'
@@ -43,7 +44,7 @@ const TUBE_DEPLOY_RATE = 0.0025 // fraction per second
 //   clock.tick() -> step(dt): advance animations at clock.time -> render()
 // Recording and shot playback drive step()/render() themselves with a fixed time step.
 export class App {
-  constructor(container, { presetId, enableVR = false } = {}) {
+  constructor(container, { presetId, enableVR = false, quality } = {}) {
     this.container = container
     this.enableVR = enableVR
     this.presetId = findPreset(presetId) ? presetId : DEFAULT_PRESET_ID
@@ -57,6 +58,7 @@ export class App {
     this.mountainIndex = 0
     this.logoTimerDone = false
     this.trackPointLogger = null
+    this.quality = new GraphicsQuality(this, quality)
   }
 
   // ------------------------------------------------------------------------------------------
@@ -77,7 +79,7 @@ export class App {
     this.shots = new ShotController(this)
     this.shots.buildGui(this.gui.gui)
     this.installInput()
-    this.onResize()
+    this.quality.apply()
     window.addEventListener('resize', () => this.onResize())
     await this.shots.resumePendingShot()
     return this
@@ -312,6 +314,9 @@ export class App {
     const presetChoice = { preset: this.presetId }
     const presetOptions = Object.fromEntries(PRESETS.map(p => [p.label, p.id]))
     sceneFolder.add(presetChoice, 'preset', presetOptions).name('Preset (reloads page)').onChange((id) => this.switchPreset(id))
+    const qualityChoice = { quality: this.quality.mode }
+    const qualityOptions = { 'Auto (adapts resolution)': 'auto', ...Object.fromEntries(Object.entries(QUALITY_PRESETS).map(([k, v]) => [v.label, k])) }
+    sceneFolder.add(qualityChoice, 'quality', qualityOptions).name('Graphics quality').onChange((mode) => this.quality.setMode(mode))
     const actions = {
       downloadSpecs: () => this.downloadSpecs(),
       downloadKml: () => this.downloadKml(),
@@ -509,6 +514,7 @@ export class App {
 
   frame() {
     if (this.shots.busy) return // a recording/playback loop is driving the frames
+    this.quality.onFrame(performance.now())
     const dt = this.clock.tick()
     this.step(dt)
     this.render()
@@ -593,7 +599,7 @@ export class App {
 
   // Sets the drawing-buffer size. `css` keeps the canvas filling its container while recording at
   // a different resolution.
-  setRenderSize(width, height, { pixelRatio = Math.min(window.devicePixelRatio, 2) } = {}) {
+  setRenderSize(width, height, { pixelRatio = this.quality.pixelRatio() } = {}) {
     this.renderer.setPixelRatio(pixelRatio)
     this.renderer.setSize(width, height, false)
     PixelLOD.viewportHeight = height * pixelRatio

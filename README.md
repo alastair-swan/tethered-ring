@@ -50,6 +50,18 @@ Open the URL Vite prints (usually http://localhost:5173/). Useful URL parameters
 | `?enableVR=true` | Enable WebXR (shows an "Enter VR" button). |
 | `?planetAssets=earth,hawaii` | Override which terrain tile sets are streamed. |
 
+| `?quality=auto\|high\|balanced\|low` | Graphics quality (see below). Without it, the last choice is remembered. |
+
+### Graphics quality
+
+**Scene → Graphics quality** trades rendering resolution for speed:
+
+- **Auto** (default) starts at full quality and lowers the render resolution in steps while frames take longer than about 24 ms, then raises it again when there is headroom. Use it on laptops and 4K screens.
+- **High** renders at the screen's full resolution (up to a 2x device pixel ratio).
+- **Balanced** and **Low** cap the pixel ratio at 1.5 and 1, and switch distant objects to simpler geometry sooner.
+
+Level of detail is chosen from each object's size in real screen pixels, so a 4K or high-DPI screen automatically gets finer detail and a narrow-field close-up keeps full detail. Recordings always render at full quality, whatever this setting is, so a shot looks the same on every computer.
+
 Open the browser developer tools (F12) for console output. `window.tetheredRing` exposes the app objects (scene, camera, launch and transit systems, parameters) for inspection.
 
 ## Controls
@@ -107,6 +119,8 @@ The command is identical in PowerShell and POSIX shells once ffmpeg is on your P
 | `npm run lint` | ESLint |
 | `npm test` | Unit tests (Node's built-in test runner) |
 | `npm run smoke` | Loads the app in headless Chrome/Chromium and reports console errors plus a screenshot |
+
+`npm run profile -- --preset <id>` reports per-subsystem CPU time, GPU time, draw calls, triangles and the heaviest objects in view. Add `--width 1920 --height 1080 --dpr 2` to emulate a 4K screen (the same options work for `npm run smoke`), and `--camera "<js>"` to move the camera first (`app` is in scope).
 
 `npm run smoke` finds Chrome, Chromium or Edge automatically; set `CHROME_PATH` if it cannot. Set `SMOKE_GPU=1` to use the real GPU (the default software renderer is very slow at decoding terrain tiles). Examples:
 

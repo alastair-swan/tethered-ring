@@ -2,6 +2,7 @@
 // timings, draw calls, triangles and the heaviest objects in view.
 //
 //   npm run profile -- --preset toLowOrbitFromEarth [--camera "<js>"] [--frames 120] [--wait 40]
+//                      [--width 1920 --height 1080 --dpr 2]   (screen size in CSS pixels; dpr 2 = 4K)
 //
 // Uses the GPU (like SMOKE_GPU=1). --camera is JavaScript run before measuring, with `app` in scope.
 import { spawnSync } from 'node:child_process'
@@ -17,7 +18,8 @@ const cameraJs = arg('camera', '')
 const evalJs = `(async () => { const app = window.tetheredRing.app; ${cameraJs};
   for (let i = 0; i < 400; i++) { await new Promise(r => requestAnimationFrame(r)); const s = app.planet.getDebugStats(); if (i > 60 && !s.queue && !s.inflight) break }
   ${profiler}; return JSON.stringify(await profileScene({ frames: ${Number(arg('frames', '120'))} })) })()`
-const result = spawnSync(process.execPath, [path.join(here, 'smoke.mjs'), '--url-params', `preset=${arg('preset', 'default')}`, '--wait', arg('wait', '40'), '--out', arg('out', 'profile.png'), '--eval', evalJs],
+const result = spawnSync(process.execPath, [path.join(here, 'smoke.mjs'), '--url-params', `preset=${arg('preset', 'default')}`, '--wait', arg('wait', '40'), '--out', arg('out', 'profile.png'), '--eval', evalJs,
+  '--width', arg('width', '1280'), '--height', arg('height', '720'), '--dpr', arg('dpr', '1')],
   { encoding: 'utf8', env: { ...process.env, SMOKE_GPU: process.env.SMOKE_GPU ?? '1' }, maxBuffer: 1 << 26 })
 const out = result.stdout + result.stderr
 const m = out.match(/eval: "(.*)"\n/)

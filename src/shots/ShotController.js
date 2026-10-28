@@ -246,6 +246,7 @@ export class ShotController {
     // Every recorded frame gets its intended level of detail (no deferred high-detail builds).
     const previousBuildBudget = PixelLOD.buildBudget
     PixelLOD.buildBudget = Infinity
+    app.quality.applyForRecording()
     const progress = new ProgressOverlay(() => this.stop())
     try {
       for (let i = 0; ; i++) {
@@ -265,6 +266,7 @@ export class ShotController {
       progress.remove()
       PixelLOD.buildBudget = previousBuildBudget
       app.clock.setFixedStep(null)
+      app.quality.apply()
       app.onResizeAfterRecording()
       app.renderer.setAnimationLoop(() => app.frame())
     }
