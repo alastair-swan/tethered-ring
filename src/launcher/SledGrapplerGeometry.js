@@ -1,3 +1,5 @@
+// fromJSON() looks curve classes up by type name; the three namespace exports them all.
+import * as Curves from 'three'
 import {
   Float32BufferAttribute,
   BufferGeometry,

@@ -46,7 +46,10 @@ const url = `http://localhost:${port}${pagePath}${urlParams ? `?${urlParams}` : 
 const browser = await puppeteer.launch({
   executablePath: findChrome(),
   headless: true,
-  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--window-size=1280,720'],
+  // SMOKE_GPU=1 uses the real GPU (much faster KTX2/terrain); the default software renderer works anywhere.
+  args: process.env.SMOKE_GPU
+    ? ['--enable-gpu', '--use-angle=' + (process.env.SMOKE_ANGLE ?? 'gl-egl'), '--ignore-gpu-blocklist', '--window-size=1280,720']
+    : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--window-size=1280,720'],
   defaultViewport: { width: 1280, height: 720 },
 })
 
