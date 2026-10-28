@@ -2,6 +2,7 @@
 // waits for it to render, then reports console errors and saves a screenshot.
 //
 //   npm run smoke -- [--url-params "preset=default"] [--wait 15] [--out smoke.png] [--width 1280 --height 720 --dpr 1]
+//                    [--cpu-throttle 4]   (slow the CPU down 4x, roughly a low-end laptop)
 //
 // Set CHROME_PATH if Chrome/Chromium/Edge is not found automatically.
 import { createServer } from 'vite'
@@ -40,6 +41,7 @@ const evalExpr = arg('eval', null)
 const width = Number(arg('width', '1280'))
 const height = Number(arg('height', '720'))
 const deviceScaleFactor = Number(arg('dpr', '1'))
+const cpuThrottle = Number(arg('cpu-throttle', '1'))
 
 const server = await createServer({ server: { port: 0 }, logLevel: 'error' })
 await server.listen()
@@ -61,6 +63,7 @@ const errors = []
 let exitCode = 0
 try {
   const page = await browser.newPage()
+  if (cpuThrottle > 1) await page.emulateCPUThrottling(cpuThrottle)
   page.on('console', (msg) => {
     if (msg.type() === 'error') errors.push(`console.error: ${msg.text()}`)
     if (process.env.SMOKE_VERBOSE) console.log(`[${msg.type()}] ${msg.text()}`)

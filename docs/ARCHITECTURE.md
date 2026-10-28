@@ -110,7 +110,7 @@ The object tracker walks `system.refFrames[i].wedges[j][className]` to find trac
 
 Detail is chosen from projected size in drawing-buffer pixels, not distance:
 
-- `src/scene/PixelLOD.js` is a `THREE.LOD` whose levels have pixel thresholds. three.js calls its `update(camera)` during rendering. Levels are built lazily; expensive builds are limited to a few milliseconds per frame (`PixelLOD.buildBudget`) except while recording. `PixelLOD.viewportHeight` (set by `App.setRenderSize`) and `PixelLOD.lodBias` (set by the quality setting) feed the calculation.
+- `src/scene/PixelLOD.js` is a `THREE.LOD` whose levels have pixel thresholds. three.js calls its `update(camera)` during rendering. Levels are built lazily; expensive builds are limited to a few milliseconds per frame (`PixelLOD.buildBudget`) except while recording. A level's factory may return a Promise (built in the background; the next coarser level shows meanwhile), and a level can ask to be prefetched before it is needed. While recording, everything is built synchronously so every frame is complete. `PixelLOD.viewportHeight` (set by `App.setRenderSize`) and `PixelLOD.lodBias` (set by the quality setting) feed the calculation.
 - `src/scene/InstancedProxyPool.js` draws many identical objects with one `InstancedMesh` per detail level. The code that places them still works with ordinary `Object3D` proxies; `syncAll()` (called from `App.render`) copies visible, in-frustum proxies into instances relative to the camera.
 - `src/app/GraphicsQuality.js` sets the pixel ratio, LOD bias and terrain threshold. In Auto mode it adapts the render resolution to the frame time. Recording forces full quality.
 
@@ -118,12 +118,20 @@ Where it is used:
 
 | Object | Technique |
 |---|---|
-| Screws | PixelLOD per screw: 16/4/1 segments per metre, then a cylinder; geometry shared by the left/right pair |
+| Screws | PixelLOD per screw: three thread levels sampled per turn to a chord-error tolerance, then a cylinder; geometry shared by the left/right pair and built by Web Workers (`ScrewGeometryBuilder.js`); only segments large enough to draw get a model (`modelRange`) |
 | Adaptive nut grapplers | Two BatchedMeshes per nut (pads, hardware) inside PixelLODs; placement skipped when not drawn |
 | Lift fans | Instanced per chunk of 32 fans with full, low-poly and hidden levels |
 | Brackets | InstancedProxyPool with full and low-detail (4-segment arcs) shapes |
 | Transit ring segments | Instanced layers (`src/ring/RingInstancedLayer.js`) |
 | Planet | Screen-space texel error, skirts for crack-free LOD transitions |
+| Tethers | Each copy is a PixelLOD over variants with the last forks merged (the vertical fan to the rings first), used once the merged fan is under 0.1 px; a strand count keeps the combined opacity |
+| Mass-driver tube | A 1 px line along the track once the tube is under a pixel across |
+
+The launcher's reference frames split the track into a few hundred zones, each kilometres long. A virtual object class can define `static modelRange(pixelsPerRadian)` so that only objects within that distance of the camera get models (screws use the distance at which they shrink below their smallest drawn size).
+
+### The screw thread model
+
+The thread's phase along the screw comes from the adaptive nut's motion (`threadTime` and `threadSpeed` in `src/launcher/launcherPhysics.js`): the thread at each point matches the nut's speed as its centre passes. With constant acceleration, the unrolled flight is a quadratic in the thread angle. The screw geometry and the grappler pads both use these functions. The thread only starts where the groove between flights can hold a grappler pad plus its lift-away clearance (`threadStartDistance`); before that the screw is a plain shaft and pads stay disengaged.
 
 Use `npm run profile` to measure a change (see the README).
 

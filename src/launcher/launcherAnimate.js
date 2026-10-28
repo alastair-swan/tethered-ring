@@ -1,6 +1,9 @@
 import { getSpiralCoordinates } from './spiral.js'
 import { MovingVirtualObject } from './VirtualObject.js'
 
+// Used for modelRange until the App has reported the real value (1080 px high, 45 degree field of view).
+const DEFAULT_PIXELS_PER_RADIAN = 1300
+
 // Marks the zones of `refFrame` that are within the camera range. Each sub-curve of the reference
 // frame's path reports the [start, finish] arc-length fractions that are inside the camera's sphere;
 // the matching zones of that sub-curve are marked (ranges are kept per sub-curve, so a path that
@@ -59,12 +62,32 @@ export function defineAnimate () {
       classes.forEach(objectClass => {
         if (objectClass.prototype instanceof MovingVirtualObject) return
         const name = objectClass.className
+        // Classes with a modelRange (m, from the on-screen scale) only give models to objects that close.
+        // Zones are kilometres long, so without it every object in a nearby zone got a model.
+        const modelRange = objectClass.modelRange?.(this.pixelsPerRadian ?? DEFAULT_PIXELS_PER_RADIAN)
         for (let z = 0; z < refFrame.numZones; z++) {
           const isVisible = visible[z] === 1 && objectClass.isVisible
           const changed = force || (visible[z] !== prevVisible[z])
           const list = refFrame.wedges[z][name]
           if (!list || list.length === 0) continue
-          if (changed) {
+          if (isVisible && modelRange !== undefined) {
+            list.forEach(obj => {
+              if (objectClass.hasChanged || !obj.approximatePosition) obj.approximatePosition = refFrame.curve.getPointAt(obj.d)
+              const near = obj.approximatePosition.distanceTo(cameraPosition) <= modelRange
+              if (near && !obj.model) {
+                obj.model = objectClass.acquireModel(obj, refFrame)
+                if (obj.model) obj.placeAndOrientModel(obj.model, refFrame)
+              }
+              else if (!near && obj.model) {
+                objectClass.releaseModel(obj.model)
+                obj.model = null
+              }
+              else if (obj.model && (objectClass.isDynamic || objectClass.hasChanged)) {
+                obj.placeAndOrientModel(obj.model, refFrame)
+              }
+            })
+          }
+          else if (changed) {
             list.forEach(obj => {
               if (isVisible && !obj.model) {
                 obj.model = objectClass.acquireModel(obj, refFrame)

@@ -1,20 +1,30 @@
 import * as THREE from 'three'
 import { ScrewGeometry, screwLengthOffsets } from './ScrewGeometry.js'
+import { buildScrewGeometry } from './ScrewGeometryBuilder.js'
 import * as tram from '../utils/tram.js'
+import { screwThreadStartDistance } from './launcherPhysics.js'
 import { VirtualObject, parameterSignature } from './VirtualObject.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 
-// Screw levels of detail, chosen by the screw's on-screen diameter in pixels. Each thread level is
-// tessellated so a lengthwise step spans roughly 3 px at its threshold, and with at least
-// samplesPerTurn steps per turn of the thread (the pitch is very fine near the breech). maxSegments
-// bounds the vertex count; a segment whose pitch is too fine for that budget is drawn as a cylinder
-// at that level, as are all screws below the last thread level (the threads are sub-pixel there).
+// Screw levels of detail, chosen by the screw's on-screen diameter in pixels. The flights follow the
+// thread model in launcherPhysics (threadTime: unrolled, the flight is a quadratic in the thread
+// angle), which the grapplers target too. Each thread level samples it finely enough that the chords
+// between rings of vertices stay within chordError (a fraction of the thread radius) of the true
+// curve: about 0.25 px at the level's smallest size, and ~1 mm on a 0.5 m screw at full detail (50 rings
+// per turn, as fine as the original fixed tessellation was on fast sections).
+// Lengthwise steps are also at most 1/segmentsPerMeter. maxSegments bounds the vertex count; a
+// segment whose pitch is too fine for that budget is drawn as a cylinder at that level, as are all
+// screws below the last thread level (the threads are sub-pixel there).
 const SCREW_LEVELS = [
-  { minPixels: 48, segmentsPerMeter: 16, samplesPerTurn: 48, maxSegments: 8192, cost: 'expensive' },  // full detail (close-ups)
-  { minPixels: 12, segmentsPerMeter: 4, samplesPerTurn: 12, maxSegments: 2048, cost: 'expensive' },
-  { minPixels: 3, segmentsPerMeter: 1, samplesPerTurn: 4, maxSegments: 512, cost: 'cheap' },
+  { minPixels: 48, segmentsPerMeter: 16, chordError: 0.002, maxSegments: 8192, cost: 'expensive' },  // full detail (close-ups)
+  { minPixels: 12, segmentsPerMeter: 4, chordError: 0.01, maxSegments: 2048, cost: 'expensive' },
+  { minPixels: 3, segmentsPerMeter: 1, chordError: 0.04, maxSegments: 512, cost: 'cheap' },
   { minPixels: 0.75, cylinder: true, cost: 'cheap' },
-]
+].map(level => level.cylinder ? level : {
+  ...level,
+  // A chord spanning angle a deviates from the arc by r (1 - cos(a/2)).
+  samplesPerTurn: Math.ceil(Math.PI / Math.acos(1 - level.chordError)),
+})
 
 export class massDriverScrewModel {
 
@@ -119,10 +129,14 @@ export function createScrewModelPair(materials, threadRadius, cylinderPool = nul
           proxy.scale.y = lod.parent.screwSegment.screwLength / cylinderPool.nominalLength
           return proxy
         }
-        const mesh = new THREE.Mesh(screwGeometryFor(lod.parent, levelIndex), materials[0])
-        mesh.name = 'massDriverScrew'
-        return mesh
-      }, { cost: level.cost })
+        const makeMesh = (geometry) => {
+          const mesh = new THREE.Mesh(geometry, materials[0])
+          mesh.name = 'massDriverScrew'
+          return mesh
+        }
+        const geometry = screwGeometryFor(lod.parent, levelIndex)
+        return (typeof geometry.then === 'function') ? geometry.then(makeMesh) : makeMesh(geometry)
+      }, { cost: level.cost, prefetch: !level.cylinder })
     })
     group.add(lod)
   }
@@ -130,28 +144,42 @@ export function createScrewModelPair(materials, threadRadius, cylinderPool = nul
 }
 
 // Geometry for one level of the segment this pooled model currently represents (cached per model).
+// Thread levels are built by worker threads (a Promise is returned and cached until it resolves),
+// except while recording, where every frame must be complete.
 function screwGeometryFor(group, levelIndex) {
   const cache = group.screwGeometries
-  if (cache.has(levelIndex)) return cache.get(levelIndex)
+  const sync = PixelLOD.buildBudget === Infinity
+  const cached = cache.get(levelIndex)
+  if (cached && !(sync && typeof cached.then === 'function')) return cached
   const v = virtualMassDriverScrew
   const segment = group.screwSegment
   const level = SCREW_LEVELS[levelIndex]
   let geometry
   const threadsFit = !level.cylinder && screwLengthOffsets(segment.screwLength, segment.baseDistanceAlongScrew,
     v.launcherMassDriver1InitialVelocity, v.initialDistance, v.launcherMassDriverForwardAcceleration,
-    v.launcherMassDriverScrewRevolutionsPerSecond, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments) !== null
+    v.launcherMassDriverScrewRevolutionsPerSecond, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments, v.threadStartDistance) !== null
   if (!threadsFit) {
     // Thread envelope, slightly thinner than the tips to account for the gaps between flights.
     geometry = new THREE.CylinderGeometry(v.threadRadius * 0.9, v.threadRadius * 0.9, segment.screwLength, 12, 1, false)
   }
   else {
-    geometry = new ScrewGeometry(
+    geometry = buildScrewGeometry([
       segment.screwLength, v.shaftOuterRadius, v.shaftInnerRadius, v.threadRadius, v.threadThickness,
       v.threadTaperRatio, segment.threadStarts, segment.baseDistanceAlongScrew, v.launcherMassDriver1InitialVelocity,
       v.initialDistance, v.launcherMassDriverScrewRevolutionsPerSecond, v.launcherMassDriverForwardAcceleration,
-      segment.radialSegments, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments)
+      segment.radialSegments, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments, v.threadStartDistance],
+      { async: !sync })
   }
   cache.set(levelIndex, geometry)
+  if (typeof geometry.then === 'function') {
+    const promise = geometry
+    promise.then((built) => {
+      // Keep it if this model still wants it; otherwise (moved to another segment, or replaced by a
+      // synchronous build) free it.
+      if (cache.get(levelIndex) === promise) cache.set(levelIndex, built)
+      else built.dispose()
+    }, () => { if (cache.get(levelIndex) === promise) cache.delete(levelIndex) })
+  }
   return geometry
 }
 
@@ -171,7 +199,8 @@ export class virtualMassDriverScrew extends VirtualObject {
 
   static signatureOf(dParamWithUnits) {
     return parameterSignature(dParamWithUnits,
-      ['launcherMassDriverScrew', 'launcherMassDriverForwardAcceleration', 'launcherMassDriver1InitialVelocity', 'adaptiveNutBodyLength'],
+      ['launcherMassDriverScrew', 'launcherMassDriverForwardAcceleration', 'launcherMassDriver1InitialVelocity', 'adaptiveNutBodyLength',
+        'adaptiveNutGrapplerMagnetThickness', 'adaptiveNutGrapplerPadLiftAwayDistance'],
       ['SidewaysOffset', 'UpwardsOffset', 'Material', 'Density', 'Cost', 'STL'])
   }
 
@@ -199,6 +228,7 @@ export class virtualMassDriverScrew extends VirtualObject {
     v.bracketThickness = dParamWithUnits['launcherMassDriverScrewBracketThickness'].value
     v.numBrackets = dParamWithUnits['launcherMassDriverScrewNumBrackets'].value
     v.initialDistance = dParamWithUnits['adaptiveNutBodyLength'].value / 2
+    v.threadStartDistance = screwThreadStartDistance(dParamWithUnits)  // plain shaft before this
     v.isVisible = dParamWithUnits['showMassDriverAccelerationScrews'].value
     v.isDynamic = true
     v.hasChanged = true
@@ -207,6 +237,14 @@ export class virtualMassDriverScrew extends VirtualObject {
     v.slowDownPassageOfTime = dParamWithUnits['launcherSlowDownPassageOfTime'].value
     v.launcherStartDelayInSeconds = dParamWithUnits['launcherStartDelayInSeconds'].value
     v.versionNumber = versionNumber
+  }
+
+  // Screws further away than this are under the smallest drawn size (see SCREW_LEVELS), so they get
+  // no model at all (with one segment of margin). pixelsPerRadian: drawing-buffer pixels per radian.
+  static modelRange(pixelsPerRadian) {
+    const v = virtualMassDriverScrew
+    const smallestPixels = SCREW_LEVELS[SCREW_LEVELS.length - 1].minPixels * PixelLOD.lodBias
+    return 2 * v.threadRadius * pixelsPerRadian / smallestPixels + v.launcherMassDriverLength / v.massDriverScrewSegments
   }
 
   static addNewVirtualObjects(refFrames) {
@@ -246,7 +284,7 @@ export class virtualMassDriverScrew extends VirtualObject {
         radialSegments: Math.max(3, Math.round(12 / Math.min(Math.max(1, threadStarts), 4))),
       }
       const cache = om.screwGeometries
-      cache.forEach(geometry => geometry.dispose())
+      cache.forEach(geometry => { if (typeof geometry.dispose === 'function') geometry.dispose() })  // (pending builds free themselves)
       cache.clear()
       om.children.forEach(lod => {
         lod.reset({ dispose: false })

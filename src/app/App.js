@@ -586,6 +586,7 @@ export class App {
     this.ring.updateScreenScale(this.camera3d, PixelLOD.viewportHeight)
     // Lets the transit system keep objects until they are sub-pixel instead of using fixed ranges.
     this.transitSystem.pixelsPerRadian = this.camera3d.projectionMatrix.elements[5] * PixelLOD.viewportHeight / 2
+    if (this.launchSystem) this.launchSystem.pixelsPerRadian = this.transitSystem.pixelsPerRadian
     this.sky.update(this.camera3d, this.planetCoordSys, this.lighting.sunLight, this.d, this.planetSpec)
     renderer.clear()
     this.sky.render(renderer)

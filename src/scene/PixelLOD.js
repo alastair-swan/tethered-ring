@@ -27,6 +27,9 @@ export class PixelLOD extends THREE.LOD {
   // Milliseconds per frame that expensive lazy level builds may take (Infinity while recording). A
   // build is started only while the frame's total is below the budget.
   static buildBudget = 6
+  // Prefetch levels (see addLevel) start building at this fraction of their threshold (4x the distance:
+  // a slow machine following a launch vehicle moves tens of metres per frame).
+  static prefetchFactor = 0.25
   static _buildMsThisFrame = 0
   static _frame = -1
 
@@ -49,10 +52,13 @@ export class PixelLOD extends THREE.LOD {
     this.onScreenPixels = 0
   }
 
-  // factory() returns an Object3D (or null for "draw nothing"). `cost` is 'expensive' for builds
-  // that should count against the per-frame budget.
-  addLevel(minPixels, factory, { cost = 'cheap' } = {}) {
-    const level = { minPixels, factory: typeof factory === 'function' ? factory : () => factory, object: undefined, cost }
+  // factory() returns an Object3D (or null for "draw nothing"), or a Promise of one for levels built
+  // in the background (e.g. by a worker); until it resolves the level counts as not built. `cost` is
+  // 'expensive' for builds that should count against the per-frame budget. `prefetch` starts building
+  // the level once the object is PixelLOD.prefetchFactor of the way to its threshold, so a background
+  // build is ready by the time it is needed.
+  addLevel(minPixels, factory, { cost = 'cheap', prefetch = false } = {}) {
+    const level = { minPixels, factory: typeof factory === 'function' ? factory : () => factory, object: undefined, cost, prefetch, pending: null }
     if (typeof factory !== 'function') this._attach(level, factory)
     this.pixelLevels.push(level)
     this.pixelLevels.sort((a, b) => b.minPixels - a.minPixels)
@@ -69,15 +75,25 @@ export class PixelLOD extends THREE.LOD {
 
   _build(level) {
     if (level.object !== undefined) return true
-    if (level.cost !== 'expensive') {
-      this._attach(level, level.factory())
+    const recording = PixelLOD.buildBudget === Infinity
+    // A background build still running: wait for it, except while recording, where every frame must
+    // be complete (the factory then builds synchronously).
+    if (level.pending && !recording) return false
+    level.pending = null
+    if (level.cost === 'expensive' && PixelLOD._buildMsThisFrame >= PixelLOD.buildBudget) return false
+    const start = performance.now()
+    const result = level.factory()
+    if (level.cost === 'expensive') PixelLOD._buildMsThisFrame += performance.now() - start
+    if (typeof result?.then !== 'function') {
+      this._attach(level, result)
       return true
     }
-    if (PixelLOD._buildMsThisFrame >= PixelLOD.buildBudget) return false
-    const start = performance.now()
-    this._attach(level, level.factory())
-    PixelLOD._buildMsThisFrame += performance.now() - start
-    return true
+    const token = {}
+    level.pending = token
+    result.then(
+      (object) => { if (level.pending === token) { level.pending = null; this._attach(level, object) } },
+      () => { if (level.pending === token) level.pending = null }) // retried on a later frame
+    return false
   }
 
   // Projected size in pixels of `size` metres at this object's distance from the camera.
@@ -105,6 +121,11 @@ export class PixelLOD extends THREE.LOD {
     if (shown === -1 && wanted < this.pixelLevels.length) {
       for (let i = wanted - 1; i >= 0; i--) if (this.pixelLevels[i].object !== undefined) { shown = i; break }
     }
+    // Start building the next finer level ahead of time if it asked for that.
+    const next = this.pixelLevels[Math.min(wanted, this.pixelLevels.length) - 1]
+    if (next?.prefetch && next.object === undefined && !next.pending && pixels >= next.minPixels * PixelLOD.prefetchFactor) {
+      this._build(next)
+    }
     this.currentPixelLevel = shown
     this.pixelLevels.forEach((level, i) => { if (level.object) level.object.visible = (i === shown) })
   }
@@ -120,6 +141,7 @@ export class PixelLOD extends THREE.LOD {
         if (dispose) level.object.traverse(o => { if (o.geometry && !o.geometry.userData?.shared) o.geometry.dispose() })
       }
       level.object = undefined
+      level.pending = null // a background build still running is discarded when it finishes
     }
   }
 

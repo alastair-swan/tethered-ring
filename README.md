@@ -119,7 +119,7 @@ The command is identical in PowerShell and POSIX shells once ffmpeg is on your P
 | `npm test` | Unit tests (Node's built-in test runner) |
 | `npm run smoke` | Loads the app in headless Chrome/Chromium and reports console errors plus a screenshot |
 
-`npm run profile -- --preset <id>` reports per-subsystem CPU time, GPU time, draw calls, triangles and the heaviest objects in view. Add `--width 1920 --height 1080 --dpr 2` to emulate a 4K screen (the same options work for `npm run smoke`), and `--camera "<js>"` to move the camera first (`app` is in scope).
+`npm run profile -- --preset <id>` reports per-subsystem CPU time, GPU time, draw calls, triangles and the heaviest objects in view. Add `--width 1920 --height 1080 --dpr 2` to emulate a 4K screen (the same options work for `npm run smoke`), and `--camera "<js>"` to move the camera first (`app` is in scope). `npm run smoke -- --cpu-throttle 4` slows the browser's CPU down four times, roughly a low-end laptop.
 
 `npm run smoke` finds Chrome, Chromium or Edge automatically; set `CHROME_PATH` if it cannot. Set `SMOKE_GPU=1` to use the real GPU (the default software renderer is very slow at decoding terrain tiles). Examples:
 
