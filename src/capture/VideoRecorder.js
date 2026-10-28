@@ -115,10 +115,26 @@ export class VideoRecorder {
     return fileName.endsWith(CONTAINERS[container].extension) ? fileName : fileName + CONTAINERS[container].extension
   }
 
-  // Must be called from a user gesture when saveToDisk is true (the save dialog requires one).
-  async start() {
-    const { canvas, codec, container, bitrate, fps, saveToDisk } = this.options
-    if (saveToDisk) this.fileTarget = await openFileTarget(this.fileName, container)
+  // Opens the save dialog when saveToDisk is set and the browser supports it. Call this first,
+  // directly from the click handler: browsers only show the dialog during a user gesture.
+  // Returns false if the user cancelled the dialog.
+  async prepareTarget() {
+    const { container, saveToDisk } = this.options
+    if (!saveToDisk || typeof window.showSaveFilePicker !== 'function') return true
+    try {
+      this.fileTarget = await openFileTarget(this.fileName, container)
+      return true
+    }
+    catch (err) {
+      if (err.name === 'AbortError') return false
+      throw err
+    }
+  }
+
+  // Starts encoding. `codec` must come from resolveCodec(); it may differ from the requested one.
+  async start(codec = this.options.codec) {
+    this.options.codec = codec
+    const { canvas, container, bitrate, fps } = this.options
 
     const format = container === 'mkv'
       ? new MkvOutputFormat()

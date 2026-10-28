@@ -1,0 +1,874 @@
+import * as THREE from 'three'
+import { VRButton } from 'three/addons/webxr/VRButton.js'
+import * as tram from '../utils/tram.js'
+import { SimClock } from '../core/SimClock.js'
+import { ParameterStore } from '../params/ParameterStore.js'
+import { createParameterDefinitions } from '../params/parameterDefinitions.js'
+import { applyPreset, DEFAULT_PRESET_ID, findPreset, PRESETS } from '../presets/presets.js'
+import { ParameterGui } from '../ui/ParameterGui.js'
+import { createRenderer } from '../scene/createRenderer.js'
+import { Lighting } from '../scene/lighting.js'
+import { SkyPass } from '../scene/SkyPass.js'
+import { Overlays } from '../scene/Overlays.js'
+import { backgroundScene } from '../scene/backgroundScene.js'
+import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
+import { RingAssembly } from './RingAssembly.js'
+import { transitSystem } from '../transit/transitsystems.js'
+import * as Launcher from '../launcher/launcher.js'
+import { analyzeLauncherTerrainDisplacement } from '../launcher/launcherTerrainAnalysis.js'
+import { CameraController } from '../camera/CameraController.js'
+import { GoogleEarthCameraPlayback } from '../camera/GoogleEarthCameraPlayback.js'
+import { trackPointLogger } from '../camera/trackPointLogger.js'
+import { installKeyboardShortcuts, keyboardHelpText } from '../input/KeyboardShortcuts.js'
+import { setupVRControllers } from '../input/vrControllers.js'
+import { LaunchTrialSweep } from './LaunchTrialSweep.js'
+import { ILLUSTRATION_SETTINGS } from './illustrationSettings.js'
+import { downloadText, specsCsv } from './exports.js'
+import * as kmlutils from '../export/kmlutils.js'
+import { ShotController } from '../shots/ShotController.js'
+import cameraPresets from '../data/cameraPresets.json' with { type: 'json' }
+import mountainList from '../data/mountainList.json' with { type: 'json' }
+import googleEarthProjectFile from '../data/googleEarthStudioSampleProjectFile.json' with { type: 'json' }
+
+const LOGO_DURATION = 20 // s of simulated time before the logo hides and preset start actions run
+const RING_RAISE_RATE = 0.25 // fraction of full raise per second (R/L keys)
+const TUBE_DEPLOY_RATE = 0.0025 // fraction per second
+
+// The application: builds the scene from the selected preset, owns the per-frame update, and
+// exposes the actions used by the GUI and keyboard shortcuts.
+//
+// Frame structure (see frame()):
+//   clock.tick() -> step(dt): advance animations at clock.time -> render()
+// Recording and shot playback drive step()/render() themselves with a fixed time step.
+export class App {
+  constructor(container, { presetId, enableVR = false } = {}) {
+    this.container = container
+    this.enableVR = enableVR
+    this.presetId = findPreset(presetId) ? presetId : DEFAULT_PRESET_ID
+    this.clock = new SimClock()
+    this.specs = {}
+    this.mouse = new THREE.Vector2(0, 0)
+    this.raycaster = new THREE.Raycaster()
+    this.ringRaise = 0 // -1 lowering, 0 idle, +1 raising (or moving the ring / deploying the tube)
+    this.tubeDeploymentAlpha = 1
+    this.illustrationIndex = 0
+    this.mountainIndex = 0
+    this.logoTimerDone = false
+    this.trackPointLogger = null
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Construction
+  // ------------------------------------------------------------------------------------------
+
+  async init() {
+    this.buildParameters()
+    this.buildRenderer()
+    this.buildScene()
+    this.buildPlanet()
+    this.buildRing()
+    this.buildTransit()
+    this.buildLauncher()
+    this.buildCamera()
+    await this.loadBackgroundImage()
+    this.buildGui()
+    this.shots = new ShotController(this)
+    this.shots.buildGui(this.gui.gui)
+    this.installInput()
+    this.onResize()
+    window.addEventListener('resize', () => this.onResize())
+    await this.shots.resumePendingShot()
+    return this
+  }
+
+  buildParameters() {
+    this.nonGUIParams = {}
+    this.store = new ParameterStore(createParameterDefinitions())
+    this.preset = applyPreset(this.presetId, this.store.definitions, this.nonGUIParams)
+    this.store.derive()
+    this.planetSpec = tram.getPlanetSpec(this.store.get('planetName'))
+    this.planetRadius = tram.radiusAtLatitude(0, this.planetSpec.ellipsoid)
+    this.isLunarSimulation = this.store.get('planetName') === 'Moon'
+    this.enableLaunchSystem = this.nonGUIParams.enableLaunchSystem ?? true
+  }
+
+  get d() { return this.store.derived }
+
+  buildRenderer() {
+    const canvas = this.container.querySelector('canvas')
+    this.renderer = createRenderer(canvas, { alpha: this.d.enableBackgroundAlpha.value, enableVR: this.enableVR })
+    this.renderer.setClearColor(0x000000, this.d.enableBackgroundAlpha.value ? 0 : 1)
+    this.nonGUIParams.renderer = this.renderer
+    this.nonGUIParams.maxTextureAnisotropy = this.renderer.capabilities.getMaxAnisotropy()
+    this.nonGUIParams.maxTextureSize = this.renderer.capabilities.maxTextureSize
+  }
+
+  buildScene() {
+    const n = this.nonGUIParams
+    const width = this.container.clientWidth
+    const height = this.container.clientHeight
+
+    this.scene = new THREE.Scene()
+    this.scene.name = 'scene'
+
+    // Everything planet-fixed hangs off planetCoordSys (identity transform except in VR).
+    this.planetCoordSys = new THREE.Group()
+    this.planetCoordSys.name = 'planetCoordSys'
+    this.scene.add(this.planetCoordSys)
+
+    // The camera group carries things that stay with the viewer (VR controllers).
+    this.camera3d = new THREE.PerspectiveCamera(this.d.cameraFieldOfView.value, width / height, 0.1, 10 * this.planetRadius)
+    this.camera3d.name = 'camera'
+    this.cameraGroup = new THREE.Group()
+    this.cameraGroup.name = 'cameraGroup'
+    this.cameraGroup.add(this.camera3d)
+    this.scene.add(this.cameraGroup)
+    if (this.enableVR) {
+      this.cameraGroup.position.z = -1.005 * this.planetRadius
+      this.cameraGroup.rotation.set(0, -Math.PI / 2, Math.PI / 2)
+      this.cameraGroup.rotateY(Math.PI)
+      this.planetCoordSys.rotation.set(Math.PI * -4 / 16, Math.PI * -5.253 / 16, 0)
+    }
+
+    this.lighting = new Lighting(this.scene, this.planetCoordSys, n, this.planetRadius, this.renderer)
+    this.sky = new SkyPass(this.d, this.planetSpec, { isLunarSimulation: this.isLunarSimulation, earthRadius: 6378137 })
+    this.overlays = new Overlays(width, height)
+    if (this.d.showLogo.value) this.overlays.loadLogo('./textures/TransparentLogo.png')
+    this.overlays.setLogoVisible(this.d.showLogo.value)
+    this.overlays.setChartVisible(this.d.showXYChart.value)
+    this.overlays.redrawChartFrame()
+
+    if (n.imageryAttribution) {
+      const attribution = document.createElement('div')
+      attribution.className = 'imagery-attribution'
+      attribution.textContent = n.imageryAttribution
+      document.body.appendChild(attribution)
+    }
+    for (const marker of n.debugGeodeticMarkers ?? []) {
+      const ecef = tram.geodeticToECEF(marker.lat, marker.lon, marker.altitude || 0, this.planetSpec.ellipsoid)
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(marker.radius || 100000, 16, 12), new THREE.MeshBasicMaterial({ color: marker.color ?? 0xff00ff }))
+      mesh.name = marker.name || 'debugGeodeticMarker'
+      mesh.position.set(ecef.x, ecef.y, ecef.z)
+      this.planetCoordSys.add(mesh)
+    }
+  }
+
+  buildPlanet() {
+    const n = this.nonGUIParams
+    const d = this.d
+    const assets = n.planet2Assets ?? defaultPlanetAssets(this.planetSpec)
+    this.planet = new Planet(this.planetSpec, {
+      renderer: this.renderer,
+      assets,
+      doubleSided: d.earthTextureDoubleSided.value,
+      opacity: d.earthTextureOpacity.value,
+      showAtmosphere: d.showEarthsAtmosphere.value,
+      displacementScaleMultiplier: (n.planet2DisplacementScaleMultiplier ?? 1) * d.terrainExaggeration.value,
+      tileSegments: n.tileSegments,
+      maxConcurrentTileLoads: n.maxConcurrentTileLoads,
+      maxCachedTiles: n.maxCachedTiles,
+      maxTileGpuBytes: n.maxTileGpuBytes,
+      tileSseThreshold: n.tileSseThreshold,
+      maxAvailableTileLod: n.maxAvailableTileLod,
+      requireKtx2: n.planet2RequireKtx2,
+      receiveSurfaceShadows: n.enableSurfaceShadows,
+      textureAnisotropy: n.planet2TextureAnisotropy,
+      locationInterests: n.locationInterests,
+      surfaceDetail: n.planet2SurfaceDetail,
+      surfaceColor: n.planet2SurfaceColor,
+      fastCameraSpeed: n.planet2FastCameraSpeed,
+      maxLodWhileFast: n.planet2MaxLodWhileFast,
+      debugMode: n.planet2DebugMode,
+    })
+    this.planetCoordSys.add(this.planet.surface, this.planet.atmosphere)
+    this.planet.setVisible(d.showEarthsSurface.value)
+    this.planet.setAtmosphereVisible(d.showEarthsAtmosphere.value)
+  }
+
+  buildRing() {
+    this.ring = new RingAssembly({
+      store: this.store,
+      planetSpec: this.planetSpec,
+      planetCoordSys: this.planetCoordSys,
+      ringSpecs: this.nonGUIParams.getRingSpecs(),
+      specs: this.specs,
+    })
+  }
+
+  buildTransit() {
+    const r = this.ring
+    this.ecv = new tram.elevatorCarVariables(this.planetSpec, this.d, r.crv)
+    this.transitSystem = new transitSystem(r.refCoordSys, this.d, this.specs, false, r.crv, this.ecv, this.planetRadius, r.mainRingCurve)
+  }
+
+  buildLauncher() {
+    this.launchSystem = null
+    this.launchTrackFrame = null
+    if (!this.enableLaunchSystem) return
+    const r = this.ring
+    const n = this.nonGUIParams
+    this.launchSystem = new Launcher.launcher(this.d, this.clock.time, this.planetCoordSys, this.planetSpec, r.refCoordSys, r.mainRingCurve, r.crv, this.overlays.xyChart, this.clockAdapter(), this.specs, false, '')
+    this.launchSystem.drawLaunchTrajectoryLine(this.d, this.planetCoordSys)
+
+    // A frame aligned with the end of the launch track, used by presets to place the camera
+    // ("launchTrackCamera") and the low sun ("launchTrackLightDirection") relative to the track.
+    const trackCurve = this.launchSystem.massDriver2Curve || this.launchSystem.launchRampCurve?.[0]
+    if (!trackCurve) return
+    const origin = this.launchSystem.feederRailEntrancePosition.clone()
+    const trackEnd = trackCurve.getPointAt(1)
+    const radialUp = origin.clone().normalize()
+    const forward = trackEnd.clone().sub(origin)
+    forward.addScaledVector(radialUp, -forward.dot(radialUp)).normalize()
+    const right = forward.clone().cross(radialUp).normalize()
+    const up = right.clone().cross(forward).normalize()
+    this.launchTrackFrame = { origin, forward, right, up }
+
+    if (this.isLunarSimulation) {
+      // Earth framed behind the launch track for the lunar launch scene (found with the 8 key).
+      this.sky.setCompanionBodyDirection(new THREE.Vector3(35889501.075995505, 1667170.5714336203, -13774821.218498856))
+      this.sky.companionBody.rotation.set(0.10930226635589775, -1.1569418935892486, -1.480664557200007)
+    }
+
+    const cameraFrame = n.launchTrackCamera
+    if (cameraFrame) {
+      const point = (c = {}) => origin.clone().addScaledVector(forward, c.forward ?? 0).addScaledVector(right, c.right ?? 0).addScaledVector(up, c.up ?? 0)
+      const direction = (c = {}) => new THREE.Vector3().addScaledVector(forward, c.forward ?? 0).addScaledVector(right, c.right ?? 0).addScaledVector(up, c.up ?? 1).normalize()
+      const reference = n.initialReferencePoint === 'feederRailEntrancePosition' ? origin : new THREE.Vector3()
+      n.orbitControlsTarget = point(cameraFrame.target).sub(reference)
+      n.orbitControlsObjectPosition = point(cameraFrame.position).sub(reference)
+      n.orbitControlsUpDirection = direction(cameraFrame.cameraUp)
+      n.cameraUp = direction(cameraFrame.cameraUp)
+    }
+    const lightFrame = n.launchTrackLightDirection
+    if (lightFrame) {
+      const sunDirection = new THREE.Vector3()
+        .addScaledVector(forward, lightFrame.forward ?? -1)
+        .addScaledVector(right, lightFrame.right ?? 0)
+        .addScaledVector(up, lightFrame.up ?? 0.22)
+      this.lighting.setShadowFocus(trackEnd, sunDirection)
+    }
+  }
+
+  // The launcher was written against THREE.Clock; give it simulated time instead of wall time.
+  clockAdapter() {
+    return { getElapsedTime: () => this.clock.time, getDelta: () => this.clock.delta }
+  }
+
+  buildCamera() {
+    this.camera = new CameraController({
+      camera: this.camera3d,
+      domElement: this.renderer.domElement,
+      planetRadius: this.planetRadius,
+      store: this.store,
+      nonGUIParams: this.nonGUIParams,
+      enableVR: this.enableVR,
+      getTrackerContext: () => ({
+        scene: this.scene,
+        launchSystem: this.launchSystem,
+        transitSystem: this.transitSystem,
+        ringRefCoordSys: this.ring.refCoordSys,
+      }),
+    })
+    this.camera.addMarkersTo(this.planetCoordSys)
+    this.camera.ringAxis.set(0, 1, 0).applyQuaternion(this.ring.ringToPlanetRotation)
+    const reference = this.nonGUIParams.initialReferencePoint === 'feederRailEntrancePosition' && this.launchSystem
+      ? this.launchSystem.feederRailEntrancePosition
+      : new THREE.Vector3()
+    this.initialReferencePoint = reference.clone()
+    this.camera.placeInitially(reference)
+    this.camera.controls.autoRotate = this.d.orbitControlsAutoRotate.value
+
+    this.googleEarth = new GoogleEarthCameraPlayback({
+      camera: this.camera3d,
+      renderer: this.renderer,
+      planetCoordSys: this.planetCoordSys,
+      store: this.store,
+      getPlanetObjects: () => [this.planet.surface, this.planet.atmosphere],
+    })
+    this.launchTrialSweep = new LaunchTrialSweep(this)
+
+    const tracking = String(this.nonGUIParams.initialTrackingHotkey ?? '')
+    this.pendingInitialTracking = /^[0-5]$/.test(tracking) ? Number(tracking) : null
+  }
+
+  async loadBackgroundImage() {
+    const n = this.nonGUIParams
+    if (!n.displayBackgroundImage) return
+    const texture = await new THREE.TextureLoader().loadAsync(n.backgroundImageFilename)
+    this.backgroundImage = texture
+    this.background = new backgroundScene(texture.source.data.naturalWidth, texture.source.data.naturalHeight, texture)
+    if (this.background.scene) this.background.hidePlanet([this.planet.surface, this.planet.atmosphere])
+  }
+
+  buildGui() {
+    this.gui = new ParameterGui(this.store, this.parameterHandlers())
+    const gui = this.gui.gui
+
+    const sceneFolder = gui.addFolder('Scene').close()
+    const presetChoice = { preset: this.presetId }
+    const presetOptions = Object.fromEntries(PRESETS.map(p => [p.label, p.id]))
+    sceneFolder.add(presetChoice, 'preset', presetOptions).name('Preset (reloads page)').onChange((id) => this.switchPreset(id))
+    const actions = {
+      downloadSpecs: () => this.downloadSpecs(),
+      downloadKml: () => this.downloadKml(),
+      startTrackPoints: () => this.startTrackPointLogging(),
+      stopTrackPoints: () => this.stopTrackPointLogging(),
+      help: () => alert(`Keyboard shortcuts\n\n${keyboardHelpText()}`),
+    }
+    sceneFolder.add(actions, 'downloadSpecs').name('Download specs (CSV)')
+    sceneFolder.add(actions, 'downloadKml').name('Download KML')
+    sceneFolder.add(actions, 'startTrackPoints').name('Start logging track points')
+    sceneFolder.add(actions, 'stopTrackPoints').name('Stop logging and download')
+    gui.add(actions, 'help').name('Keyboard shortcuts')
+
+    this.specsOutput = document.createElement('div')
+    this.specsOutput.className = 'gui-stats'
+    this.specsOutput.innerHTML = this.ring.specsSummaryHtml()
+    this.gui.folder('TextOutput').$children.appendChild(this.specsOutput)
+  }
+
+  installInput() {
+    installKeyboardShortcuts(this)
+    window.addEventListener('pointermove', (event) => {
+      const rect = this.renderer.domElement.getBoundingClientRect()
+      this.mouse.set(2 * (event.clientX - rect.left) / rect.width - 1, 1 - 2 * (event.clientY - rect.top) / rect.height)
+    })
+    if (this.enableVR) {
+      document.body.appendChild(VRButton.createButton(this.renderer))
+      this.vr = setupVRControllers(this.renderer, this.cameraGroup)
+    }
+  }
+
+  start() {
+    this.renderer.setAnimationLoop(() => this.frame())
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Parameter change handlers (named by `onChange` in parameterDefinitions.js)
+  // ------------------------------------------------------------------------------------------
+
+  parameterHandlers() {
+    const d = () => this.d
+    const visibility = (fn) => () => fn(d())
+    return {
+      updatedParam: () => {},
+      adjustRingDesign: () => this.rebuildRing(),
+      updateTransitsystem: () => this.updateTransitSystem(),
+      updateLauncher: () => this.updateLauncher(),
+      adjustRingLatLon: () => { this.ring.adjustLatLon(0); this.updateLauncher() },
+      adjustRingLatLon2: () => this.ring.adjustLatLon(1),
+      setRingLatLonWithPreset: () => this.applyRingLocationPreset(),
+      updateOrbitControlsRotateSpeed: visibility((p) => {
+        this.camera.controls.autoRotate = p.orbitControlsAutoRotate.value
+        this.camera.controls.autoRotateSpeed = p.orbitControlsRotateSpeed.value
+      }),
+      forceArrowsUpdate: () => this.ring.showAllForceArrows(),
+      gravityForceArrowsUpdate: () => this.ring.showAllForceArrows(),
+      gyroscopicForceArrowsUpdate: () => this.ring.updateMarkers(),
+      mainRingCurveObjectUpdate: () => this.ring.updateMarkers(),
+      earthAxisObjectUpdate: () => this.ring.updateMarkers(),
+      earthEquatorObjectUpdate: () => this.ring.updateMarkers(),
+      adjustTetherOpacity: () => this.ring.setTetherUniforms(),
+      adjustTetherDistanceFactor: () => this.ring.setTetherUniforms(),
+      updateXYChart: visibility((p) => this.overlays.setChartVisible(p.showXYChart.value)),
+      updateLogoSprite: visibility((p) => this.overlays.setLogoVisible(p.showLogo.value)),
+      updateCamerFieldOfView: visibility((p) => { this.camera3d.fov = p.cameraFieldOfView.value; this.camera3d.updateProjectionMatrix() }),
+      resizeTrackingMarkers: () => {},
+      updateTrackingMode: () => {},
+      updatePerfOptimzation: () => {},
+      adjustStarsVisibility: () => {},
+      adjustMoonsVisibility: visibility((p) => { this.sky.companionBody.visible = p.showMoon.value }),
+      adjustLaunchTrajectoryOpacity: () => {},
+      adjustEarthTextureSidedness: visibility((p) => this.planet.setDoubleSided(p.earthTextureDoubleSided.value)),
+      adjustEarthTextureOpacity: visibility((p) => this.planet.setOpacity(p.earthTextureOpacity.value)),
+      adjustEarthSurfaceVisibility: visibility((p) => this.planet.setVisible(p.showEarthsSurface.value)),
+      adjustEarthAtmosphereVisibility: visibility((p) => this.planet.setAtmosphereVisible(p.showEarthsAtmosphere.value)),
+      adjustTerrainExaggeration: visibility((p) => this.planet.setDisplacementScale((this.nonGUIParams.planet2DisplacementScaleMultiplier ?? 1) * p.terrainExaggeration.value)),
+      adjustBackgroundOpacity: visibility((p) => this.renderer.setClearAlpha(p.enableBackgroundAlpha.value ? 0 : 1)),
+    }
+  }
+
+  // Applies every parameter after a bulk change (shot import, illustration settings).
+  applyAllParameters() {
+    this.store.derive()
+    const handlers = this.parameterHandlers()
+    for (const name of ['adjustEarthSurfaceVisibility', 'adjustEarthAtmosphereVisibility', 'adjustEarthTextureOpacity', 'adjustEarthTextureSidedness',
+      'adjustTerrainExaggeration', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
+      'updateOrbitControlsRotateSpeed', 'adjustTetherOpacity', 'adjustBackgroundOpacity']) handlers[name]()
+    this.rebuildRing()
+    this.ring.adjustLatLon(0)
+    this.gui.refresh()
+  }
+
+  updateTransitSystem() {
+    const r = this.ring
+    this.ecv = new tram.elevatorCarVariables(this.planetSpec, this.d, r.crv)
+    this.transitSystem.update(this.d, r.refCoordSys, this.specs, false, r.crv, this.planetRadius, r.mainRingCurve, this.clock.time)
+  }
+
+  updateLauncher() {
+    if (!this.launchSystem) return
+    const r = this.ring
+    this.launchSystem.update(this.d, this.clock.time, this.planetCoordSys, this.planetSpec, r.refCoordSys, r.mainRingCurve, r.crv, this.specs, false, '')
+    this.launchSystem.drawLaunchTrajectoryLine(this.d, this.planetCoordSys)
+  }
+
+  recomputeLaunchTrajectory({ curvesOnly = false } = {}) {
+    if (!this.launchSystem) return
+    const r = this.ring
+    if (curvesOnly) this.launchSystem.updateTrajectoryCurves(this.d, this.planetCoordSys, this.planetSpec, r.refCoordSys, r.mainRingCurve, r.crv, this.specs, false, '')
+    else this.updateLauncher()
+  }
+
+  // Rebuilds the ring and everything attached to it. Returns KML text when requested.
+  rebuildRing({ genSpecs = false, genKML = false } = {}) {
+    this.transitSystem.destroy(this.d)
+    const kml = this.ring.rebuild({ genSpecs, genKMLFile: genKML })
+    this.camera.ringAxis.set(0, 1, 0).applyQuaternion(this.ring.ringToPlanetRotation)
+    this.updateTransitSystem()
+    let launcherKml = ''
+    if (this.launchSystem) {
+      const r = this.ring
+      this.launchSystem.update(this.d, this.clock.time, this.planetCoordSys, this.planetSpec, r.refCoordSys, r.mainRingCurve, r.crv, this.specs, genKML, '')
+      this.launchSystem.drawLaunchTrajectoryLine(this.d, this.planetCoordSys)
+      if (genSpecs) {
+        tram.updateLauncherSpecs(this.d, r.crv, this.launchSystem, this.specs)
+        this.launchSystem.genLauncherSpecs(this.d, this.specs, this.planetSpec)
+      }
+      launcherKml = this.launchSystem.kmlFile ?? ''
+    }
+    if (genSpecs) this.specsOutput.innerHTML = this.ring.specsSummaryHtml()
+    return kml + launcherKml
+  }
+
+  applyRingLocationPreset() {
+    const locations = [
+      // The most commonly depicted Pacific Ocean location (crosses one small island).
+      { equivalentLatitude: null, build: [-19.2, 213.7], final: [14.2, 186.3] },
+      // Larger diameter reaching both the US and Chinese coastlines (too large to build in the Pacific).
+      { equivalentLatitude: 30.8, build: [-19.2, 213.7], final: [11, 182] },
+      // Slightly bigger, crosses no islands.
+      { equivalentLatitude: 34, build: [-66.5, 137], final: [-66.5, 137] },
+      // Crosses only northern Russia and Iceland; maximises the diameter.
+      { equivalentLatitude: 8.1, build: [14.6, 249.2], final: [14.6, 249.2] },
+      // Crosses only the United States.
+      { equivalentLatitude: 10, build: [-36.9, 269.64], final: [-36.9, 269.64] },
+      // Crosses only Mexico.
+      { equivalentLatitude: 16, build: [-49, 268], final: [-49, 268] },
+      // Crosses only Indonesia and Malaysia.
+      { equivalentLatitude: 16, build: [-36.6, 170], final: [-36.6, 170] },
+    ]
+    const location = locations[this.store.get('locationPresetIndex')]
+    if (!location) return
+    const s = this.store
+    if (location.equivalentLatitude !== null) s.set('equivalentLatitude', location.equivalentLatitude)
+    else s.set('equivalentLatitude', createParameterDefinitions().equivalentLatitude.value)
+    s.set('buildLocationRingCenterLatitude', location.build[0])
+    s.set('buildLocationRingCenterLongitude', location.build[1])
+    s.set('finalLocationRingCenterLatitude', location.final[0])
+    s.set('finalLocationRingCenterLongitude', location.final[1])
+    this.store.derive()
+    this.gui.refresh()
+    this.ring.adjustLatLon(0)
+    this.rebuildRing()
+  }
+
+  switchPreset(id) {
+    const url = new URL(window.location.href)
+    url.searchParams.set('preset', id)
+    window.location.assign(url.toString())
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Simulation state (for shots)
+  // ------------------------------------------------------------------------------------------
+
+  getAnimationState() {
+    return {
+      transit: this.transitSystem.getAnimationState?.() ?? null,
+      launcher: this.launchSystem?.getAnimationState?.() ?? null,
+      tubeDeploymentAlpha: this.tubeDeploymentAlpha,
+      logoTimerDone: this.logoTimerDone,
+    }
+  }
+
+  setAnimationState(state) {
+    if (!state) return
+    if (state.transit) this.transitSystem.setAnimationState?.(state.transit)
+    if (state.launcher) this.launchSystem?.setAnimationState?.(state.launcher)
+    this.tubeDeploymentAlpha = state.tubeDeploymentAlpha ?? this.tubeDeploymentAlpha
+    this.logoTimerDone = state.logoTimerDone ?? this.logoTimerDone
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Per-frame
+  // ------------------------------------------------------------------------------------------
+
+  frame() {
+    if (this.shots.busy) return // a recording/playback loop is driving the frames
+    const dt = this.clock.tick()
+    this.step(dt)
+    this.render()
+  }
+
+  // Advances everything animated to clock.time. `dt` is the step just taken (may be 0).
+  step(dt) {
+    const t = this.clock.time
+    const d = this.d
+    if (this.vr) this.vr.update()
+
+    if (!this.logoTimerDone && t > LOGO_DURATION) {
+      this.logoTimerDone = true
+      if (this.store.get('showLogo')) {
+        this.store.set('showLogo', false)
+        this.store.derive()
+        this.overlays.setLogoVisible(false)
+      }
+      const actions = { animateZoomingOut: this.camera.zoomDirection > 0, orbitControlsAutoRotate: this.camera.controls.autoRotate }
+      this.nonGUIParams.startTimerActions(actions)
+      if (actions.animateZoomingOut) this.camera.zoomDirection = 1
+      this.camera.controls.autoRotate = actions.orbitControlsAutoRotate
+    }
+
+    this.stepRingAnimations(dt)
+    this.launchTrialSweep.step()
+
+    const viewerPosition = (this.enableVR ? this.cameraGroup : this.camera3d).getWorldPosition(new THREE.Vector3())
+    if (this.launchSystem) this.launchSystem.animate(t, viewerPosition, this.tubeDeploymentAlpha)
+    this.transitSystem.animate(t, this.ring.refCoordSys, viewerPosition, this.ring.mainRingCurve, d)
+
+    if (this.pendingInitialTracking !== null && this.camera.toggleTracking(this.pendingInitialTracking, { toggle: false })) {
+      this.pendingInitialTracking = null
+    }
+
+    const googleEarthDrives = this.googleEarth.update(t)
+    this.camera.playbackActive = this.shots.drivesCamera || googleEarthDrives
+    this.camera.update(t, dt)
+    this.planet.update(this.camera3d)
+    this.lighting.followCameraTarget(this.camera.controls.target)
+
+    if (this.trackPointLogger) {
+      const c = this.camera
+      this.trackPointLogger.capture(t, this.camera3d.position.clone(), this.camera3d.up.clone(), c.controls.target.clone(), c.controls.upDirection.clone(), this.planetSpec)
+    }
+  }
+
+  stepRingAnimations(dt) {
+    if (this.ringRaise === 0 || dt === 0) return
+    const mode = this.d.animateElevatedEvacuatedTubeDeployment.value ? 'tube' : 'raise'
+    if (mode === 'tube') {
+      this.tubeDeploymentAlpha = THREE.MathUtils.clamp(this.tubeDeploymentAlpha + this.ringRaise * dt * TUBE_DEPLOY_RATE, 0, 1)
+      if (this.tubeDeploymentAlpha === 0 || this.tubeDeploymentAlpha === 1) this.ringRaise = 0
+      return
+    }
+    const key = 'ringAmountRaisedFactor'
+    const value = THREE.MathUtils.clamp(this.store.get(key) + this.ringRaise * dt * RING_RAISE_RATE, 0, 1)
+    this.store.set(key, value)
+    if (value === 0 || value === 1) this.ringRaise = 0
+    this.store.derive()
+    this.gui.refresh()
+    this.rebuildRing()
+  }
+
+  render() {
+    const renderer = this.renderer
+    this.sky.update(this.camera3d, this.planetCoordSys, this.lighting.sunLight, this.d, this.planetSpec)
+    renderer.clear()
+    this.sky.render(renderer)
+    renderer.clearDepth()
+    this.googleEarth.render(renderer)
+    if (this.background?.scene) {
+      renderer.render(this.background.scene, this.background.camera)
+      renderer.clearDepth()
+    }
+    renderer.render(this.scene, this.camera3d)
+    renderer.clearDepth()
+    this.overlays.render(renderer)
+  }
+
+  // Sets the drawing-buffer size. `css` keeps the canvas filling its container while recording at
+  // a different resolution.
+  setRenderSize(width, height, { pixelRatio = Math.min(window.devicePixelRatio, 2) } = {}) {
+    this.renderer.setPixelRatio(pixelRatio)
+    this.renderer.setSize(width, height, false)
+    this.camera3d.aspect = width / height
+    this.camera3d.updateProjectionMatrix()
+    this.overlays.resize(width, height)
+  }
+
+  onResizeAfterRecording() {
+    this.onResize({ force: true })
+  }
+
+  // Stops key-driven animations (raise/lower, zoom, climb, follow modes) so a shot starts clean.
+  stopInteractiveAnimations() {
+    this.ringRaise = 0
+    this.camera.zoomDirection = 0
+    this.camera.climbRate = 0
+    this.camera.followElevator = null
+    this.camera.followTransitAngularSpeed = 0
+    this.camera.tracker.clear()
+  }
+
+  onResize({ force = false } = {}) {
+    if (this.shots?.busy && !force) return
+    const n = this.nonGUIParams
+    let width = this.container.clientWidth
+    let height = this.container.clientHeight
+    const image = this.backgroundImage?.source?.data
+    if (n.setResolutionFromBackgroundImage && image) {
+      width = image.naturalWidth
+      height = image.naturalHeight
+    }
+    this.setRenderSize(width, height)
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // Actions (keyboard shortcuts and GUI buttons)
+  // ------------------------------------------------------------------------------------------
+
+  togglePause() {
+    this.clock.paused = !this.clock.paused
+  }
+
+  orbitPlanetCentre() {
+    const c = this.camera.controls
+    c.upDirection.set(0, 1, 0)
+    if (this.nonGUIParams.overrideOrbitControlsUpDirection) c.upDirection.applyQuaternion(this.ring.ringToPlanetRotation)
+    this.camera3d.up.copy(c.upDirection)
+    c.target.set(0, 0, 0)
+    c.rotateSpeed = 1
+    c.maxPolarAngle = Math.PI
+  }
+
+  orbitRingCentre() {
+    const c = this.camera.controls
+    c.upDirection.copy(this.camera.ringAxis)
+    this.camera3d.up.copy(c.upDirection)
+    c.target.copy(c.upDirection).multiplyScalar(this.ring.crv.y0)
+    this.store.set('logZoomRate', -3)
+    this.store.derive()
+    this.gui.refresh()
+    c.rotateSpeed = 1
+    c.maxPolarAngle = Math.PI
+  }
+
+  // P key: orbit around what is under the mouse pointer. Moving objects are tracked.
+  orbitPointUnderMouse() {
+    this.raycaster.setFromCamera(this.mouse, this.camera3d)
+    const pickable = ['launchVehicle', 'elevatorCar', 'transitVehicle', 'transitTube', 'massDriverTube']
+    const moving = { launchVehicle: 0, transitVehicle: 3, elevatorCar: 4 }
+    const hits = this.raycaster.intersectObjects([this.ring.refCoordSys, ...(this.launchSystem ? [this.launchSystem.scene ?? this.planetCoordSys] : [])], true)
+    for (const name of pickable) {
+      for (const hit of hits) {
+        let object = hit.object
+        while (object && object.name !== name) object = object.parent
+        if (!object || !this.isVisibleInScene(hit.object)) continue
+        if (name in moving) {
+          this.camera.tracker.findNearest(name, hit.point)
+          this.camera.tweenTo(this.camera.tracker.getPosition(this.camera.tweeningTime / 1000))
+        }
+        else {
+          this.camera.tweenTo(hit.point)
+        }
+        this.camera.controls.rotateSpeed = 0.9
+        return
+      }
+    }
+    const surface = this.planet.raycast(this.raycaster)[0]
+    if (surface) {
+      const altitude = this.d.pKeyAltitudeFactor.value * this.ring.crv.currentMainRingAltitude
+      const point = surface.point.clone().multiplyScalar((this.planetRadius + altitude) / this.planetRadius)
+      this.camera.placeMarker(this.camera.targetMarker, point, this.d.showTrackingMarkers.value)
+      this.camera.tweenTo(point)
+      this.camera.controls.rotateSpeed = 0.9
+    }
+  }
+
+  isVisibleInScene(object) {
+    for (let o = object; o; o = o.parent) if (!o.visible) return false
+    return true
+  }
+
+  logObjectCounts() {
+    const counts = {}
+    this.scene.traverse((child) => { const name = child.name || 'noName'; counts[name] = (counts[name] ?? 0) + 1 })
+    console.table(counts)
+  }
+
+  analyseLauncherTerrain() {
+    if (!this.launchSystem) { console.log('Launch system not enabled'); return }
+    analyzeLauncherTerrainDisplacement(this.launchSystem, this.planet.surface, this.planetSpec, tram, this.planetCoordSys, (lat, lon) => this.planet.sampleTerrainHeight(lat, lon))
+  }
+
+  placeCompanionBodyInView() {
+    const direction = this.camera.controls.target.clone().sub(this.camera3d.position).normalize()
+    this.sky.setCompanionBodyDirection(direction)
+    const p = this.sky.companionBody.position
+    console.log(`Companion body direction: new THREE.Vector3(${p.x}, ${p.y}, ${p.z})`)
+  }
+
+  toggleStationaryTracking() {
+    this.camera.stationaryTracking = !this.camera.stationaryTracking
+  }
+
+  toggleAutoRotate() {
+    const c = this.camera.controls
+    c.autoRotate = !c.autoRotate
+    c.autoRotateSpeed = this.d.orbitControlsRotateSpeed.value
+  }
+
+  toggleRaise(direction) {
+    this.ringRaise = this.ringRaise === direction ? 0 : direction
+  }
+
+  adjustClimbRate(delta) {
+    this.camera.climbRate = Math.round((this.camera.climbRate + delta) * 10) / 10
+  }
+
+  toggleZoom(direction) {
+    this.camera.zoomDirection = this.camera.zoomDirection === direction ? 0 : direction
+  }
+
+  warpToCameraPreset() {
+    const preset = cameraPresets[this.store.get('cameraPreset')]
+    if (!preset) return
+    const v = (o) => new THREE.Vector3(Number(o.X), Number(o.Y), Number(o.Z))
+    this.camera.setState({
+      position: v(preset.orbitObjectPosition).toArray(),
+      target: v(preset.orbitTarget).toArray(),
+      up: v(preset.cameraUp).toArray(),
+      orbitUp: v(preset.orbitUpDirection).toArray(),
+    })
+    this.camera.controls.maxPolarAngle = Math.PI
+  }
+
+  printCameraPosition() {
+    const c = this.camera.controls
+    const ref = this.initialReferencePoint
+    const target = c.target.clone().sub(ref)
+    const position = this.camera3d.position.clone().sub(ref)
+    const vec = (v) => `new THREE.Vector3(${v.x}, ${v.y}, ${v.z})`
+    console.log([
+      `nonGUIParams['orbitControlsTarget'] = ${vec(target)}`,
+      `nonGUIParams['orbitControlsUpDirection'] = ${vec(c.upDirection)}`,
+      `nonGUIParams['orbitControlsObjectPosition'] = ${vec(position)}`,
+      `nonGUIParams['cameraUp'] = ${vec(this.camera3d.up)}`,
+    ].join('\n'))
+    const frame = this.launchTrackFrame
+    if (frame) {
+      const along = (v, isDirection) => {
+        const r = isDirection ? v : v.clone().sub(frame.origin)
+        const n = (x) => Number((Math.abs(x) < 5e-7 ? 0 : x).toFixed(6))
+        return `{forward: ${n(r.dot(frame.forward))}, right: ${n(r.dot(frame.right))}, up: ${n(r.dot(frame.up))}}`
+      }
+      console.log(`nonGUIParams['launchTrackCamera'] = {\n  target: ${along(c.target)},\n  position: ${along(this.camera3d.position)},\n  cameraUp: ${along(this.camera3d.up, true)}\n}`)
+    }
+  }
+
+  toggleLockUpToRingAxis() {
+    this.camera.lockUpToRingAxis = !this.camera.lockUpToRingAxis
+  }
+
+  toggleFollowElevators() {
+    if (this.camera.followElevator) {
+      this.camera.followElevator = null
+      return
+    }
+    const calculator = this.transitSystem.elevatorPositionCalculator ?? new tram.elevatorPositionCalculator(this.d, this.ring.crv, this.ecv)
+    this.camera.followElevator = () => calculator.calculateElevatorPosition(this.clock.time) + this.planetRadius + this.d.transitTubeUpwardOffset.value
+  }
+
+  toggleFollowTransitVehicles() {
+    if (this.camera.followTransitAngularSpeed !== 0) {
+      this.camera.followTransitAngularSpeed = 0
+      return
+    }
+    this.camera.followTransitAxis.copy(this.camera.ringAxis)
+    this.camera.followTransitAngularSpeed = this.d.transitVehicleCruisingSpeed.value / this.ring.crv.mainRingRadius
+  }
+
+  moveToLaunchTrajectory() {
+    const launcher = this.launchSystem
+    if (!launcher?.launchTrajectoryCurve) return
+    const curve = launcher.launchTrajectoryCurve
+    const duration = launcher.durationOfLaunchTrajectory
+    const target = curve.getPoint(20 / duration).multiplyScalar((this.planetRadius + 100) / this.planetRadius)
+    const position = curve.getPoint(0).multiplyScalar((this.planetRadius + 100) / this.planetRadius)
+    this.camera.tweenTo(target)
+    this.camera3d.position.copy(position)
+  }
+
+  updateSpecsSummary() {
+    this.rebuildRing({ genSpecs: true })
+  }
+
+  cycleIllustrationSettings() {
+    const settings = ILLUSTRATION_SETTINGS[this.illustrationIndex](this.store.values, this.planetRadius)
+    for (const [k, v] of Object.entries(settings)) this.store.set(k, v)
+    this.illustrationIndex = (this.illustrationIndex + 1) % ILLUSTRATION_SETTINGS.length
+    this.applyAllParameters()
+  }
+
+  nextMountainLaunchSite() {
+    this.mountainIndex = (this.mountainIndex + 1) % Math.min(120, mountainList.length)
+    const mountain = mountainList[this.mountainIndex]
+    this.store.set('launcherRampEndLatitude', mountain.lat)
+    this.store.set('launcherRampEndLongitude', mountain.lon)
+    this.store.derive()
+    this.gui.refresh()
+    this.updateLauncher()
+    console.log(`Launcher ramp moved to ${mountain.name ?? `mountain ${this.mountainIndex}`}`)
+  }
+
+  // Sweeps the ramp upward acceleration and logs launcher cost, tube length and ramp time.
+  runRampAccelerationSweep() {
+    const s = this.store
+    const keys = ['launcherMassDriverForwardAcceleration', 'launcherRampUpwardAcceleration']
+    const backup = keys.map(k => s.get(k))
+    const rows = []
+    s.set(keys[0], 80)
+    for (let a = 50; a <= 250; a += 10) {
+      s.set(keys[1], a)
+      this.rebuildRing({ genSpecs: true })
+      rows.push({
+        rampUpwardAcceleration: a,
+        totalCapitalCostBillions: Math.round(this.specs.launcherTotalCapitalCost.value / 1e6) / 1e3,
+        evacuatedTubeLengthKm: Math.round(this.specs.launcherElevatedEvacuatedTubeLength.value / 1e3),
+        timeWithinRamp: Math.round(this.specs.launchVehicleTimeWithinRamp.value * 100) / 100,
+      })
+    }
+    keys.forEach((k, i) => s.set(k, backup[i]))
+    this.rebuildRing()
+    console.table(rows)
+  }
+
+  toggleLaunchTrialSweep() {
+    this.launchTrialSweep.toggle()
+  }
+
+  toggleGoogleEarthCamera() {
+    this.googleEarth.toggle(this.clock.time).catch((err) => console.error(err))
+  }
+
+  downloadSpecs() {
+    this.rebuildRing({ genSpecs: true })
+    downloadText(specsCsv(this.store.definitions, this.d, this.specs), 'tethered_ring.csv', 'text/csv')
+  }
+
+  downloadKml() {
+    const body = this.rebuildRing({ genKML: true })
+    this.rebuildRing()
+    downloadText(kmlutils.kmlFileHeader + body + kmlutils.kmlFileFooter, 'tethered_ring.kml', 'application/vnd.google-earth.kml+xml')
+  }
+
+  startTrackPointLogging() {
+    this.trackPointLogger = new trackPointLogger(googleEarthProjectFile)
+    this.trackPointLogger.start(this.clock.time)
+  }
+
+  stopTrackPointLogging() {
+    this.trackPointLogger?.stop()
+    this.trackPointLogger = null
+  }
+}

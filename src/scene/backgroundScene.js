@@ -1,65 +1,43 @@
 import * as THREE from 'three'
 
+// A full-screen background image (a still, or one frame of a Google Earth Studio video) drawn
+// behind the 3D scene, for compositing the simulation over real imagery. While it is shown the
+// planet is hidden so the imagery shows through.
 export class backgroundScene {
-  constructor (width, height, backgroundTexture) {
-    this.preserveVisibility = [] // Array to store the visibility of the objects
+  constructor(width, height, backgroundTexture) {
+    this.hiddenObjects = []
+    if (!backgroundTexture) return
+    this.scene = new THREE.Scene()
+    this.camera = new THREE.OrthographicCamera(-width / 2, width / 2, height / 2, -height / 2, 1, 100)
+    this.camera.position.z = 10
+    this.scene.add(this.camera)
+    this.backgroundMaterial = new THREE.MeshBasicMaterial({ map: backgroundTexture })
+    this.sprite = new THREE.Sprite(this.backgroundMaterial)
+    this.sprite.scale.set(backgroundTexture.source.data.naturalWidth, backgroundTexture.source.data.naturalHeight, 1)
+    this.scene.add(this.sprite)
+  }
 
-    if (backgroundTexture) {
-      this.scene = new THREE.Scene()
-      this.camera = new THREE.OrthographicCamera( - width / 2, width / 2, height / 2, - height / 2, 1, 100 );
-      this.camera.position.z = 10
-      this.scene.add(this.camera)
-      // const backgroundTextureLo  ader = new THREE.TextureLoader()
-      // const backgroundTexture = backgroundTextureLoader.load('./textures/googleEarthImages/NewZealandLaunchSite_000.jpeg')
-      // Hack for Olymus Mons
-      // backgroundMaterial = new THREE.MeshBasicMaterial( { map: backgroundTexture[0] } )
-      this.backgroundMaterial = new THREE.MeshBasicMaterial( { map: backgroundTexture } )
-      // const backgroundWidth = this.backgroundMaterial.map.image.width
-      // const backgroundHeight = this.backgroundMaterial.map.image.height
-      const backgroundWidth = backgroundTexture.source.data.naturalWidth
-      const backgroundHeight = backgroundTexture.source.data.naturalHeight
-      this.sprite = new THREE.Sprite( this.backgroundMaterial )
-      this.sprite.center.set( 0.5, 0.5 )
-      this.sprite.scale.set( backgroundWidth, backgroundHeight, 1 )
-      this.scene.add( this.sprite )
+  get preserveVisibility() { return this.hiddenObjects }
+
+  // Hides the given root objects, remembering their previous visibility. Calling it again while
+  // already hidden keeps the original state, so restorePlanet() always restores what was visible.
+  hidePlanet(objectList) {
+    for (const object of objectList) {
+      if (!object || this.hiddenObjects.some(h => h.object === object)) continue
+      this.hiddenObjects.push({ object, visible: object.visible })
+      object.visible = false
     }
   }
 
-  hidePlanet(objectList) {
-
-    this.preserveVisibility = [] // Array to store the visibility of the objects
-    objectList.forEach((object) => {
-      if (object) {
-        object.traverse((child) => {
-          this.preserveVisibility.push({object: child, visible: child.visible}) // Preserve the visibility
-          object.visible = false // Hide the object
-        })
-      }
-    })
-
-  }
-
-  restorePlanet(objectList) {
-
-    objectList.forEach((object) => {
-      if (object) {
-        object.traverse((child) => {
-          object.visible = this.preserveVisibility.find((element) => element.object === object).visible // Restore the visibility
-          // ToDo: Haven't handled the error conditin where the object is not found
-        })
-      }
-    })
-    this.preserveVisibility.splice(0, this.preserveVisibility.length) // Clear the array
-
+  restorePlanet() {
+    for (const { object, visible } of this.hiddenObjects) object.visible = visible
+    this.hiddenObjects = []
   }
 
   remove() {
-    if (this.scene) {
-      if (this.camera) this.scene.remove(this.camera)
-      if (this.sprite) this.scene.remove(this.sprite)
-      this.camera = null
-      this.sprite = null
-      this.scene = null
-    }
+    this.backgroundMaterial?.dispose()
+    this.scene = null
+    this.camera = null
+    this.sprite = null
   }
 }
