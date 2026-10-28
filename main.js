@@ -49,7 +49,7 @@ import * as CapturePresets from './CapturePresets.js'
 import { analyzeLauncherTerrainDisplacement } from './launcherTerrainAnalysis.js'
 
 // load camera preset vectors from external file
-import cameraPresets from './cameraPresets.json' assert { type: 'json' }
+import cameraPresets from './cameraPresets.json' with { type: 'json' }
 //import cameraControlData from './components/CameraControl/cameraPath1.json'
 //import cameraControlData from './components/CameraControl/QuickTest2.json'
 //import cameraControlData from './googleEarthImages/OrbitAroundLauncher4K/OrbitAroundLauncher.json'

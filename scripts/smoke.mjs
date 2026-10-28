@@ -1,0 +1,80 @@
+// Headless smoke test: starts the Vite dev server, loads the app in Chrome/Chromium,
+// waits for it to render, then reports console errors and saves a screenshot.
+//
+//   npm run smoke -- [--url-params "preset=default"] [--wait 15] [--out smoke.png]
+//
+// Set CHROME_PATH if Chrome/Chromium/Edge is not found automatically.
+import { createServer } from 'vite'
+import puppeteer from 'puppeteer-core'
+import fs from 'node:fs'
+import path from 'node:path'
+import process from 'node:process'
+
+function arg(name, fallback) {
+  const i = process.argv.indexOf(`--${name}`)
+  return i >= 0 ? process.argv[i + 1] : fallback
+}
+
+function findChrome() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH
+  const candidates = process.platform === 'win32'
+    ? [
+        `${process.env['PROGRAMFILES']}\\Google\\Chrome\\Application\\chrome.exe`,
+        `${process.env['PROGRAMFILES(X86)']}\\Google\\Chrome\\Application\\chrome.exe`,
+        `${process.env['LOCALAPPDATA']}\\Google\\Chrome\\Application\\chrome.exe`,
+        `${process.env['PROGRAMFILES(X86)']}\\Microsoft\\Edge\\Application\\msedge.exe`,
+      ]
+    : process.platform === 'darwin'
+      ? ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium']
+      : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium']
+  const found = candidates.find((p) => p && fs.existsSync(p))
+  if (!found) throw new Error('Chrome/Chromium not found. Set CHROME_PATH to its executable.')
+  return found
+}
+
+const waitSeconds = Number(arg('wait', '15'))
+const urlParams = arg('url-params', '')
+const out = arg('out', 'smoke.png')
+const evalExpr = arg('eval', null)
+
+const server = await createServer({ server: { port: 0 }, logLevel: 'error' })
+await server.listen()
+const port = server.httpServer.address().port
+const url = `http://localhost:${port}/${urlParams ? `?${urlParams}` : ''}`
+
+const browser = await puppeteer.launch({
+  executablePath: findChrome(),
+  headless: true,
+  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--window-size=1280,720'],
+  defaultViewport: { width: 1280, height: 720 },
+})
+
+const errors = []
+let exitCode = 0
+try {
+  const page = await browser.newPage()
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') errors.push(`console.error: ${msg.text()}`)
+    if (process.env.SMOKE_VERBOSE) console.log(`[${msg.type()}] ${msg.text()}`)
+  })
+  page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}\n${err.stack ?? ''}`))
+  await page.goto(url, { waitUntil: 'load', timeout: 120000 })
+  await new Promise((r) => setTimeout(r, waitSeconds * 1000))
+  if (evalExpr) console.log('eval:', JSON.stringify(await page.evaluate(evalExpr), null, 2))
+  await page.screenshot({ path: path.resolve(out) })
+  console.log(`Screenshot: ${path.resolve(out)}`)
+} catch (e) {
+  errors.push(`harness: ${e.message}`)
+} finally {
+  await browser.close()
+  await server.close()
+}
+
+if (errors.length) {
+  console.log(`\n${errors.length} error(s):`)
+  for (const e of errors) console.log(`- ${e}`)
+  exitCode = 1
+} else {
+  console.log('No errors.')
+}
+process.exit(exitCode)

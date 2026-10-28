@@ -20,3 +20,4 @@ tethered_ring 1.kml
 __pycache__/
 .cache/
 *.pyc
+smoke*.png
