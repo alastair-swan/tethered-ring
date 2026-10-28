@@ -5,32 +5,39 @@ import { SeaDarkening } from '../planet/seaDarkening.js'
 
 // Thin structural lines (tethers, elevator cables, mooring cables) drawn at their real diameters.
 //
-// Each line is a 1 px wide line; a cable far thinner than a pixel covers only part of it, so its light
-// is (diameter / pixel footprint) of a full pixel. The lines are self-illuminated (the one creative
-// choice: a real centimetre-thick cable would be invisible beyond a few hundred metres), and their
-// light is added to what is behind them, so the thousands of sub-pixel strands of the tethers sum to a
-// visible structure as a real luminous structure would. The glow (structureGlowDistance: how far away
-// a 1 cm line still glows at full brightness at the reference view) sets how bright; beyond that a
-// line fades with its shrinking coverage. Light also fades with the haze of the air between the camera
-// and the line (the same density model as the sky).
+// Each line is a 1 px wide line; a cable far thinner than a pixel covers only part of it, so its
+// contrast is (diameter / pixel footprint) of a full pixel's. The one creative choice: a real
+// centimetre-thick cable would be invisible beyond a few hundred metres, so the lines are given just
+// enough contrast to be seen: no more than MAX_CONTRAST close up. Seen against the daylit sky from
+// within the air, a line darkens what is behind it; otherwise (against the ground, space or the night
+// sky) it adds light, so the thousands of sub-pixel strands of the tethers sum to a visible structure.
+// structureGlowDistance is how far away a 1 cm line still has the full contrast at the reference
+// view; beyond that a line fades with its shrinking coverage. The contrast also fades with the haze
+// of the air between the camera and the line (the same density model as the sky).
 //
 // The uniforms are shared by every line material (one update per frame).
 const REFERENCE_PIXELS_PER_RADIAN = 1080 / 2 / Math.tan(22.5 * Math.PI / 180)
+// Linear (about 0.22 of the sRGB output range) up to CONTRAST_DISTANCE away, rising in proportion
+// to distance beyond it, so the whole structure still shows from space at planet scale.
+const MAX_CONTRAST = 0.04
+const CONTRAST_DISTANCE = 200000 // m
 
 const uniforms = {
   structurePixelsPerRadian: { value: REFERENCE_PIXELS_PER_RADIAN },
   structureGlow: { value: 1 },
+  structureMaxContrast: { value: new THREE.Vector2(MAX_CONTRAST, CONTRAST_DISTANCE) },
   hazeActive: { value: 0 },
   // Replaced by the planet's atmosphere uniforms (shared objects) in setHaze.
   atmoCamera: { value: new THREE.Vector4() },
   atmoPole: { value: new THREE.Vector4() },
   atmoParams: { value: new THREE.Vector4() },
+  atmoSun: { value: new THREE.Vector3(0, 1, 0) },
 }
 
 export const StructureLines = {
   uniforms,
 
-  // distance (m): how far away a 1 cm line still glows at full brightness at the reference view.
+  // distance (m): how far away a 1 cm line still has the full contrast at the reference view.
   setGlowDistance(distance) {
     uniforms.structureGlow.value = distance / (0.01 * REFERENCE_PIXELS_PER_RADIAN)
   },
@@ -40,6 +47,7 @@ export const StructureLines = {
     uniforms.atmoCamera = atmosphereUniforms.atmoCamera
     uniforms.atmoPole = atmosphereUniforms.atmoPole
     uniforms.atmoParams = atmosphereUniforms.atmoParams
+    uniforms.atmoSun = atmosphereUniforms.atmoSun
   },
 
   // Once per frame: the camera's pixels per radian, and whether the air hazes the lines.
@@ -61,7 +69,13 @@ export const StructureLines = {
       fragmentShader,
       transparent: true,
       depthWrite: false,
-      blending: THREE.AdditiveBlending,
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      // Premultiplied: rgb is the light added, alpha how much of what is behind is darkened.
+      blendSrc: THREE.OneFactor,
+      blendDst: THREE.OneMinusSrcAlphaFactor,
+      blendSrcAlpha: THREE.ZeroFactor,
+      blendDstAlpha: THREE.OneFactor,
       fog,
     })
   },
