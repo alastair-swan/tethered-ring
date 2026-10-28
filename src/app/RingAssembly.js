@@ -46,7 +46,7 @@ export class RingAssembly {
     this.earthEquator = new markers.earthEquatorObject(planetCoordSys, d, this.planetRadius)
     this.mainRingCurveMarker = new markers.mainRingCurveObject(this.refCoordSys, d, this.mainRingCurve, this.referencePoint())
     this.gravityForceArrows = new markers.gravityForceArrowsObject(planetCoordSys, d, this.mainRingCurve, this.crv, this.ctv, this.planetRadius, this.ringToPlanetRotation)
-    this.gyroscopicForceArrows = new markers.gyroscopicForceArrowsObject(planetCoordSys, d, this.mainRingCurve, this.crv, this.planetRadius, this.ringToPlanetRotation)
+    this.gyroscopicForceArrows = new markers.gyroscopicForceArrowsObject(planetCoordSys, d, this.mainRingCurve, this.crv, this.planetRadius, this.ringToPlanetRotation, this.movingRingSpeed())
     this.constructTethers()
   }
 
@@ -99,8 +99,15 @@ export class RingAssembly {
           }
         }
         else {
-          list.push(template)
-          refCoordSys.add(template)
+          // Exact (per-tether) path: geometry comes in chunks, each relative to its own origin.
+          for (const { origin, geometry: chunk } of geometry.localChunks ?? []) {
+            const tether = new THREE.LineSegments(chunk, this.tetherMaterial)
+            tether.name = 'tether'
+            tether.renderOrder = 1
+            tether.position.copy(origin)
+            list.push(tether)
+            refCoordSys.add(tether)
+          }
         }
       }
       this.tethers.push(list)
@@ -112,7 +119,10 @@ export class RingAssembly {
       for (const tether of list) tether.parent?.remove(tether)
     }
     // Clones share one geometry per ring; the material is shared by all rings and kept.
-    for (const geometry of this.tetherGeometries ?? []) geometry.dispose()
+    for (const geometry of this.tetherGeometries ?? []) {
+      geometry.dispose()
+      for (const chunk of geometry.localChunks ?? []) chunk.geometry.dispose()
+    }
     this.tethers = []
     this.tetherGeometries = []
   }
@@ -129,7 +139,8 @@ export class RingAssembly {
     this.updateMarkers()
     if (genSpecs) tram.updateMovingRingSpecs(this.store.derived, this.crv, this.specs)
     tram.updateTransitSystemSpecs(this.store.derived, this.crv, this.specs)
-    return (this.tetherGeometries ?? []).map(g => g.kmlFile ?? '').join('')
+    const ringKml = this.systems.map(system => system.kmlFile ?? '').join('')
+    return ringKml + (this.tetherGeometries ?? []).map(g => g.kmlFile ?? '').join('')
   }
 
   updateMarkers() {
@@ -139,7 +150,12 @@ export class RingAssembly {
     this.mainRingCurveMarker.update(this.refCoordSys, d, this.mainRingCurve, this.referencePoint())
     const f = this.forceArrowFlags
     this.gravityForceArrows.update(d, this.mainRingCurve, this.crv, this.ctv, this.planetRadius, this.ringToPlanetRotation, f.tensile, f.gravity, f.inertial)
-    this.gyroscopicForceArrows.update(d, this.mainRingCurve, this.crv, this.planetRadius, this.ringToPlanetRotation)
+    this.gyroscopicForceArrows.update(d, this.mainRingCurve, this.crv, this.planetRadius, this.ringToPlanetRotation, this.movingRingSpeed())
+  }
+
+  // Physical moving-ring speed from the specs, once the tether/ring maths has computed it.
+  movingRingSpeed() {
+    return this.specs.movingRingsSpeed?.value
   }
 
   showAllForceArrows() {
