@@ -1,0 +1,133 @@
+<!doctype html><meta charset="utf-8"><link rel="icon" href="data:,"><title>ktx2 dump</title>
+<script type="module">
+import * as THREE from 'three'
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js'
+// Decodes KTX2 colour tiles to RGBA and stitches them into a canvas, for checking tile seams.
+// Usage (from smoke.mjs --eval): await window.dumpTiles([['-X/6/31/22', ...], [...]]) -> data URL
+const renderer = new THREE.WebGLRenderer()
+const loader = new KTX2Loader().setTranscoderPath('/basis/')
+// Pretend no GPU texture compression is available so the transcoder outputs plain RGBA.
+loader.workerConfig = { astcSupported: false, astcHDRSupported: false, etc1Supported: false, etc2Supported: false, dxtSupported: false, bptcSupported: false, pvrtcSupported: false }
+void renderer
+window.dumpTiles = async (rows, asset = 'earth') => {
+  const images = []
+  for (const row of rows) {
+    const out = []
+    for (const id of row) {
+      if (!id) { out.push(null); continue }
+      const [face, lod, x, y] = id.split('/')
+      const tex = await loader.loadAsync(`/assets/${asset}/color/${face}/${lod}/${x}/${y}.ktx2`)
+      const m = tex.mipmaps[0]
+      out.push({ w: m.width, h: m.height, data: m.data, format: tex.format })
+    }
+    images.push(out)
+  }
+  const w = images[0].find(Boolean).w, h = images[0].find(Boolean).h
+  const canvas = document.createElement('canvas')
+  canvas.width = w * Math.max(...images.map(r => r.length)); canvas.height = h * images.length
+  const ctx = canvas.getContext('2d')
+  images.forEach((row, ry) => row.forEach((img, rx) => {
+    if (!img) return
+    const rgba = new Uint8ClampedArray(img.w * img.h * 4)
+    const ch = img.data.length / (img.w * img.h)
+    for (let i = 0; i < img.w * img.h; i++) { for (let c = 0; c < 3; c++) rgba[i * 4 + c] = img.data[i * ch + c]; rgba[i * 4 + 3] = 255 }
+    ctx.putImageData(new ImageData(rgba, img.w, img.h), rx * w, ry * h)
+  }))
+  return { format: images[0].find(Boolean).format, url: canvas.toDataURL('image/png') }
+}
+
+// Edge-continuity statistics for horizontally adjacent tile pairs [[left, right], ...]:
+// ratio = mean squared difference across the shared edge / across an interior column pair.
+// ~1 means seamless; >>1 means a visible seam.
+window.edgeStats = async (pairs, asset = 'earth') => {
+  const load = async (id) => {
+    const [face, lod, x, y] = id.split('/')
+    const tex = await loader.loadAsync(`/assets/${asset}/color/${face}/${lod}/${x}/${y}.ktx2`)
+    const m = tex.mipmaps[0]
+    return { w: m.width, h: m.height, ch: m.data.length / (m.width * m.height), data: m.data }
+  }
+  const col = (img, x) => { const out = []; for (let y = 0; y < img.h; y++) { let s = 0; for (let c = 0; c < 3; c++) s += img.data[(y * img.w + x) * img.ch + c]; out.push(s) } return out }
+  const mse = (a, b) => a.reduce((t, v, i) => t + (v - b[i]) ** 2, 0) / a.length
+  const results = []
+  for (const [a, b] of pairs) {
+    try {
+      const A = await load(a), B = await load(b)
+      const edge = mse(col(A, A.w - 1), col(B, 0))
+      const interior = (mse(col(A, A.w - 3), col(A, A.w - 2)) + mse(col(B, 1), col(B, 2))) / 2
+      results.push([a, b, +(edge / Math.max(interior, 1)).toFixed(2)])
+    } catch (e) { results.push([a, b, 'missing']) }
+  }
+  return results
+}
+
+// Compares each child tile with the matching quadrant of its parent (downsampled), returning the
+// mean brightness of each and the mean absolute difference per channel (0-255).
+window.parentChildStats = async (ids, asset = 'earth') => {
+  const load = async (id) => {
+    const [face, lod, x, y] = id.split('/')
+    const tex = await loader.loadAsync(`/assets/${asset}/color/${face}/${lod}/${x}/${y}.ktx2`)
+    const m = tex.mipmaps[0]
+    return { w: m.width, h: m.height, ch: m.data.length / (m.width * m.height), data: m.data }
+  }
+  const out = []
+  for (const id of ids) {
+    const [face, lod, x, y] = id.split('/').map((v, i) => (i ? Number(v) : v))
+    let C, P
+    try { C = await load(id); P = await load(`${face}/${lod - 1}/${x >> 1}/${y >> 1}`) } catch { out.push([id, 'missing']); continue }
+    const qx = (x & 1) * P.w / 2, qy = (y & 1) * P.h / 2
+    let diff = 0, cSum = 0, pSum = 0, n = 0
+    for (let py = 0; py < P.h / 2; py++) for (let px = 0; px < P.w / 2; px++) {
+      for (let c = 0; c < 3; c++) {
+        let cv = 0
+        for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) cv += C.data[((py * 2 + dy) * C.w + (px * 2 + dx)) * C.ch + c]
+        cv /= 4
+        const pv = P.data[((qy + py) * P.w + (qx + px)) * P.ch + c]
+        diff += Math.abs(cv - pv); cSum += cv; pSum += pv; n++
+      }
+    }
+    out.push([id, +(cSum / n).toFixed(1), +(pSum / n).toFixed(1), +(diff / n).toFixed(1)])
+  }
+  return out
+}
+
+// Scans every horizontally and vertically adjacent pair within each cube face at one LOD and
+// returns the pairs whose edge/interior difference ratio exceeds `threshold`.
+window.scanFaceSeams = async (lod, threshold = 3, asset = 'earth') => {
+  const cache = new Map()
+  const load = async (id) => {
+    if (cache.has(id)) return cache.get(id)
+    const [face, l, x, y] = id.split('/')
+    let img = null
+    try {
+      const tex = await loader.loadAsync(`/assets/${asset}/color/${face}/${l}/${x}/${y}.ktx2`)
+      const m = tex.mipmaps[0]
+      img = { w: m.width, h: m.height, ch: m.data.length / (m.width * m.height), data: m.data }
+    } catch {}
+    cache.set(id, img)
+    return img
+  }
+  const px = (img, x, y) => { let s = 0; for (let c = 0; c < 3; c++) s += img.data[(y * img.w + x) * img.ch + c]; return s }
+  const line = (img, vertical, k) => Array.from({ length: vertical ? img.h : img.w }, (_, i) => vertical ? px(img, k, i) : px(img, i, k))
+  const mse = (a, b) => a.reduce((t, v, i) => t + (v - b[i]) ** 2, 0) / a.length
+  const n = 1 << lod, out = []
+  let checked = 0
+  for (const face of ['+X', '-X', '+Y', '-Y', '+Z', '-Z']) {
+    for (let x = 0; x < n; x++) for (let y = 0; y < n; y++) {
+      const A = await load(`${face}/${lod}/${x}/${y}`)
+      if (!A) continue
+      for (const [dx, dy] of [[1, 0], [0, 1]]) {
+        if (x + dx >= n || y + dy >= n) continue
+        const B = await load(`${face}/${lod}/${x + dx}/${y + dy}`)
+        if (!B) continue
+        const v = dx === 1
+        const edge = mse(line(A, v, (v ? A.w : A.h) - 1), line(B, v, 0))
+        const interior = (mse(line(A, v, (v ? A.w : A.h) - 3), line(A, v, (v ? A.w : A.h) - 2)) + mse(line(B, v, 1), line(B, v, 2))) / 2
+        const ratio = edge / Math.max(interior, 4)
+        checked++
+        if (ratio > threshold) out.push([`${face}/${lod}/${x}/${y}`, v ? 'right' : 'below', +ratio.toFixed(1)])
+      }
+    }
+  }
+  return { checked, seams: out }
+}
+</script>
