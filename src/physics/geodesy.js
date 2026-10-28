@@ -96,6 +96,14 @@ export function radiusAtLatitude(lat, ellipsoid) {
   return Math.sqrt(numerator / denominator)
 }
 
+// The factor s that moves a point in three.js planet coordinates (y = polar axis) along the line
+// through the planet's centre onto the ellipsoid surface: s (x, y, z) is on the surface.
+export function ellipsoidSurfaceScale(x, y, z, ellipsoid) {
+  const a = ellipsoid.a
+  const b = a * (1 - (ellipsoid.f || 0))
+  return 1 / Math.sqrt((x * x + z * z) / (a * a) + (y * y) / (b * b))
+}
+
 // Converts three.js planet coordinates (x east of Greenwich, y = north pole, z = Greenwich meridian)
 // to geodetic latitude/longitude (degrees) and altitude above the ellipsoid (m).
 export function ecefToGeodetic(x, y, z, ellipsoid) {

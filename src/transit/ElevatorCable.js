@@ -2,8 +2,10 @@ import * as THREE from 'three'
 import { offset_r, offset_y } from '../ring/ringGeometry.js'
 import { ringPoint, forEachInWindow } from './VirtualRingObject.js'
 import { StructureLines } from '../scene/structureLines.js'
-import { ecefToGeodetic } from '../physics/geodesy.js'
+import { ecefToGeodetic, ellipsoidSurfaceScale } from '../physics/geodesy.js'
 
+// The ring is modelled on a sphere of the equatorial radius, but the ground is the ellipsoid (lower
+// everywhere off the equator, by up to 21 km), so each cable's foot is carried straight down to it.
 // Elevator cables only reach the ground where there is land within LAND_RADIUS of where they meet the
 // surface. The terrain streams in after start-up, so each frame LAND_CHECKS_PER_FRAME cables re-check
 // (round robin); a cable is hidden until its ground has loaded.
@@ -11,6 +13,7 @@ const LAND_RADIUS = 5000 // m
 const LAND_CHECKS_PER_FRAME = 24
 const LAND_UNKNOWN = 0, LAND_YES = 1, LAND_NO = 2
 const _ground = new THREE.Vector3()
+const _foot = new THREE.Vector3()
 
 const GRAVITY = 9.81 // m/s^2
 
@@ -69,6 +72,7 @@ export class ElevatorCableLayer {
     this.mesh.frustumCulled = false
     this.maxCables = maxCables
     this.land = new Uint8Array(this.positions.length) // LAND_* per cable
+    this.feet = new Float64Array(this.positions.length * 3) // on the ellipsoid, in the parent's frame (once checked)
     this.nextLandCheck = 0
     this.terrain = null
   }
@@ -93,6 +97,8 @@ export class ElevatorCableLayer {
       this.nextLandCheck = (i + 1) % n
       ringPoint(curve, this.positions[i], this.lower[0], this.lower[1], this.forward, _ground)
       planetFrame.worldToLocal(this.mesh.parent.localToWorld(_ground))
+      _foot.copy(_ground).multiplyScalar(ellipsoidSurfaceScale(_ground.x, _ground.y, _ground.z, ellipsoid))
+      this.mesh.parent.worldToLocal(planetFrame.localToWorld(_foot)).toArray(this.feet, i * 3)
       const g = ecefToGeodetic(_ground.x, _ground.y, _ground.z, ellipsoid)
       const metresPerDegreeLat = 111320
       const metresPerDegreeLon = Math.max(1, 111320 * Math.cos(g.lat * Math.PI / 180))
@@ -138,7 +144,8 @@ export class ElevatorCableLayer {
       if (k >= this.maxCables) return
       if (this.terrain && this.land[i] !== LAND_YES) return
       const p = this.positions[i]
-      ringPoint(curve, p, this.lower[0], this.lower[1], this.forward, _a).sub(_origin)
+      if (this.terrain) _a.fromArray(this.feet, i * 3).sub(_origin)
+      else ringPoint(curve, p, this.lower[0], this.lower[1], this.forward, _a).sub(_origin)
       buf[k*6] = _a.x; buf[k*6+1] = _a.y; buf[k*6+2] = _a.z
       ringPoint(curve, p, this.upper[0], this.upper[1], this.forward, _a).sub(_origin)
       buf[k*6+3] = _a.x; buf[k*6+4] = _a.y; buf[k*6+5] = _a.z
