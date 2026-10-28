@@ -49,7 +49,6 @@ async function profileScene({ frames = 120, warmup = 30 } = {}) {
   // Triangles by object (visible, inside the camera frustum), grouped by name.
   const camera = app.camera3d
   camera.updateMatrixWorld()
-  const frustum = new (camera.constructor.prototype.constructor === undefined ? Object : Object)()
   const THREE = await window.tetheredRing.THREE
   const f = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse))
   const byName = {}

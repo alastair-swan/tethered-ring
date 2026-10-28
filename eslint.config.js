@@ -18,6 +18,12 @@ export default [
     },
   },
   {
+    // Injected into the page by scripts/profile.mjs, so it is browser code defining one function.
+    files: ['scripts/profile/*.js'],
+    languageOptions: { ecmaVersion: 'latest', sourceType: 'script', globals: { ...globals.browser } },
+    rules: { 'no-unused-vars': 'off' },
+  },
+  {
     files: ['scripts/**/*.mjs', 'eslint.config.js', 'vite.config.js'],
     languageOptions: { ecmaVersion: 'latest', sourceType: 'module', globals: { ...globals.node } },
   },
