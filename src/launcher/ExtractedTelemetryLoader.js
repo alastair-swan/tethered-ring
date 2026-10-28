@@ -9,13 +9,14 @@ import bspline from 'b-spline'
 // import { StarshipIFT5 } from './datasets/StarshipIFT5.js'
 // import { StarshipIFT6 } from './datasets/StarshipIFT6.js'
 // import { StarshipIFT7 } from './datasets/StarshipIFT7.js'
-import { StarshipIFT8 } from './datasets/StarshipIFT8.js'
 
 export class ExtractedTelemetryLoader {
   constructor() {
   }
 
-  loadExtractedTelemetry(dParamWithUnits, xyChart) {
+  // The telemetry dataset is ~10 MB of JavaScript, so it is only fetched when rocket mode asks for it.
+  async loadExtractedTelemetry(dParamWithUnits, xyChart) {
+    const { StarshipIFT8 } = await import('./datasets/StarshipIFT8.js')
 
     const empiricalData = {}
 

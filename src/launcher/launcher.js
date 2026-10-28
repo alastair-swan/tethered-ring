@@ -136,8 +136,11 @@ export class launcher {
       case 1:
         // Add the curves from Starship's televised telemetry
         if (dParamWithUnits['showStarshipIFT6Telemetry'].value) {
-          const telemetryLoader = new ExtractedTelemetryLoader()
-          this.empiricalData = telemetryLoader.loadExtractedTelemetry(dParamWithUnits, this.xyChart)
+          // Loaded asynchronously; the rocket trajectory is recomputed once the telemetry arrives.
+          new ExtractedTelemetryLoader().loadExtractedTelemetry(dParamWithUnits, this.xyChart).then((empiricalData) => {
+            this.empiricalData = empiricalData
+            this.update(dParamWithUnits, this.timeSinceStart ?? timeSinceStart, planetCoordSys, planetSpec, tetheredRingRefCoordSys, mainRingCurve, crv, specs, genLauncherKMLFile, kmlFile)
+          }).catch((err) => console.error('Failed to load Starship telemetry', err))
         }
 
         this.update(dParamWithUnits, timeSinceStart, planetCoordSys, planetSpec, tetheredRingRefCoordSys, mainRingCurve, crv, specs, genLauncherKMLFile, kmlFile)
