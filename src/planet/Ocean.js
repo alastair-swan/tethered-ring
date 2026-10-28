@@ -23,6 +23,7 @@ const UNDERSIDE_COLOR = new THREE.Color(0x6fb3c9)
 const UNDERSIDE_OPACITY = 0.18 // looking straight up through it (more at grazing angles)
 // Seen from above (through the water, near the horizon): deep water, matching the fog in the sea.
 const UNDERSIDE_FROM_ABOVE = [0.012, 0.03, 0.05]
+const DEEP_BACKSTOP_DEPTH = 11500 // m: below the deepest sea floor (see the deep backstop in the constructor)
 const SHALLOW_WATER_COLOR = new THREE.Color(0x1f6f8c)
 const DEEP_WATER_COLOR = new THREE.Color(0x04131f)
 // The water colour goes from slightly darker than SHALLOW just under the surface towards (but never
@@ -54,18 +55,7 @@ export class Ocean {
     this.cameraUnderSurface = false
     this.cameraDepth = 0
 
-    const vertexCount = (RINGS + 1) * (SECTORS + 1)
-    const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3).setUsage(THREE.DynamicDrawUsage))
-    geometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3).setUsage(THREE.DynamicDrawUsage))
-    const index = []
-    for (let i = 0; i < RINGS; i++) {
-      for (let j = 0; j < SECTORS; j++) {
-        const a = i * (SECTORS + 1) + j, b = a + SECTORS + 1
-        index.push(a, b, a + 1, a + 1, b, b + 1)
-      }
-    }
-    geometry.setIndex(index)
+    const geometry = discGeometry()
     // Seen from below (back faces), lit by the daylight coming through it rather than shaded: mostly
     // clear, more opaque at grazing angles, with the same ripples as the surface seen from above.
     this.material = new THREE.MeshBasicMaterial({
@@ -114,6 +104,17 @@ else {
     parent.add(this.mesh)
 
     this.fog = new THREE.FogExp2(SHALLOW_WATER_COLOR.clone(), 0)
+
+    // From above the sea, a ray that goes down into it must always end on something: where no sea
+    // floor is drawn (terrain not loaded, or culled beyond the horizon) it would show the sky through
+    // the water, and translucent things in the water (the cable lines) would blend with that sky and
+    // seem to glow. This opaque deep-water disc, below the deepest sea floor, catches such rays; the
+    // real sea floor, wherever it is drawn, is in front of it.
+    this.deepMesh = new THREE.Mesh(discGeometry(), new THREE.MeshBasicMaterial({ color: new THREE.Color(...UNDERSIDE_FROM_ABOVE) }))
+    this.deepMesh.name = 'seaDeepBackstop'
+    this.deepMesh.frustumCulled = false
+    this.deepMesh.visible = false
+    parent.add(this.deepMesh)
   }
 
   setEnabled(enabled) {
@@ -121,6 +122,7 @@ else {
     if (!enabled) {
       this.setCameraInWater(false)
       this.mesh.visible = false
+      this.deepMesh.visible = false
       SeaDarkening.update(false, _up, 0, 0)
       if (this.scene.fog === this.fog) this.scene.fog = null
     }
@@ -151,11 +153,17 @@ else {
     // beyond the horizon (the Earth curves away), so the sky never shows through the sea.
     this.mesh.visible = true
     this.opaque.value = above ? 1 : 0
+    // As a backstop it must be drawn before anything translucent in front of it (e.g. the cable
+    // lines), or they would blend with the sky behind it and show up bright against the dark water.
+    // As the underside seen from below it is drawn after the translucent things it covers.
+    this.mesh.renderOrder = above ? -1 : 2
     // Rebuild only when the camera has moved by a noticeable fraction of its height above the sea
     // (the innermost ring is 5% of it), or has crossed the surface.
     const height = Math.abs(geo.alt)
+    this.deepMesh.visible = above
     if (!this._builtAt || this._builtAbove !== above || this._builtAt.distanceTo(_camera) > Math.max(0.05, 0.01 * height)) {
       this.buildSurface(height, above)
+      if (above) this.buildDeepBackstop(height)
       ;(this._builtAt ??= new THREE.Vector3()).copy(_camera)
       this._builtAbove = above
     }
@@ -179,18 +187,40 @@ else {
   // From above it reaches past twice the horizon distance: a ray that skims under the surface comes
   // back out of it about as far beyond the horizon as it went in before it.
   buildSurface(heightAboveSea, above = false) {
+    const horizon = this.horizonDistance(heightAboveSea)
+    this.fillDisc(this.mesh, heightAboveSea, Math.max(3000, horizon * (above ? 2.2 : 1.05) + 1000), 0)
+    noiseOffsets(this.mesh.position, SEA_SURFACE_FREQUENCIES, this.rippleOffsets) // ripples stay put as the disc moves
+  }
+
+  // The deep backstop reaches as far as a ray from the camera can go before it is that deep.
+  buildDeepBackstop(heightAboveSea) {
+    const meanRadius = this.meanRadius()
+    const reach = this.horizonDistance(heightAboveSea) + Math.sqrt(2 * meanRadius * DEEP_BACKSTOP_DEPTH) + 1000
+    this.fillDisc(this.deepMesh, heightAboveSea, reach, DEEP_BACKSTOP_DEPTH)
+  }
+
+  meanRadius() {
+    const a = this.ellipsoid.a
+    return (2 * a + (this.ellipsoid.b ?? a * (1 - (this.ellipsoid.f || 0)))) / 3
+  }
+
+  horizonDistance(heightAboveSea) {
+    return Math.sqrt(heightAboveSea * (2 * this.meanRadius() + heightAboveSea))
+  }
+
+  // Fills a disc mesh: rings around the point below the camera, `depth` metres below sea level, out to
+  // maxDistance (never more than a quarter of the way round), in float64 relative to its centre.
+  fillDisc(mesh, heightAboveSea, maxDistance, depth) {
     const a = this.ellipsoid.a
     const b = this.ellipsoid.b ?? a * (1 - (this.ellipsoid.f || 0))
-    const meanRadius = (2 * a + b) / 3
-    // Out to just past the horizon (at least a few km), and never more than a quarter of the way round.
-    const horizon = Math.sqrt(heightAboveSea * (2 * meanRadius + heightAboveSea))
-    const maxDistance = Math.min(meanRadius * Math.PI / 2, Math.max(3000, horizon * (above ? 2.2 : 1.05) + 1000))
+    const meanRadius = this.meanRadius()
+    maxDistance = Math.min(meanRadius * Math.PI / 2, maxDistance)
     const firstRing = Math.max(0.5, heightAboveSea * 0.05)
     const growth = Math.pow(maxDistance / firstRing, 1 / (RINGS - 1))
 
     const surfacePoint = (direction, target) => {
       const t = 1 / Math.sqrt((direction.x ** 2 + direction.z ** 2) / (a * a) + (direction.y ** 2) / (b * b))
-      return target.copy(direction).multiplyScalar(t)
+      return target.copy(direction).multiplyScalar(t - depth)
     }
     _up.copy(_camera).normalize()
     surfacePoint(_up, _origin)
@@ -200,8 +230,8 @@ else {
     _east.normalize()
     _north.crossVectors(_up, _east)
 
-    const positions = this.mesh.geometry.attributes.position.array
-    const normals = this.mesh.geometry.attributes.normal.array
+    const positions = mesh.geometry.attributes.position.array
+    const normals = mesh.geometry.attributes.normal.array
     let k = 0
     for (let i = 0; i <= RINGS; i++) {
       const angle = (i === 0) ? 0 : firstRing * growth ** (i - 1) / meanRadius
@@ -222,16 +252,34 @@ else {
         k += 3
       }
     }
-    this.mesh.position.copy(_origin)
-    noiseOffsets(_origin, SEA_SURFACE_FREQUENCIES, this.rippleOffsets) // ripples stay put as the disc moves
-    this.mesh.geometry.attributes.position.needsUpdate = true
-    this.mesh.geometry.attributes.normal.needsUpdate = true
+    mesh.position.copy(_origin)
+    mesh.geometry.attributes.position.needsUpdate = true
+    mesh.geometry.attributes.normal.needsUpdate = true
   }
 
   dispose() {
     this.setEnabled(false)
-    this.mesh.parent?.remove(this.mesh)
-    this.mesh.geometry.dispose()
-    this.material.dispose()
+    for (const mesh of [this.mesh, this.deepMesh]) {
+      mesh.parent?.remove(mesh)
+      mesh.geometry.dispose()
+      mesh.material.dispose()
+    }
   }
+}
+
+// A disc of RINGS x SECTORS quads around its centre (positions filled in by Ocean.fillDisc).
+function discGeometry() {
+  const vertexCount = (RINGS + 1) * (SECTORS + 1)
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3).setUsage(THREE.DynamicDrawUsage))
+  geometry.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3).setUsage(THREE.DynamicDrawUsage))
+  const index = []
+  for (let i = 0; i < RINGS; i++) {
+    for (let j = 0; j < SECTORS; j++) {
+      const a = i * (SECTORS + 1) + j, b = a + SECTORS + 1
+      index.push(a, b, a + 1, a + 1, b, b + 1)
+    }
+  }
+  geometry.setIndex(index)
+  return geometry
 }

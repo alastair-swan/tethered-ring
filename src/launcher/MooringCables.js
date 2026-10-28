@@ -25,10 +25,16 @@ const cylinderGeometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true).transla
 cylinderGeometry.userData.shared = true
 const cableMaterial = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.6, metalness: 0.4 })
 const ANCHOR_SIZE = 20 // m: anchor blocks on the sea floor (oversized, like the tethers, so they show from the tube)
-// Pale and slightly self-lit, so they still show from above the sea through the water's darkening.
+// Pale and slightly self-lit, and fading 8x more slowly in the from-above sea fog (seaDarkening.js),
+// so they still show from above the sea, even kilometres down.
 const anchorGeometry = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0)
 anchorGeometry.userData.shared = true
 const anchorMaterial = new THREE.MeshStandardMaterial({ color: 0xd9d3c4, emissive: 0x3a3832, roughness: 0.9 })
+anchorMaterial.onBeforeCompile = (shader) => {
+  shader.fragmentShader = shader.fragmentShader.replace('#include <fog_fragment>',
+    THREE.ShaderChunk.fog_fragment.replace('-seaPath / seaRay.z', '-seaPath / (8.0 * seaRay.z)'))
+}
+anchorMaterial.customProgramCacheKey = () => 'mooringAnchor'
 let lineMaterial = new THREE.LineBasicMaterial({ color: 0x505050, transparent: true, opacity: 0.6 })
 const _p = new THREE.Vector3()
 const _q = new THREE.Quaternion()
