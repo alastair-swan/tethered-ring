@@ -470,10 +470,15 @@ export class transitSystem {
     this.distanceFromCameraToRing = distanceFromCameraToRing
 
     // The transit tube and elevator cables are visible from far away, so they are drawn out to the
-    // horizon (the planet hides anything beyond it) instead of stopping at a fixed range.
+    // horizon (the planet hides anything beyond it) instead of stopping at a fixed range. Their
+    // window is measured along the ring, so it is the arc of ring within that straight-line range;
+    // using the straight-line range itself dropped ring segments that were in plain view, which
+    // popped in at once as the camera moved out (see ringArcWithin).
     const horizon = this.horizonDistance(cameraPosition.length())
-    this.transitTubeLayer?.setCameraRange(Math.max(RANGE.longRange, horizon))
-    this.cableLayer?.setCameraRange(Math.max(RANGE.longRange, horizon))
+    const longRange = Math.max(RANGE.longRange, horizon)
+    const longRangeArc = Math.max(longRange, this.ringArcWithin(_cameraLocal, _pointOnRing.y, longRange))
+    this.transitTubeLayer?.setCameraRange(longRangeArc)
+    this.cableLayer?.setCameraRange(longRangeArc)
 
     this.layers.forEach(layer => layer.update(curve, nearestTrackPosition, distanceFromCameraToRing))
     if (this.cableLayer) this.cableLayer.update(curve, nearestTrackPosition, distanceFromCameraToRing)
@@ -488,6 +493,23 @@ export class transitSystem {
       this.updateWedges(refFrame, nearestTrackPosition, distanceFromCameraToRing, ringCircumference, invalidate)
     })
     Object.values(this.pools).forEach(pool => pool.reportShortage())
+  }
+
+  // Half-length of the arc of the ring (measured along it, centred on the ring point nearest the
+  // camera's azimuth) whose points are within `range` (straight line) of the camera; the whole
+  // circumference when all of it is. cameraLocal: the camera in the ring's frame (axis y);
+  // ringPlaneY: the height of the ring's plane in that frame.
+  ringArcWithin(cameraLocal, ringPlaneY, range) {
+    const r = this.crv.mainRingRadius
+    const rho = Math.hypot(cameraLocal.x, cameraLocal.z)
+    const y = cameraLocal.y - ringPlaneY
+    const circumference = 2 * Math.PI * r
+    if (rho < 1e-6 * r) return (r * r + y * y <= range * range) ? circumference : 0
+    // |camera - ring point at angle phi from the camera's azimuth|^2 = rho^2 + r^2 + y^2 - 2 rho r cos(phi)
+    const cosPhi = (rho * rho + r * r + y * y - range * range) / (2 * rho * r)
+    if (cosPhi <= -1) return circumference
+    if (cosPhi >= 1) return 0
+    return r * Math.acos(cosPhi)
   }
 
   // How far from the camera a reference frame's objects are given models: out to where its largest
