@@ -3,8 +3,7 @@ import * as tram from '../utils/tram.js'
 import * as markers from '../ring/markers.js'
 import { tetheredRingSystem } from '../ring/tetheredRingSystem.js'
 import { TetherGeometry } from '../ring/tethers.js'
-import tetherVertexShader from '../shaders/tether.vert.glsl?raw'
-import tetherFragmentShader from '../shaders/tether.frag.glsl?raw'
+import { StructureLines } from '../scene/structureLines.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 
 const UNIVERSE = { gravitationalConstant: 6.67408e-11 }
@@ -31,19 +30,8 @@ export class RingAssembly {
     this.forceArrowFlags = { tensile: false, gravity: false, inertial: false }
 
     const d = store.derived
-    this.tetherMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        tetherMinOpacity: { value: d.tetherMinOpacity.value },
-        tetherMaxOpacity: { value: d.tetherMaxOpacity.value },
-        tetherDistanceFactor: { value: 2 ** d.tetherDistanceFactor.value },
-        screenScale: { value: 1 },
-        color: { value: new THREE.Color(store.get('tetherColor')) },
-      },
-      vertexShader: tetherVertexShader,
-      fragmentShader: tetherFragmentShader,
-      transparent: true,
-      blending: THREE.NormalBlending,
-    })
+    // Tethers are drawn at their real diameters (see src/scene/structureLines.js).
+    this.tetherMaterial = StructureLines.createMaterial(store.get('tetherColor'))
 
     this.createSystems()
     // Tethers first: computing them fills this.ctv, which the force arrows read.
@@ -201,20 +189,8 @@ export class RingAssembly {
     }, d[`moveRingFactor${suffix}`].value)
   }
 
-  // Keeps the tether fade tied to on-screen size (see tether.vert.glsl).
-  updateScreenScale(camera, viewportHeight) {
-    const pixelsPerRadian = camera.projectionMatrix.elements[5] * viewportHeight / 2
-    const referencePixelsPerRadian = 1080 / 2 / Math.tan(this.store.get('cameraFieldOfView') * Math.PI / 360)
-    this.tetherMaterial.uniforms.screenScale.value = pixelsPerRadian / referencePixelsPerRadian
-  }
-
   setTetherUniforms() {
-    const d = this.store.derived
-    const u = this.tetherMaterial.uniforms
-    u.tetherMinOpacity.value = d.tetherMinOpacity.value
-    u.tetherMaxOpacity.value = d.tetherMaxOpacity.value
-    u.tetherDistanceFactor.value = 2 ** d.tetherDistanceFactor.value
-    u.color.value.set(this.store.get('tetherColor'))
+    this.tetherMaterial.uniforms.color.value.set(this.store.get('tetherColor'))
   }
 
   // Short summary shown in the GUI "TextOutput" folder after a specs update.

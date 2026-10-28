@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import { ecefToGeodetic, geodeticToECEF } from '../physics/geodesy.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
-import { SeaDarkening } from '../planet/seaDarkening.js'
+import { StructureLines } from '../scene/structureLines.js'
+import { catenaryPoints } from './catenary.js'
 
 // Mooring cables for one tube segment. Where the mass-driver tube runs under the sea it is buoyant
 // and held down by cables to the sea floor, in inverted Vs so that they also resist sideways
@@ -13,14 +14,11 @@ import { SeaDarkening } from '../planet/seaDarkening.js'
 // so every set re-samples its anchors from time to time (MooringCables.refreshSome, once per frame)
 // and rebuilds when the sea floor it found has changed.
 //
-// The legs are always drawn as lines that fade with on-screen size like the ring's tethers (they
-// share the tether material's opacity and distance-fade settings: see setLineMaterial), so they can
-// be followed all the way down to the sea floor, where each ends at an anchor block. Close up they are
-// also drawn as solid cable.
+// The legs are drawn like the ring's tethers, as glowing lines at their real diameter that fade with
+// their pixel coverage (src/scene/structureLines.js), so they can be followed all the way down to the
+// sea floor, where each ends at an anchor block. Close up they are also drawn as solid cable.
 const SEGMENTS_PER_LEG = 32
 const LINES_MIN_PIXELS = 1 / 2000
-// The lines' "thickness" for the tether fade (the tethers use 0..1 relative to the thickest strand).
-const LINE_THICKNESS = 0.5
 const cylinderGeometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true).translate(0, 0.5, 0)
 cylinderGeometry.userData.shared = true
 const cableMaterial = new THREE.MeshStandardMaterial({ color: 0x3a3a3a, roughness: 0.6, metalness: 0.4 })
@@ -36,7 +34,9 @@ anchorMaterial.onBeforeCompile = (shader) => {
     THREE.ShaderChunk.fog_fragment.replace('seaTint, vSeaFog)', 'seaTint, 1.0 - pow(1.0 - vSeaFog, 0.125))'))
 }
 anchorMaterial.customProgramCacheKey = () => 'mooringAnchor'
-let lineMaterial = new THREE.LineBasicMaterial({ color: 0x505050, transparent: true, opacity: 0.6 })
+// Lines at the cables' real diameter, glowing like the tethers and fading in the sea (see
+// src/scene/structureLines.js). Created on first use (after the app has set the haze up).
+let lineMaterial = null
 const _p = new THREE.Vector3()
 const _q = new THREE.Quaternion()
 const _yAxis = new THREE.Vector3(0, 1, 0)
@@ -44,73 +44,9 @@ const _dir = new THREE.Vector3()
 const _m = new THREE.Matrix4()
 const _s = new THREE.Vector3()
 
-// Points along a catenary hanging from `top` to `bottom` (planet coordinates), in the vertical plane
-// through both (`up` is the local vertical). shape: the catenary constant as a multiple of the
-// distance between the ends (larger = straighter). A cable cannot hang below its anchor (that would
-// be under the sea floor), so a shape that would put the lowest point between the ends is
-// straightened until the lowest point is at the anchor.
-export function catenaryPoints(top, bottom, up, shape, segments = SEGMENTS_PER_LEG) {
-  const chord = new THREE.Vector3().subVectors(top, bottom)
-  const rise = chord.dot(up)                                    // H
-  const across = chord.clone().addScaledVector(up, -rise)       // horizontal part
-  const span = across.length()                                  // L
-  const points = []
-  if (span < 1e-6 || !(shape > 0)) {
-    for (let i = 0; i <= segments; i++) points.push(bottom.clone().lerp(top, i / segments))
-    return points
-  }
-  across.divideScalar(span)
-  // y = a cosh((x - x0) / a) through (0, 0) and (L, H): x0 = L/2 - a asinh(H / (2 a sinh(L / 2a))).
-  const lowestPoint = (a) => span / 2 - a * Math.asinh(rise / (2 * a * Math.sinh(span / (2 * a))))
-  let a = shape * chord.length()
-  if (rise > 0 && lowestPoint(a) > 0) {
-    // x0 decreases as a grows: bisect for x0 = 0.
-    let lo = a, hi = a
-    while (lowestPoint(hi) > 0) hi *= 2
-    for (let i = 0; i < 60; i++) { const mid = (lo + hi) / 2; if (lowestPoint(mid) > 0) lo = mid; else hi = mid }
-    a = hi
-  }
-  const x0 = lowestPoint(a)
-  const y = (x) => a * Math.cosh((x - x0) / a)
-  const y0 = y(0)
-  for (let i = 0; i <= segments; i++) {
-    const x = span * i / segments
-    points.push(bottom.clone().addScaledVector(across, x).addScaledVector(up, y(x) - y0))
-  }
-  points[segments].copy(top) // exact end (rounding)
-  return points
-}
-
 export class MooringCables {
   static sets = new Set()
   static _queue = []
-
-  // The material for the cable lines: pass the tethers' material so the cables fade with on-screen
-  // size the same way. (A ShaderMaterial built from the tether shaders, sharing their uniforms; the
-  // colour is our own.) Unlike the tethers, the cables are in the sea, so it also takes the scene's
-  // fog (they fade into the water with distance exactly as the sea floor does) and the from-above sea
-  // darkening (see seaDarkening.js).
-  static setLineMaterial(tetherMaterial) {
-    const vertexShader = tetherMaterial.vertexShader
-      .replace('#include <logdepthbuf_pars_vertex>', '#include <logdepthbuf_pars_vertex>\n#include <fog_pars_vertex>')
-      .replace('#include <logdepthbuf_vertex>', '#include <logdepthbuf_vertex>\n  vec4 mvPosition = eyeCoord;\n  #include <fog_vertex>')
-    const fragmentShader = tetherMaterial.fragmentShader
-      .replace('#include <logdepthbuf_pars_fragment>', '#include <logdepthbuf_pars_fragment>\n#include <fog_pars_fragment>')
-      .replace('#include <colorspace_fragment>', '#include <colorspace_fragment>\n  #include <fog_fragment>')
-    lineMaterial = new THREE.ShaderMaterial({
-      uniforms: {
-        ...tetherMaterial.uniforms,
-        color: { value: new THREE.Color(0x141414) },
-        ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog),
-        ...SeaDarkening.uniforms(),
-      },
-      vertexShader,
-      fragmentShader,
-      transparent: true,
-      blending: tetherMaterial.blending,
-      fog: true,
-    })
-  }
 
   // moorings: [{ apex: Vector3 (planet coordinates, bottom of the tube), side: Vector3 (unit, sideways) }]
   // toLocal(planetPoint, target): converts planet coordinates to the segment model's coordinates.
@@ -131,8 +67,8 @@ export class MooringCables {
     this.near = new THREE.Group()
     this.lines = new THREE.Group()
     // Solid cable (with the lines) where it is at least a pixel across; the lines alone below that,
-    // until the cable is 1/2000 of a pixel wide (hundreds of km, where the tether fade has all but
-    // hidden them anyway).
+    // until the cable is 1/2000 of a pixel wide (hundreds of km, where its coverage has all but hidden
+    // it anyway).
     this.lod = new PixelLOD(2 * cableRadius, { extent })
     this.lod.addLevel(1, this.near)
     this.lod.addLevel(LINES_MIN_PIXELS, this.lines)
@@ -180,7 +116,7 @@ export class MooringCables {
     if (legs.length === 0) return
     const curves = legs.map(([apex, anchor]) => {
       const up = apex.clone().add(anchor).normalize() // local vertical (geocentric is close enough here)
-      return catenaryPoints(apex, anchor, up, this.shape).map(p => this.toLocal(p, new THREE.Vector3()))
+      return catenaryPoints(apex, anchor, up, this.shape, SEGMENTS_PER_LEG).map(p => this.toLocal(p, new THREE.Vector3()))
     })
 
     // Lines (always), with the tether fade
@@ -195,9 +131,9 @@ export class MooringCables {
     const count = positions.length / 3
     const lineGeometry = new THREE.BufferGeometry()
     lineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
-    lineGeometry.setAttribute('thickness', new THREE.Float32BufferAttribute(new Float32Array(count).fill(LINE_THICKNESS), 1))
-    lineGeometry.setAttribute('strands', new THREE.Float32BufferAttribute(new Float32Array(count).fill(1), 1))
+    StructureLines.constantAttributes(lineGeometry, count, 2 * this.cableRadius)
     lineGeometry.computeBoundingSphere()
+    lineMaterial ??= StructureLines.createMaterial(0x9a9a9a, { fog: true })
     const lines = new THREE.LineSegments(lineGeometry, lineMaterial)
     lines.name = 'mooringCableLines'
     lines.renderOrder = 1 // like the tethers

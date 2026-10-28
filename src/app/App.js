@@ -16,6 +16,7 @@ import { PixelLOD } from '../scene/PixelLOD.js'
 import { SubPixelFade } from '../scene/SubPixelFade.js'
 import { Ocean } from '../planet/Ocean.js'
 import { MooringCables } from '../launcher/MooringCables.js'
+import { StructureLines } from '../scene/structureLines.js'
 import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
 import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
@@ -194,6 +195,9 @@ export class App {
       debugMode: n.planet2DebugMode,
     })
     this.planetCoordSys.add(this.planet.surface, this.planet.atmosphere)
+    // Tethers and cables are hazed by the planet's air, and glow (see src/scene/structureLines.js).
+    StructureLines.setHaze(this.planet.atmosphereUniforms)
+    StructureLines.setGlowDistance(d.structureGlowDistance.value)
     this.planet.setVisible(d.showEarthsSurface.value)
     this.planet.setAtmosphereVisible(d.showEarthsAtmosphere.value)
     this.ocean = null
@@ -250,8 +254,6 @@ export class App {
     if (!this.enableLaunchSystem) return
     const r = this.ring
     const n = this.nonGUIParams
-    // The tube's mooring cables fade with distance like the tethers do.
-    MooringCables.setLineMaterial(this.ring.tetherMaterial)
     this.launchSystem = new Launcher.launcher(this.d, this.clock.time, this.planetCoordSys, this.planetSpec, r.refCoordSys, r.mainRingCurve, r.crv, this.overlays.xyChart, null, this.specs, false, '')
     this.launchSystem.setTerrainSampler((lat, lon) => this.planet.sampleTerrainHeight(lat, lon))
     this.launchSystem.drawLaunchTrajectoryLine(this.d, this.planetCoordSys)
@@ -421,7 +423,7 @@ export class App {
       earthAxisObjectUpdate: () => this.ring.updateMarkers(),
       earthEquatorObjectUpdate: () => this.ring.updateMarkers(),
       adjustTetherOpacity: () => this.ring.setTetherUniforms(),
-      adjustTetherDistanceFactor: () => this.ring.setTetherUniforms(),
+      adjustStructureGlow: visibility((p) => StructureLines.setGlowDistance(p.structureGlowDistance.value)),
       updateXYChart: visibility((p) => this.overlays.setChartVisible(p.showXYChart.value)),
       updateLogoSprite: visibility((p) => this.overlays.setLogoVisible(p.showLogo.value)),
       updateCamerFieldOfView: visibility((p) => { this.camera3d.fov = p.cameraFieldOfView.value; this.camera3d.updateProjectionMatrix() }),
@@ -446,7 +448,7 @@ export class App {
     const handlers = this.parameterHandlers()
     for (const name of ['adjustEarthSurfaceVisibility', 'adjustEarthAtmosphereVisibility', 'adjustEarthTextureOpacity', 'adjustEarthTextureSidedness',
       'adjustTerrainExaggeration', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
-      'updateOrbitControlsRotateSpeed', 'adjustTetherOpacity', 'adjustBackgroundOpacity']) handlers[name]()
+      'updateOrbitControlsRotateSpeed', 'adjustTetherOpacity', 'adjustStructureGlow', 'adjustBackgroundOpacity']) handlers[name]()
     this.rebuildRing()
     this.ring.adjustLatLon(0)
     this.gui.refresh()
@@ -671,7 +673,9 @@ export class App {
     const renderer = this.renderer
     PixelLOD.beginFrame(renderer.info.render.frame)
     InstancedProxyPool.syncAll(this.camera3d, PixelLOD.viewportHeight)
-    this.ring.updateScreenScale(this.camera3d, PixelLOD.viewportHeight)
+    // Tethers and cables: pixel coverage, and haze from the air (not from under the sea).
+    StructureLines.update(this.camera3d, PixelLOD.viewportHeight,
+      this.planetSpec.hasOcean === true && this.planet.atmosphere.visible && !this.ocean?.cameraUnderSurface)
     SubPixelFade.update(this.camera3d, PixelLOD.viewportHeight)
     // Lets the transit system keep objects until they are sub-pixel instead of using fixed ranges.
     this.transitSystem.pixelsPerRadian = this.camera3d.projectionMatrix.elements[5] * PixelLOD.viewportHeight / 2

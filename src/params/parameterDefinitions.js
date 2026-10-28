@@ -178,6 +178,8 @@ export function createParameterDefinitions() {
   numVirtualElevatorCars: {value: 1800, units: "", autoMap: true, min: 0, max: 3600, step: 1, onChange: 'updateTransitsystem', folder: 'Engineering'},
   elevatorCarNumModels: {value: 32, units: "", autoMap: true, min: 0, max: 3600, step: 1, onChange: 'updateTransitsystem', folder: 'Engineering'},
   additionalUpperElevatorCable: {value: 20, units: 'm', autoMap: true, min: 0, max: 50, onChange: 'updateTransitsystem', folder: 'Engineering'},
+  // Loaded elevator car; sizes the elevator cables (carbon fibre like the tethers; see ElevatorCable.js).
+  elevatorCarMass: {value: 7500, units: 'kg', autoMap: true, min: 100, max: 100000, onChange: 'updateTransitsystem', folder: 'Engineering'},
   elevatorCableOutwardOffset: {value: -24, units: 'm', autoMap: true, min: -30, max: -10, onChange: 'updateTransitsystem', folder: 'Engineering'},
   elevatorCableForwardOffset: {value: -11, units: 'm', autoMap: true, min: -100, max: 0, onChange: 'updateTransitsystem', folder: 'Engineering'},
   elevatorCarUpwardOffset: {value: 0.32, units: 'm', autoMap: true, min: -10, max: 10, onChange: 'updateTransitsystem', folder: 'Engineering'},
@@ -547,9 +549,9 @@ export function createParameterDefinitions() {
   underwaterVisibility: {value: 20000, units: 'm', autoMap: true, min: 100, max: 200000, onChange: 'adjustOcean', folder: 'Rendering'},   // distance at which things underwater have almost faded into the water colour (a visual cue, not realism)
   earthTextureOpacity: {value: 1, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustEarthTextureOpacity', folder: 'Rendering'},
   earthTextureDoubleSided: {value: false, units: '', autoMap: true, onChange: 'adjustEarthTextureSidedness', folder: 'Rendering'},
-  tetherMinOpacity: {value: 0.03, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustTetherOpacity', folder: 'Rendering'},
-  tetherMaxOpacity: {value: 0.70, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustTetherOpacity', folder: 'Rendering'},
-  tetherDistanceFactor: {value: -14.5, units: '', autoMap: true, min: -30, max: -10, onChange: 'adjustTetherDistanceFactor', folder: 'Rendering'},
+  // Tethers and cables are drawn at their real diameters and glow (see src/scene/structureLines.js): how
+  // far away a 1 cm line still glows at full brightness; beyond that it fades with its pixel coverage.
+  structureGlowDistance: {value: 20000, units: 'm', autoMap: true, min: 100, max: 10000000, onChange: 'adjustStructureGlow', folder: 'Rendering'},
   showMoon: {value: defaultShows, units: '', autoMap: true, onChange: 'adjustMoonsVisibility', folder: 'Rendering'},
   showStars: {value: defaultShows, units: '', autoMap: true, onChange: 'adjustStarsVisibility', folder: 'Rendering'},
   showEarthAxis: {value: false, units: '', autoMap: true, onChange: 'earthAxisObjectUpdate', folder: 'Rendering'},
@@ -632,7 +634,6 @@ export function createParameterDefinitions() {
   animateAdaptiveNuts: {value: true, units: '', autoMap: true, min: 0, max: 1, onChange: 'updateLauncher', folder: 'Rendering'},
   animateLaunchVehicles: {value: true, units: '', autoMap: true, min: 0, max: 1, onChange: 'updateLauncher', folder: 'Rendering'},
   animateElevatedEvacuatedTubeDeployment: {value: false, units: '', autoMap: true, min: 0, max: 1, onChange: 'updateLauncher', folder: 'Rendering'},
-  elevatorCableOpacity: {value:0.3, units: "", autoMap: true, min: 0, max: 1, tweenable: true, onChange: 'updateTransitsystem', folder: 'Rendering'},
   launchTrajectoryVisibility: {value: 1, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustLaunchTrajectoryOpacity', folder: 'Rendering'},
   trackingMode: {value: 0, units: '', autoMap: true, min: 0, max: 2, onChange: 'updateTrackingMode', folder: 'Rendering'},
   cameraFieldOfView: {value: 45, units: '', autoMap: true, min: 0, max: 90, tweenable: true, onChange: 'updateCamerFieldOfView', folder: 'Rendering'},

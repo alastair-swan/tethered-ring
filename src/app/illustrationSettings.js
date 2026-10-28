@@ -91,7 +91,6 @@ export const ILLUSTRATION_SETTINGS = [
     tetherPointBxDeltaPercent: 0,
     tetherEngineeringFactor: 0.6,
     numElevatorCables: 180,
-    elevatorCableOpacity: 0.1,
     showMainRingCurve: false,
     showTethers: true,
     showTransitSystem: false,

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Vector3 } from 'three'
-import { catenaryPoints } from '../../src/launcher/MooringCables.js'
+import { catenaryPoints } from '../../src/launcher/catenary.js'
 
 test('a mooring leg is a catenary from the tube to its anchor that sags below the straight line', () => {
   const up = new Vector3(0, 1, 0)

@@ -125,7 +125,8 @@ Where it is used:
 | Transit ring segments | Instanced layers (`src/ring/RingInstancedLayer.js`) |
 | Planet | Screen-space texel error, skirts for crack-free LOD transitions |
 | Sea surface | A sea-level copy of each terrain tile that has ground below sea level, using the tile's own imagery (so the water has the local ocean colour and ends at the terrain's coastline); follows the tile's LOD and culling |
-| Tethers | Each copy is a PixelLOD over variants with the last forks merged (the vertical fan to the rings first), used once the merged fan is under 0.1 px; a strand count keeps the combined opacity |
+| Tethers | Each copy is a PixelLOD over variants with the last forks merged (the vertical fan to the rings first), used once the merged fan is under 0.1 px; a strand count keeps the combined light |
+| Tethers and cables | Drawn at their real diameters (`src/scene/structureLines.js`). Each glowing line adds light equal to the share of a pixel it covers, so sub-pixel strands sum to a visible structure. Light is reduced by the haze of the air between the camera and the line. Tether area is conserved at every fork; elevator cables are sized from the car load (`elevatorCarMass`) |
 | Mass-driver tube | A 1 px line along the track once the tube is under a pixel across |
 
 The launcher's reference frames split the track into a few hundred zones, each kilometres long. A virtual object class can define `static modelRange(pixelsPerRadian)` so that only objects within that distance of the camera get models (screws use the distance at which they shrink below their smallest drawn size).

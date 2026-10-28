@@ -1,6 +1,22 @@
 import * as THREE from 'three'
 import { offset_r, offset_y } from '../ring/ringGeometry.js'
 import { ringPoint, forEachInWindow } from './VirtualRingObject.js'
+import { StructureLines } from '../scene/structureLines.js'
+
+const GRAVITY = 9.81 // m/s^2
+
+// Diameter (m) of an elevator cable: a constant-section carbon-fibre cable (the tethers' fibre, at
+// their working stress) of the given length holding up a loaded car of carMass. The top carries the
+// car and the cable's own weight: A sigma = M g + rho A L g, so A = M g / (sigma - rho L g).
+export function elevatorCableDiameter(dParamWithUnits, length, carMass) {
+  const workingStress = dParamWithUnits['tetherFiberTensileStrength'].value * 1e6 / dParamWithUnits['tetherEngineeringFactor'].value
+  const selfWeightStress = dParamWithUnits['tetherFiberDensity'].value * length * GRAVITY
+  if (!(workingStress > selfWeightStress)) {
+    console.warn('Elevator cables cannot support their own weight at this length with this fibre.')
+    return 1
+  }
+  return 2 * Math.sqrt(carMass * GRAVITY / (workingStress - selfWeightStress) / Math.PI)
+}
 
 const _origin = new THREE.Vector3()
 const _a = new THREE.Vector3()
@@ -34,7 +50,10 @@ export class ElevatorCableLayer {
     this.attribute.setUsage(THREE.DynamicDrawUsage)
     geometry.setAttribute('position', this.attribute)
     geometry.setDrawRange(0, 0)
-    this.material = new THREE.LineBasicMaterial({color: 0x4897f8, transparent: true, opacity: dParamWithUnits['elevatorCableOpacity'].value})
+    // Drawn at their real (constant) diameter, glowing (see src/scene/structureLines.js).
+    this.diameter = elevatorCableDiameter(dParamWithUnits, upperUp - lowerUp, dParamWithUnits['elevatorCarMass'].value)
+    StructureLines.constantAttributes(geometry, maxCables * 2, this.diameter)
+    this.material = StructureLines.createMaterial(0x4897f8)
     this.mesh = new THREE.LineSegments(geometry, this.material)
     this.mesh.name = 'elevatorCables'
     this.mesh.renderOrder = 1

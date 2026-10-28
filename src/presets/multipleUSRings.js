@@ -60,8 +60,7 @@ export function multipleUSRings(guidParamWithUnits, nonGUIParams) {
     guidParamWithUnits['numVirtualRingTerminuses'].value = 4000
     guidParamWithUnits['numElevatorCables'].value = 4000
     guidParamWithUnits['numVirtualHabitats'].value = 0
-    guidParamWithUnits['tetherMinOpacity'].value = 0
-    guidParamWithUnits['tetherDistanceFactor'].value = -21
+    guidParamWithUnits['structureGlowDistance'].value = 2000 // (dimmer tethers: many rings)
     guidParamWithUnits['ringFinalAltitude'].value = 12000  // m
 
     // From space, above North America's West Coast

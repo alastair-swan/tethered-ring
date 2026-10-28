@@ -9,7 +9,7 @@ import * as tram from '../utils/tram.js'
 import * as kmlutils from '../export/kmlutils.js'
 
 // Indexed line segments from strips of points ({strips, thicknesses, strands}: per strip, its points,
-// per-point thicknesses and its strand count).
+// per-point diameters (m) and its strand count).
 function stripsToGeometry({strips, thicknesses, strands}) {
   const positions = []
   const pointThicknesses = []
@@ -27,7 +27,7 @@ function stripsToGeometry({strips, thicknesses, strands}) {
   })
   const geometry = new BufferGeometry()
   geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3))
-  geometry.setAttribute('thickness', new BufferAttribute(new Float32Array(pointThicknesses), 1))
+  geometry.setAttribute('diameter', new BufferAttribute(new Float32Array(pointThicknesses), 1))
   geometry.setAttribute('strands', new BufferAttribute(new Float32Array(pointStrands), 1))
   geometry.setIndex(indices)
   geometry.computeBoundingSphere()
@@ -326,9 +326,6 @@ class TetherGeometry extends BufferGeometry {
 
       const mro = (numMainRings - 1)/2
 
-      // Generate a (very) rough estimate of the maximum thickness of the tether
-      let maxThickness = 2 * Math.sqrt(catenaryPoints[catenaryPoints.length>>1].crossSectionalArea / Math.PI)
-      
       let crossSectionalAreaFraction = 1.0
 
       for (let i = 0; i<=numTetherPoints-2; i++) {
@@ -443,11 +440,11 @@ class TetherGeometry extends BufferGeometry {
             if (firstPointFlag) {
               const branchCrossSectionalArea = crossSectionalArea_0 * branch.crossSectionalAreaDivider * thicknessCosineFactor
               tetherStripCrossSectionalAreas[branch.stripIndex].push(branchCrossSectionalArea)
-              tetherStripThicknesses[branch.stripIndex].push(2 * Math.sqrt(branchCrossSectionalArea / Math.PI) / maxThickness)
+              tetherStripThicknesses[branch.stripIndex].push(2 * Math.sqrt(branchCrossSectionalArea / Math.PI))   // diameter (m)
             }
             const branchCrossSectionalArea = crossSectionalArea_1 * branch.crossSectionalAreaDivider * thicknessCosineFactor
             tetherStripCrossSectionalAreas[branch.stripIndex].push(branchCrossSectionalArea)
-            tetherStripThicknesses[branch.stripIndex].push(2 * Math.sqrt(branchCrossSectionalArea / Math.PI) / maxThickness)
+            tetherStripThicknesses[branch.stripIndex].push(2 * Math.sqrt(branchCrossSectionalArea / Math.PI))   // diameter (m)
 
             if (genSpecs) {
               const csAreas = tetherStripCrossSectionalAreas[branch.stripIndex]
@@ -575,7 +572,7 @@ class TetherGeometry extends BufferGeometry {
     this.setFromPoints(tetherPoints)
     const numThicknessComponents = 1
     const thicknessAttribute = new BufferAttribute(new Float32Array(tetherThicknesses), numThicknessComponents)
-    this.setAttribute('thickness', thicknessAttribute)
+    this.setAttribute('diameter', thicknessAttribute)   // m
     this.setAttribute('strands', new BufferAttribute(new Float32Array(tetherPointStrands), 1))
     this.setIndex(tetherIndices)
     // this.setAttribute( 'position', new THREE.Float32BufferAttribute( tetherPoints, 3 ) );
