@@ -120,7 +120,7 @@ Where it is used:
 |---|---|
 | Screws | PixelLOD per screw: three thread levels sampled per turn to a chord-error tolerance, then a cylinder; geometry shared by the left/right pair and built by Web Workers (`ScrewGeometryBuilder.js`); only segments large enough to draw get a model (`modelRange`) |
 | Adaptive nut grapplers | Two BatchedMeshes per nut (pads, hardware) inside PixelLODs; placement skipped when not drawn |
-| Lift fans | Instanced per chunk of 32 fans with full, low-poly and hidden levels |
+| Lift fans | Instanced per chunk of 32 fans with full and low-poly levels; below 1.5 px each fan fades out by its on-screen size (`src/scene/SubPixelFade.js`) instead of popping in, and stops drawing at 0.3 px |
 | Brackets | InstancedProxyPool with full and low-detail (4-segment arcs) shapes |
 | Transit ring segments | Instanced layers (`src/ring/RingInstancedLayer.js`) |
 | Planet | Screen-space texel error, skirts for crack-free LOD transitions |

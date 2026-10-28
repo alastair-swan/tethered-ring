@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { CatmullRomSuperCurve3 } from '../curves/SuperCurves.js'
 import { VirtualObject } from './VirtualObject.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
+import { SubPixelFade, withSubPixelFade } from '../scene/SubPixelFade.js'
 
 // Lift fans per instanced chunk (each chunk picks its own level of detail).
 const LIFT_FAN_CHUNK = 32
@@ -218,6 +219,15 @@ export class massDriverTubeModel {
     }
 
     const fanDiameter = this.radius * 3
+    // Fans fade in by on-screen size rather than popping in at the LOD threshold (see SubPixelFade).
+    if (this.liftFanFadeDiameter !== fanDiameter) {
+      this.liftFanFadeDiameter = fanDiameter
+      this.liftFanOpaqueMaterial = withSubPixelFade(this.massDriverTubeMaterial3.clone(), { size: fanDiameter })
+      this.liftFanDiskMaterial = withSubPixelFade(this.massDriverTubeMaterial4.clone(), { size: fanDiameter })
+      ;[this.liftFanOpaqueMaterial, this.liftFanDiskMaterial].forEach(m => { m.userData.shared = true })
+    }
+    const opaque = this.liftFanOpaqueMaterial
+    const disk = this.liftFanDiskMaterial
     const chunk = new THREE.Vector3()
     for (let start = 0; start < centres.length; start += LIFT_FAN_CHUNK) {
       const end = Math.min(centres.length, start + LIFT_FAN_CHUNK)
@@ -242,8 +252,8 @@ export class massDriverTubeModel {
       const lod = new PixelLOD(fanDiameter, { extent: extent + fanDiameter })
       lod.name = 'liftFans'
       lod.position.copy(chunk)
-      lod.addLevel(24, build([['hub', this.liftFanHubGeometry, this.massDriverTubeMaterial3], ['disk', this.liftFanDiskGeometry, this.massDriverTubeMaterial4], ['pylon', this.liftFanPylonGeometry, this.massDriverTubeMaterial3]]))
-      lod.addLevel(1.5, build([['hub', this.liftFanHubGeometryLow, this.massDriverTubeMaterial3], ['disk', this.liftFanDiskGeometryLow, this.massDriverTubeMaterial4], ['pylon', this.liftFanPylonGeometryLow, this.massDriverTubeMaterial3]]))
+      lod.addLevel(24, build([['hub', this.liftFanHubGeometry, opaque], ['disk', this.liftFanDiskGeometry, disk], ['pylon', this.liftFanPylonGeometry, opaque]]))
+      lod.addLevel(SubPixelFade.minimumPixels(), build([['hub', this.liftFanHubGeometryLow, opaque], ['disk', this.liftFanDiskGeometryLow, disk], ['pylon', this.liftFanPylonGeometryLow, opaque]]))
       segmentGroup.add(lod)
     }
   }

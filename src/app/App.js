@@ -12,6 +12,7 @@ import { SkyPass } from '../scene/SkyPass.js'
 import { Overlays } from '../scene/Overlays.js'
 import { backgroundScene } from '../scene/backgroundScene.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
+import { SubPixelFade } from '../scene/SubPixelFade.js'
 import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
 import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
@@ -584,6 +585,7 @@ export class App {
     PixelLOD.beginFrame(renderer.info.render.frame)
     InstancedProxyPool.syncAll(this.camera3d, PixelLOD.viewportHeight)
     this.ring.updateScreenScale(this.camera3d, PixelLOD.viewportHeight)
+    SubPixelFade.update(this.camera3d, PixelLOD.viewportHeight)
     // Lets the transit system keep objects until they are sub-pixel instead of using fixed ranges.
     this.transitSystem.pixelsPerRadian = this.camera3d.projectionMatrix.elements[5] * PixelLOD.viewportHeight / 2
     if (this.launchSystem) this.launchSystem.pixelsPerRadian = this.transitSystem.pixelsPerRadian
