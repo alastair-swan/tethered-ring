@@ -342,9 +342,10 @@ export function createParameterDefinitions() {
   launcherMassDriverTubeInnerRadius: {value: 4.5, units: 'm', autoMap: true, min: 1, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
   exagerateNonElevatedTubeFactor: {value: 1, units: '', autoMap: true, min: 1, max: 10, onChange: 'updateLauncher', folder: 'Launcher'},
   // Where the tube is under the sea it is buoyant, held down by cables to the sea floor in inverted Vs (to resist currents).
-  launcherMassDriverMooringSpacing: {value: 200, units: 'm', autoMap: true, min: 20, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
+  launcherMassDriverMooringSpacing: {value: 1000, units: 'm', autoMap: true, min: 20, max: 5000, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverMooringCableRadius: {value: 0.1, units: 'm', autoMap: true, min: 0.01, max: 1, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverMooringSpread: {value: 1, units: '', autoMap: true, min: 0, max: 3, onChange: 'updateLauncher', folder: 'Launcher'},   // sideways distance of each anchor per metre of depth below the tube (1 = 45 degree legs)
+  launcherMassDriverMooringCatenary: {value: 2, units: '', autoMap: true, min: 0.3, max: 20, onChange: 'updateLauncher', folder: 'Launcher'},   // catenary constant of each leg as a multiple of its length (larger = straighter)
   launcherMassDriverTubeLinerThickness: {value: 0.002, units: 'm', autoMap: true, min: 1, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverTubeWallThickness: {value: 0.01, units: 'm', autoMap: true, min: 0, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverTubeMaterial0Density: {value: 7930, units: "kg/m3", autoMap: true, min: 0, max: 20000, onChange: 'updateLauncher', folder: 'Launcher'},

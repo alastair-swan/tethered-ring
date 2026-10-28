@@ -178,6 +178,11 @@ export class Planet {
     this.lod.setWaterVisible(visible)
   }
 
+  // 1 while the camera is under the sea surface: the ground below sea level is drawn as sea floor.
+  setSeafloorView(amount) {
+    this.lod.setSeafloorView(amount)
+  }
+
   setAtmosphereVisible(visible) {
     this.atmosphere.visible = !!visible;
   }

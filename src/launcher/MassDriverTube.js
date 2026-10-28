@@ -77,6 +77,7 @@ export class massDriverTubeModel {
     this.mooringSpacing = dParamWithUnits['launcherMassDriverMooringSpacing'].value
     this.mooringCableRadius = dParamWithUnits['launcherMassDriverMooringCableRadius'].value
     this.mooringSpread = dParamWithUnits['launcherMassDriverMooringSpread'].value
+    this.mooringCatenary = dParamWithUnits['launcherMassDriverMooringCatenary'].value
   }
   
   createModel(curve, segmentIndex) {
@@ -208,6 +209,7 @@ export class massDriverTubeModel {
       getSampler: () => this.sampleTerrainHeight,
       cableRadius: this.mooringCableRadius,
       spread: this.mooringSpread,
+      shape: this.mooringCatenary,
       extent: tubeSegmentLength / 2,
     })
     segmentGroup.add(cables.root)

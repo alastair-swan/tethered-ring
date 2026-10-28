@@ -234,6 +234,8 @@ export class App {
     if (!this.enableLaunchSystem) return
     const r = this.ring
     const n = this.nonGUIParams
+    // The tube's mooring cables fade with distance like the tethers do.
+    MooringCables.setLineMaterial(this.ring.tetherMaterial)
     this.launchSystem = new Launcher.launcher(this.d, this.clock.time, this.planetCoordSys, this.planetSpec, r.refCoordSys, r.mainRingCurve, r.crv, this.overlays.xyChart, null, this.specs, false, '')
     this.launchSystem.setTerrainSampler((lat, lon) => this.planet.sampleTerrainHeight(lat, lon))
     this.launchSystem.drawLaunchTrajectoryLine(this.d, this.planetCoordSys)
@@ -582,6 +584,7 @@ export class App {
     // The water surface follows the camera; in the water (but not inside the evacuated tube) the view
     // switches to the underwater look (see render()).
     this.ocean?.update(this.camera3d, (point) => this.launchSystem?.isInsideTube(point) ?? false)
+    if (this.ocean) this.planet.setSeafloorView(this.ocean.enabled && this.ocean.cameraUnderSurface ? 1 : 0)
     MooringCables.refreshSome()
     this.lighting.followCameraTarget(this.camera.controls.target)
 
