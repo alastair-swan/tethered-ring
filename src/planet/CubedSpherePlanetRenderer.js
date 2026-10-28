@@ -2,7 +2,10 @@ import * as THREE from 'three';
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 
 // =============================================================================
-// planet2.js - Performant cubed-sphere quadtree LOD planet renderer.
+// CubedSpherePlanetRenderer - cubed-sphere quadtree LOD planet renderer that
+// streams KTX2 colour tiles and u16 height tiles from assets/<name>/.
+//
+// Most code should use the Planet wrapper (Planet.js) rather than this class.
 //
 // Design notes
 // ------------
@@ -12,25 +15,71 @@ import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 // Therefore the runtime mapping is intentionally DIRECT and self-consistent:
 //
 //   * asset face name        == runtime face name           (no +Z/-Z swap)
+//   * asset tile x/y         == runtime tile x/y            (no flip)
 //   * geometry UV            == (u01, v01) within the tile   (no per-vertex flip)
 //   * height sample location == (u01, v01) within the tile   (same as UV)
 //   * KTX2 textures use flipY = false (GPU-compressed default), which matches the
 //     generator's row order (image row 0 == tile-local v == 0).
 //
 // Any whole-planet alignment with the surrounding app coordinate frame is a single
-// rigid rotation applied to the planetMeshes group (PLANET_YAW), never a per-tile
+// rigid rotation applied to the surface group (PLANET_YAW), never a per-tile
 // transform. This keeps multi-tile (LOD >= 1) layouts from mirroring/scrambling.
+//
+// Floating-point precision
+// ------------------------
+// Tile vertices are stored relative to the tile's own centre and the tile mesh
+// is positioned at that centre. three.js composes modelViewMatrix in float64 on
+// the CPU, so vertices close to the camera keep sub-millimetre precision instead
+// of being quantised to ~0.5 m at planet scale (6.4e6 m in float32). The
+// procedural surface-detail noise follows the same idea: it is evaluated on the
+// tile-local position plus a per-tile, per-frequency offset that is reduced
+// modulo the (periodic) noise lattice on the CPU in float64.
 // =============================================================================
+
+// Whole-planet yaw used to align the baked longitude frame (lon = atan2(z, x))
+// with the surrounding application's longitude system. Apply it to the group
+// passed in as `options.group` (Planet.js does this).
+export const PLANET_YAW = -Math.PI / 2;
+
+const FACE_INDEX = { '+X': 0, '-X': 1, '+Y': 2, '-Y': 3, '+Z': 4, '-Z': 5 };
+const TWO_POW_20 = 1048576;
+
+// Allocation-free numeric tile key (face index, lod <= 31, x/y < 2^20).
+function tileNumKey(faceIndex, lod, x, y) {
+  return ((faceIndex * 32 + lod) * TWO_POW_20 + x) * TWO_POW_20 + y;
+}
+
+// Surface-detail noise. The hash is periodic with DETAIL_PERIOD lattice cells so
+// a per-tile offset can be reduced modulo the period without creating seams.
+// Each distinct noise frequency (cycles/metre) gets its own offset uniform.
+const DETAIL_PERIOD = 1024;
+const DETAIL_FREQS = [
+  0.0012, 0.0012 * 2.03, 0.0012 * 4.11, // 0-2 macro tone fBm octaves
+  0.035, 0.035 * 2.03, 0.035 * 4.11,    // 3-5 regolith fBm octaves
+  0.075,                                // 6   pits
+  0.0018, 0.012, 0.11, 0.65,            // 7-10 normal-perturbation bands
+];
+
+function positiveMod(v, m) {
+  const r = v % m;
+  return r < 0 ? r + m : r;
+}
+
+function byPriorityDesc(a, b) {
+  return b.priority - a.priority;
+}
+
+const DEFAULT_TILE_META = Object.freeze({
+  roughness: 0.15,
+  landFraction: 0.5,
+  width: 64,
+  height: 64,
+});
 
 const FACE_NAMES = ['+X', '-X', '+Y', '-Y', '+Z', '-Z'];
 // WGS84 first-eccentricity squared, used to convert geocentric<->geodetic latitude
 // so terrain maps (geodetic) align with the cubed-sphere geometry.
 const WGS84_E2 = 2 / 298.257223563 - 1 / (298.257223563 * 298.257223563);
-
-// Whole-planet yaw used to align the baked longitude frame (lon = atan2(z, x))
-// with the surrounding application's longitude system. This is a global rigid
-// rotation only; it never affects per-tile correctness.
-const PLANET_YAW = -Math.PI / 2;
 
 const DEG2RAD = Math.PI / 180;
 
@@ -50,8 +99,8 @@ function smoothstep(min, max, v) {
 }
 
 // Maps a normalized value to a debug-friendly heatmap color (blue -> red).
-function colorRamp01(v) {
-  return new THREE.Color().setHSL((1 - clamp01(v)) * 0.66, 1, 0.5);
+function colorRamp01(v, out) {
+  return out.setHSL((1 - clamp01(v)) * 0.66, 1, 0.5);
 }
 
 // Builds a stable quadtree tile key in face/lod/x/y format.
@@ -125,75 +174,6 @@ function decodeHeightU16(sample, minMeters, maxMeters) {
   return minMeters + (sample / 65535) * (maxMeters - minMeters);
 }
 
-// -----------------------------------------------------------------------------
-// PriorityQueue - binary max-heap keyed by numeric priority.
-// -----------------------------------------------------------------------------
-
-class PriorityQueue {
-  constructor() {
-    this.items = [];
-  }
-
-  get size() {
-    return this.items.length;
-  }
-
-  push(item, priority) {
-    const node = { item, priority };
-    this.items.push(node);
-    this._bubbleUp(this.items.length - 1);
-  }
-
-  pop() {
-    if (this.items.length === 0) return null;
-    const top = this.items[0];
-    const end = this.items.pop();
-    if (this.items.length > 0 && end) {
-      this.items[0] = end;
-      this._sinkDown(0);
-    }
-    return top.item;
-  }
-
-  clear() {
-    this.items.length = 0;
-  }
-
-  _bubbleUp(n) {
-    const element = this.items[n];
-    while (n > 0) {
-      const parentN = (n - 1) >> 1;
-      const parent = this.items[parentN];
-      if (element.priority <= parent.priority) break;
-      this.items[parentN] = element;
-      this.items[n] = parent;
-      n = parentN;
-    }
-  }
-
-  _sinkDown(n) {
-    const length = this.items.length;
-    const element = this.items[n];
-    while (true) {
-      const leftN = 2 * n + 1;
-      const rightN = 2 * n + 2;
-      let swap = null;
-      let best = element.priority;
-
-      if (leftN < length && this.items[leftN].priority > best) {
-        swap = leftN;
-        best = this.items[leftN].priority;
-      }
-      if (rightN < length && this.items[rightN].priority > best) {
-        swap = rightN;
-      }
-      if (swap === null) break;
-      this.items[n] = this.items[swap];
-      this.items[swap] = element;
-      n = swap;
-    }
-  }
-}
 
 // -----------------------------------------------------------------------------
 // IndexBufferCache - shared CPU-side triangle index arrays.
@@ -255,18 +235,25 @@ class IndexBufferCache {
 class Tile {
   constructor(face, lod, x, y, parent = null) {
     this.face = face;
+    this.faceIndex = FACE_INDEX[face];
     this.lod = lod;
     this.x = x;
     this.y = y;
     this.id = tileKey(face, lod, x, y);
+    this.numKey = tileNumKey(this.faceIndex, lod, x, y);
     this.parent = parent;
     this.children = null;
+    // Set once the tile has been evicted/disposed. A disposed tile must never be
+    // drawn, linked into the tree, or receive data from an in-flight load.
+    this.disposed = false;
 
     this.mesh = null;
     this.material = null;
     this.geometry = null;
 
     this.visible = false;
+    this.visibleFrame = -1;
+    this.wantedFrame = -1;
     this.colorReady = false;
     this.heightReady = false;
     this.loading = false;
@@ -277,8 +264,9 @@ class Tile {
     this.loadStartedAtMs = 0;
     this.debugSourceKey = 'base';
     // Bounded retry bookkeeping: a transient color/height failure leaves the tile
-    // un-ready so it is re-enqueued (after a backoff delay) up to maxLoadAttempts,
-    // instead of permanently showing the flat light-blue fallback material.
+    // un-ready so it is wanted again (after a backoff delay) up to maxLoadAttempts,
+    // instead of permanently showing the flat fallback material. A stream that
+    // already succeeded is kept and not fetched again.
     this.loadAttempts = 0;
     this.retryScheduled = false;
     this.retryTimer = null;
@@ -295,6 +283,10 @@ class Tile {
     this.refinementActive = false;
 
     this.meta = null;
+    // Caches keyed on the renderer's manifestVersion.
+    this.cacheVersion = -1;
+    this.hasChildAssets = false;
+    this.boost = 1;
 
     // Per-edge coarse-neighbor step [T,B,L,R]. 1 = same/finer (no morph); 2^d = the
     // neighbor is d LODs coarser, so collapse all but every (2^d)th boundary vertex.
@@ -302,12 +294,18 @@ class Tile {
     // Packed key of edgeSteps used for cheap change detection / rebuild trigger.
     this.edgeMask = 0;
 
-    // Cached geometric bounds (local planet space).
+    // Cached geometric bounds (planet-local space). `center` is also the tile
+    // mesh's position: vertices are stored relative to it.
     this.center = new THREE.Vector3();
+    this.centerDir = new THREE.Vector3(0, 1, 0);
     this.centerNormal = new THREE.Vector3(0, 1, 0);
     this.worldCenter = new THREE.Vector3();
     this.boundingRadius = 1;
+    this.angularRadius = 0;
     this.boundsValid = false;
+
+    // Per-frequency surface-detail noise offsets (only with surfaceDetail).
+    this.detailOffsets = null;
   }
 
   // A tile is "ready" once both its color and height streams have resolved.
@@ -320,7 +318,18 @@ class Tile {
 // CubedSpherePlanetRenderer - the quadtree selector / streamer / renderer core.
 // -----------------------------------------------------------------------------
 
-class CubedSpherePlanetRenderer {
+export class CubedSpherePlanetRenderer {
+  /**
+   * @param {object} options
+   * @param {THREE.Group} options.group  Group that receives the tile meshes.
+   * @param {THREE.WebGLRenderer} [options.renderer]  Used for KTX2 support
+   *   detection and the drawing-buffer height for screen-space error.
+   * @param {object} options.planetSpec  Needs `ellipsoid: { a, f }`.
+   * @param {Array<{name, manifestUrl, colorBasePath, heightBasePath}>} [options.assets]
+   *   Ordered asset stack (first = base, later = overlays). Empty = no streaming,
+   *   flat-colour procedural sphere.
+   * See Planet.js for the remaining (camelCase) options.
+   */
   constructor(options) {
     this.group = options.group;
     this.renderer = options.renderer || null;
@@ -328,30 +337,19 @@ class CubedSpherePlanetRenderer {
     const flattening = this.planetSpec?.ellipsoid?.f || 0;
     this.planetE2 = 2 * flattening - flattening * flattening;
 
-    this.assets = Array.isArray(options.assets) && options.assets.length > 0
-      ? options.assets
-      : [{
-          name: 'earth',
-          manifestUrl: options.manifestUrl,
-          colorBasePath: options.colorBasePath,
-          heightBasePath: options.heightBasePath,
-        }];
-    const baseAsset = this.assets[0] || {
-      name: 'earth',
-      manifestUrl: options.manifestUrl,
-      colorBasePath: options.colorBasePath,
-      heightBasePath: options.heightBasePath,
-    };
-    this.manifestUrl = baseAsset.manifestUrl;
-    this.colorBasePath = baseAsset.colorBasePath;
-    this.heightBasePath = baseAsset.heightBasePath;
-
+    this.assets = Array.isArray(options.assets) ? options.assets.filter((a) => a && a.manifestUrl) : [];
+    this.hasAssets = this.assets.length > 0;
+    const baseAsset = this.assets[0] || null;
+    this.manifestUrl = baseAsset?.manifestUrl ?? null;
+    this.colorBasePath = baseAsset?.colorBasePath ?? null;
+    this.heightBasePath = baseAsset?.heightBasePath ?? null;
     // Assets after the first one are overlaid in order, each using its own
     // manifest and tile folders.
     this.overlays = this.assets.slice(1);
 
-    this.segments = Math.max(2, options.segments ?? 24);
-    this.maxConcurrentLoads = Math.max(1, options.maxConcurrentLoads ?? 8);
+    this.enabled = true;
+    this.segments = Math.max(2, options.tileSegments ?? 24);
+    this.maxConcurrentLoads = Math.max(1, options.maxConcurrentTileLoads ?? 8);
     // How many times a tile whose color/height stream errors out is retried
     // before we give up and accept the flat fallback (avoids infinite spin on a
     // genuinely missing/broken tile while surviving transient failures such as
@@ -361,18 +359,16 @@ class CubedSpherePlanetRenderer {
     this.maxLoadAttempts = Math.max(1, options.maxLoadAttempts ?? 6);
     this.retryBaseDelayMs = Math.max(1, options.retryBaseDelayMs ?? 200);
     this.retryMaxDelayMs = Math.max(this.retryBaseDelayMs, options.retryMaxDelayMs ?? 4000);
-    // How many times a tile whose color/height stream errors out is retried
-    // before we give up and accept the flat fallback (avoids infinite spin on a
-    // genuinely missing/broken tile while surviving transient failures).
-    this.maxLoadAttempts = Math.max(1, options.maxLoadAttempts ?? 4);
-    this.maxTileCount = options.maxTileCount ?? 320;
-    this.maxGpuBytes = options.maxGpuBytes ?? 700 * 1024 * 1024;
+    this.maxTileCount = options.maxCachedTiles ?? 320;
+    this.maxGpuBytes = options.maxTileGpuBytes ?? 700 * 1024 * 1024;
     this.rootLod = 0;
-    this.maxAvailableLod = options.maxAvailableLod ?? 6;
+    // Without assets the sphere is still refined geometrically (flat colour) so
+    // the silhouette stays smooth close up.
+    this.maxAvailableLod = options.maxAvailableTileLod ?? 6;
 
     // Screen-space-error refine threshold, in pixels, with hysteresis so tiles
     // do not flicker between expand/collapse at the boundary.
-    this.sseThreshold = options.sseThreshold ?? 3.5;
+    this.sseThreshold = options.tileSseThreshold ?? 3.5;
     this.hysteresisExpand = 1.25;
     this.hysteresisCollapse = 0.75;
 
@@ -384,7 +380,9 @@ class CubedSpherePlanetRenderer {
     this.receiveSurfaceShadows = options.receiveSurfaceShadows === true;
     this.textureAnisotropy = Math.max(1, options.textureAnisotropy ?? 4);
     this.displacementScaleMultiplier = Math.max(0, options.displacementScaleMultiplier ?? 1);
-    this.enableStartupChart = options.enableStartupChart === true;
+    // Startup tracing (console logs, resource-timing scans and the ASCII chart)
+    // is debugging aid only and costs time per tile, so it is opt-in.
+    this.traceEnabled = options.startupChart === true;
     this.surfaceDetail = options.surfaceDetail?.enabled ? {
       nearMeters: options.surfaceDetail.nearMeters ?? 1500,
       farMeters: options.surfaceDetail.farMeters ?? 90000,
@@ -393,9 +391,7 @@ class CubedSpherePlanetRenderer {
       roughnessStrength: options.surfaceDetail.roughnessStrength ?? 0.12,
     } : null;
 
-    this.locationInterests = (options.locationInterests || [
-      { name: 'Mauna Kea', lat: 19.8207, lon: -155.4681, radiusKm: 80, lodBoost: 2 },
-    ]).map((loc) => {
+    this.locationInterests = (options.locationInterests || []).map((loc) => {
       const dir = latLonToDirection(
         loc.lat * DEG2RAD, loc.lon * DEG2RAD, new THREE.Vector3(), this.planetE2);
       return { ...loc, dir, lodBoost: loc.lodBoost ?? 1, radiusKm: loc.radiusKm ?? 80 };
@@ -408,18 +404,22 @@ class CubedSpherePlanetRenderer {
 
     // Caches and scheduling.
     this.indexBufferCache = new IndexBufferCache();
-    this.priorityQueue = new PriorityQueue();
-    this.queuedSet = new Set();
+    // Tiles that want a load this frame, with priorities computed this frame.
+    // Rebuilt every update, so stale priorities and no-longer-wanted tiles
+    // never get loaded ahead of what the camera currently needs.
+    this.wantedTiles = [];
     this.inflightLoads = 0;
 
-    this.tiles = new Map();
-    this.visibleTiles = new Set();
+    this.tiles = new Map(); // numKey -> Tile
+    this.visibleList = [];
+    this._evictCandidates = [];
+    this._evictStack = [];
 
     this.frame = 0;
     this.lastTimeSec = performance.now() * 0.001;
     this.lastCameraPos = new THREE.Vector3();
+    this.hasLastCameraPos = false;
     this.cameraSpeedMps = 0;
-    this.viewportHeight = (typeof window !== 'undefined') ? window.innerHeight : 1080;
 
     // Debug.
     this.debugMode = 'none';
@@ -459,26 +459,39 @@ class CubedSpherePlanetRenderer {
     this.frustum = new THREE.Frustum();
     this.viewProjection = new THREE.Matrix4();
     this.worldSphere = new THREE.Sphere(new THREE.Vector3(), 1);
-    this.planetWorldCenter = new THREE.Vector3();
+    this._groupInverse = new THREE.Matrix4();
+    this._camWorld = new THREE.Vector3();
+    this._camLocal = new THREE.Vector3();
+    this._camDirLocal = new THREE.Vector3(0, 1, 0);
+    this._camDistLocal = 0;
+    this._groupScale = 1;
+    this._horizonAngle = Math.PI;
+    this._peakAngle = 0;
+    this._sseScale = 1;
     this._tmpDir = new THREE.Vector3();
     this._tmpA = new THREE.Vector3();
     this._tmpB = new THREE.Vector3();
-    this._tmpCamDir = new THREE.Vector3();
-    this._tmpTileDir = new THREE.Vector3();
     this._tmpMorphDir = new THREE.Vector3();
     this._tmpFaceUV = { face: '+X', u: 0, v: 0 };
+    this._tmpV2 = new THREE.Vector2();
+    this._tmpColor = new THREE.Color();
+    this._steps = [1, 1, 1, 1];
 
     // Shared base material; per-tile clones receive the streamed color map.
+    // Material.copy carries side/transparent/opacity/depthWrite, so settings
+    // applied to the base material reach every future tile.
     this.baseMaterial = new THREE.MeshStandardMaterial({
       color: options.surfaceColor ?? 0x8aa7c2,
       roughness: 1,
       metalness: 0,
       side: options.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
     });
-    this._configureSurfaceDetail(this.baseMaterial);
+    this.opacity = 1;
 
     this.manifest = null;
     this.manifestTileMap = new Map();
+    // Bumped whenever manifest data changes, invalidating per-tile caches.
+    this.manifestVersion = 0;
     // Maps a tile key to the asset layer that owns it (color/height base paths).
     // Only overlay-provided tiles are stored; base tiles fall back to
     // this.colorBasePath / this.heightBasePath, so this stays empty when no
@@ -486,31 +499,39 @@ class CubedSpherePlanetRenderer {
     this.tileSourceMap = new Map();
     // Loads are gated until the manifest resolves so every tile reads its real
     // dimensions/meta (roots are built synchronously before the async fetch).
-    this.manifestReady = false;
+    this.manifestReady = !this.hasAssets;
     // Global height decode range (meters). All height tiles share one range, so it
     // lives at the top of the manifest rather than being repeated per tile.
-    this.heightMinMeters = -200;
-    this.heightMaxMeters = 8500;
+    this.heightMinMeters = this.hasAssets ? -200 : 0;
+    this.heightMaxMeters = this.hasAssets ? 8500 : 0;
     this.startupTimeline = new Map();
     this.startupManifestEvents = [];
     this.selectionRoots = [];
     this.selectionRootIds = new Set();
 
-    this.ktx2Loader = CubedSpherePlanetRenderer._getSharedKTX2Loader(this.renderer);
+    this.ktx2Loader = this.hasAssets ? CubedSpherePlanetRenderer._getSharedKTX2Loader(this.renderer) : null;
 
+    if (options.opacity != null) this.setOpacity(options.opacity);
     this._initRoots();
-    this._loadManifest();
+    if (this.hasAssets) this._loadManifest();
+    if (options.debugMode && options.debugMode !== 'none') this.setDebugMode(options.debugMode);
   }
 
-  _markStartupTrace(key, value = null) {
+  // Records the first occurrence of a startup milestone (cheap; logs only when
+  // tracing is enabled).
+  _traceFirst(key, tile = null, tileIdKey = null) {
     const trace = this.debugStats.startupTrace;
-    if (!trace || trace[key] != null) return;
-    const elapsedMs = value != null ? value : performance.now() - trace.t0Ms;
+    if (trace[key] != null) return;
+    const elapsedMs = performance.now() - trace.t0Ms;
     trace[key] = elapsedMs;
-    console.log(`[planet2][startup] ${key} +${elapsedMs.toFixed(1)}ms`);
+    if (tile && tileIdKey) trace[tileIdKey] = tile.id;
+    if (this.traceEnabled) {
+      console.log(`[planet] [startup] ${key} +${elapsedMs.toFixed(1)}ms${tile ? ` tile=${tile.id}` : ''}`);
+    }
   }
 
   _recordStartupTileEvent(tile, kind, elapsedMs = null) {
+    if (!this.traceEnabled) return;
     if (!tile || tile.lod == null || tile.lod > 1) return;
     const trace = this.debugStats.startupTrace;
     const ts = elapsedMs != null ? elapsedMs : (performance.now() - trace.t0Ms);
@@ -532,10 +553,152 @@ class CubedSpherePlanetRenderer {
   }
 
   _recordStartupManifestEvent(kind, elapsedMs = null) {
+    if (!this.traceEnabled) return;
     const trace = this.debugStats.startupTrace;
     const ts = elapsedMs != null ? elapsedMs : (performance.now() - trace.t0Ms);
     this.startupManifestEvents.push({ kind, ms: ts });
     trace.lastEventMs = ts;
+  }
+
+  // Creates / returns a single shared KTX2 loader and runs detectSupport once.
+  static _getSharedKTX2Loader(renderer) {
+    if (!CubedSpherePlanetRenderer._sharedLoader) {
+      const base = import.meta.env?.BASE_URL ?? '/';
+      CubedSpherePlanetRenderer._sharedLoader = new KTX2Loader().setTranscoderPath(`${base}basis/`);
+    }
+    if (renderer && !CubedSpherePlanetRenderer._supportDetected) {
+      CubedSpherePlanetRenderer._sharedLoader.detectSupport(renderer);
+      CubedSpherePlanetRenderer._supportDetected = true;
+    } else if (!renderer && !CubedSpherePlanetRenderer._supportDetected) {
+      console.warn('[planet] renderer missing; KTX2 detectSupport(renderer) deferred.');
+    }
+    return CubedSpherePlanetRenderer._sharedLoader;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Manifest + roots
+  // ---------------------------------------------------------------------------
+
+  async _loadManifest() {
+    const trace = this.debugStats.startupTrace;
+    try {
+      trace.manifestFetchStartMs = performance.now() - trace.t0Ms;
+      this._recordStartupManifestEvent('manifestFetch', trace.manifestFetchStartMs);
+      // Tiles and manifests are immutable build outputs: use normal HTTP caching.
+      const response = await fetch(this.manifestUrl);
+      if (!response.ok) throw new Error(`manifest fetch ${response.status}`);
+      this.manifest = await response.json();
+      this.maxAvailableLod = this.manifest.maxAvailableLod ?? this.maxAvailableLod;
+      this.heightMinMeters = this.manifest.minHeight ?? this.heightMinMeters;
+      this.heightMaxMeters = this.manifest.maxHeight ?? this.heightMaxMeters;
+      if (this.manifest.tiles) {
+        for (const [k, v] of Object.entries(this.manifest.tiles)) {
+          this.manifestTileMap.set(k, v);
+        }
+      }
+      // Merge any overlay layers on top of the base. Overlay tiles override the
+      // base tile at the same key and remember which folder to stream from.
+      await this._loadOverlays();
+      this._rebuildSelectionRoots();
+    } catch (error) {
+      console.warn('[planet] manifest load failed, using defaults', error);
+    } finally {
+      // Tiles created before the manifest arrived (the six roots, built
+      // synchronously in the constructor) cached the default meta. Refresh them
+      // now so their real width/height (e.g. 128) is used for size validation.
+      this.manifestVersion += 1;
+      for (const tile of this.tiles.values()) {
+        tile.meta = this._getTileMeta(tile);
+      }
+      // Allow tile loads to proceed. On failure we run with default meta rather
+      // than stalling the globe forever.
+      trace.manifestFetchEndMs = performance.now() - trace.t0Ms;
+      this._recordStartupManifestEvent('manifestReady', trace.manifestFetchEndMs);
+      this.manifestReady = true;
+      this._traceFirst('manifestReadyMs');
+    }
+  }
+
+  // Fetch each overlay manifest and merge its tiles over the base. An overlay
+  // entry wins over a same-key base entry, extends maxAvailableLod, and records
+  // its color/height folders in tileSourceMap so _loadColor/_loadHeight stream
+  // the overriding tiles from the overlay instead of the base asset root.
+  async _loadOverlays() {
+    for (let overlayIndex = 0; overlayIndex < this.overlays.length; overlayIndex++) {
+      const overlay = this.overlays[overlayIndex];
+      const sourceStats = this._getSourceStats(overlay.name);
+      try {
+        const overlayFetchStartMs = performance.now() - this.debugStats.startupTrace.t0Ms;
+        this._recordStartupManifestEvent('overlayFetch', overlayFetchStartMs);
+        const response = await fetch(overlay.manifestUrl);
+        if (!response.ok) {
+          throw new Error(`overlay manifest fetch ${response.status} for "${overlay.name}"`);
+        }
+        const manifestStart = performance.now();
+        const data = await response.json();
+        const manifestMs = performance.now() - manifestStart;
+
+        // Overlays must share the base height decode range: all height tiles are
+        // sampled into one global [minHeight, maxHeight] u16 space, so a mismatch
+        // would misdecode the overlay's displacement. Warn rather than silently
+        // corrupt the terrain.
+        const oMin = data.minHeight;
+        const oMax = data.maxHeight;
+        if ((oMin != null && oMin !== this.heightMinMeters) ||
+            (oMax != null && oMax !== this.heightMaxMeters)) {
+          console.warn(`[planet] overlay "${overlay.name}" height range ` +
+            `[${oMin}, ${oMax}] differs from base [${this.heightMinMeters}, ` +
+            `${this.heightMaxMeters}]; terrain may not match at the seam.`);
+        }
+
+        if (data.maxAvailableLod != null) {
+          this.maxAvailableLod = Math.max(this.maxAvailableLod, data.maxAvailableLod);
+        }
+
+        const source = {
+          name: overlay.name,
+          colorBasePath: overlay.colorBasePath,
+          heightBasePath: overlay.heightBasePath,
+          layerIndex: overlayIndex + 1,
+        };
+        let count = 0;
+        const mergeStart = performance.now();
+        if (data.tiles) {
+          for (const [k, v] of Object.entries(data.tiles)) {
+            this.manifestTileMap.set(k, v);
+            this.tileSourceMap.set(k, source);
+            count += 1;
+          }
+        }
+        const mergeMs = performance.now() - mergeStart;
+        this._recordStartupManifestEvent('overlayReady', performance.now() - this.debugStats.startupTrace.t0Ms);
+        this.debugStats.overlayManifests += 1;
+        this.debugStats.overlayTilesMerged += count;
+        this.debugStats.overlayManifestMs += manifestMs;
+        this.debugStats.overlayMergeMs += mergeMs;
+        sourceStats.manifestTilesMerged += count;
+        sourceStats.manifestFetchMs += manifestMs;
+        sourceStats.manifestMergeMs += mergeMs;
+        if (this.traceEnabled) {
+          console.log(`[planet] overlay "${overlay.name}" merged ${count} tiles in ` +
+            `${manifestMs.toFixed(1)}ms fetch + ${mergeMs.toFixed(1)}ms merge`);
+        }
+      } catch (error) {
+        console.warn(`[planet] overlay "${overlay.name}" load failed, skipping`, error);
+      }
+    }
+  }
+
+  _flushStartupChartIfReady() {
+    if (!this.traceEnabled) return;
+    const trace = this.debugStats.startupTrace;
+    if (trace.chartPrinted) return;
+    if (trace.firstVisibleReadyMs == null) return;
+    const nowMs = performance.now() - trace.t0Ms;
+    const quietMs = trace.lastEventMs != null ? nowMs - trace.lastEventMs : 0;
+    if (quietMs < 2000) return;
+    trace.chartPrinted = true;
+    console.log(this._renderStartupChart());
   }
 
   _renderStartupChart() {
@@ -656,144 +819,6 @@ class CubedSpherePlanetRenderer {
     return lines.join('\n');
   }
 
-  _flushStartupChartIfReady() {
-    if (!this.enableStartupChart) return;
-    const trace = this.debugStats.startupTrace;
-    if (trace.chartPrinted) return;
-    if (trace.firstVisibleReadyMs == null) return;
-    const nowMs = performance.now() - trace.t0Ms;
-    const quietMs = trace.lastEventMs != null ? nowMs - trace.lastEventMs : 0;
-    if (quietMs < 2000) return;
-    trace.chartPrinted = true;
-    const chart = this._renderStartupChart();
-    console.log(chart);
-  }
-
-  // Creates / returns a single shared KTX2 loader and runs detectSupport once.
-  static _getSharedKTX2Loader(renderer) {
-    if (!CubedSpherePlanetRenderer._sharedLoader) {
-      CubedSpherePlanetRenderer._sharedLoader = new KTX2Loader().setTranscoderPath('/basis/');
-    }
-    if (renderer && !CubedSpherePlanetRenderer._supportDetected) {
-      CubedSpherePlanetRenderer._sharedLoader.detectSupport(renderer);
-      CubedSpherePlanetRenderer._supportDetected = true;
-    }
-    return CubedSpherePlanetRenderer._sharedLoader;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Manifest + roots
-  // ---------------------------------------------------------------------------
-
-  async _loadManifest() {
-    try {
-      this.debugStats.startupTrace.manifestFetchStartMs = performance.now() - this.debugStats.startupTrace.t0Ms;
-      this._recordStartupManifestEvent('manifestFetch', this.debugStats.startupTrace.manifestFetchStartMs);
-      const response = await fetch(this.manifestUrl, { cache: 'no-cache' });
-      if (!response.ok) throw new Error(`manifest fetch ${response.status}`);
-      this.manifest = await response.json();
-      this.maxAvailableLod = this.manifest.maxAvailableLod ?? this.maxAvailableLod;
-      this.heightMinMeters = this.manifest.minHeight ?? this.heightMinMeters;
-      this.heightMaxMeters = this.manifest.maxHeight ?? this.heightMaxMeters;
-      if (this.manifest.tiles) {
-        for (const [k, v] of Object.entries(this.manifest.tiles)) {
-          this.manifestTileMap.set(k, v);
-        }
-      }
-      // Merge any overlay layers on top of the base. Overlay tiles override the
-      // base tile at the same key and remember which folder to stream from.
-      await this._loadOverlays();
-      this._rebuildSelectionRoots();
-      // Tiles created before the manifest arrived (the six roots, built
-      // synchronously in the constructor) cached the default meta. Refresh them
-      // now so their real width/height (e.g. 128) is used for size validation.
-      for (const tile of this.tiles.values()) {
-        tile.meta = this._getTileMeta(tile);
-      }
-    } catch (error) {
-      console.warn('[planet2] manifest load failed, using defaults', error);
-    } finally {
-      // Allow tile loads to proceed. On failure we run with default meta rather
-      // than stalling the globe forever.
-      this.debugStats.startupTrace.manifestFetchEndMs = performance.now() - this.debugStats.startupTrace.t0Ms;
-      this._recordStartupManifestEvent('manifestReady', this.debugStats.startupTrace.manifestFetchEndMs);
-      this.manifestReady = true;
-      this._markStartupTrace('manifestReadyMs');
-    }
-  }
-
-  // Fetch each overlay manifest and merge its tiles over the base. An overlay
-  // entry wins over a same-key base entry, extends maxAvailableLod, and records
-  // its color/height folders in tileSourceMap so _loadColor/_loadHeight stream
-  // the overriding tiles from the overlay instead of the base asset root.
-  async _loadOverlays() {
-    for (let overlayIndex = 0; overlayIndex < this.overlays.length; overlayIndex++) {
-      const overlay = this.overlays[overlayIndex];
-      if (!overlay || !overlay.manifestUrl) continue;
-      const sourceStats = this._getSourceStats(overlay.name);
-      try {
-        const manifestUrl = overlay.manifestUrl;
-        const overlayFetchStartMs = performance.now() - this.debugStats.startupTrace.t0Ms;
-        this._recordStartupManifestEvent('overlayFetch', overlayFetchStartMs);
-        const response = await fetch(manifestUrl, { cache: 'no-cache' });
-        if (!response.ok) {
-          throw new Error(`overlay manifest fetch ${response.status} for "${overlay.name}"`);
-        }
-        const manifestStart = performance.now();
-        const data = await response.json();
-        const manifestMs = performance.now() - manifestStart;
-
-        // Overlays must share the base height decode range: all height tiles are
-        // sampled into one global [minHeight, maxHeight] u16 space, so a mismatch
-        // would misdecode the overlay's displacement. Warn rather than silently
-        // corrupt the terrain.
-        const oMin = data.minHeight;
-        const oMax = data.maxHeight;
-        if ((oMin != null && oMin !== this.heightMinMeters) ||
-            (oMax != null && oMax !== this.heightMaxMeters)) {
-          console.warn(`[planet2] overlay "${overlay.name}" height range ` +
-            `[${oMin}, ${oMax}] differs from base [${this.heightMinMeters}, ` +
-            `${this.heightMaxMeters}]; terrain may not match at the seam.`);
-        }
-
-        if (data.maxAvailableLod != null) {
-          this.maxAvailableLod = Math.max(this.maxAvailableLod, data.maxAvailableLod);
-        }
-
-        const source = {
-          name: overlay.name,
-          colorBasePath: overlay.colorBasePath,
-          heightBasePath: overlay.heightBasePath,
-          layerIndex: overlayIndex + 1,
-        };
-        let count = 0;
-        let skipped = 0;
-        const mergeStart = performance.now();
-        if (data.tiles) {
-          for (const [k, v] of Object.entries(data.tiles)) {
-            this.manifestTileMap.set(k, v);
-            this.tileSourceMap.set(k, source);
-            count += 1;
-          }
-        }
-        const mergeMs = performance.now() - mergeStart;
-        this._recordStartupManifestEvent('overlayReady', performance.now() - this.debugStats.startupTrace.t0Ms);
-        this.debugStats.overlayManifests += 1;
-        this.debugStats.overlayTilesMerged += count;
-        this.debugStats.overlayTilesSkipped += skipped;
-        this.debugStats.overlayManifestMs += manifestMs;
-        this.debugStats.overlayMergeMs += mergeMs;
-        sourceStats.manifestTilesMerged += count;
-        sourceStats.manifestTilesSkipped += skipped;
-        sourceStats.manifestFetchMs += manifestMs;
-        sourceStats.manifestMergeMs += mergeMs;
-        console.log(`[planet2] overlay "${overlay.name}" merged ${count} tiles in ` +
-          `${manifestMs.toFixed(1)}ms fetch + ${mergeMs.toFixed(1)}ms merge`);
-      } catch (error) {
-        console.warn(`[planet2] overlay "${overlay.name}" load failed, skipping`, error);
-      }
-    }
-  }
 
   _getSourceStats(sourceKey = 'base') {
     const key = sourceKey || 'base';
@@ -953,10 +978,10 @@ class CubedSpherePlanetRenderer {
         break;
     }
 
-    this.debugStats.queue = this.priorityQueue.size;
+    this.debugStats.queue = this.wantedTiles.length;
     this.debugStats.inflight = this.inflightLoads;
     this.debugStats.loadedTiles = this.tiles.size;
-    this.debugStats.visibleTiles = this.visibleTiles.size;
+    this.debugStats.visibleTiles = this.visibleList.length;
     this.debugStats.colorFetchMs += colorFetchMs;
     this.debugStats.heightFetchMs += heightFetchMs;
     this.debugStats.colorDecodeUploadMs += Math.max(0, colorMs - colorFetchMs);
@@ -981,600 +1006,6 @@ class CubedSpherePlanetRenderer {
       if (!best || entry.startTime > best.startTime) best = entry;
     }
     return best;
-  }
-
-  // Six root tiles so a low-resolution globe is visible immediately.
-  _initRoots() {
-    for (const face of FACE_NAMES) {
-      const tile = this._getOrCreateTile(face, this.rootLod, 0, 0, null);
-      this._ensureTileMesh(tile);
-      this.group.add(tile.mesh);
-      this.selectionRoots.push(tile);
-      this.selectionRootIds.add(tile.id);
-    }
-  }
-
-  // A regional visualization can be the first/only asset and may intentionally
-  // omit LOD0 and every tile outside its footprint. Treat every manifest tile
-  // whose parent is absent as a root of a sparse quadtree forest.
-  _rebuildSelectionRoots() {
-    if (!this.manifest?.tiles) return;
-
-    const roots = [];
-    const rootIds = new Set();
-    for (const id of this.manifestTileMap.keys()) {
-      const [face, lodText, xText, yText] = id.split('/');
-      const lod = Number(lodText);
-      const x = Number(xText);
-      const y = Number(yText);
-      if (!FACE_NAMES.includes(face) || !Number.isInteger(lod) ||
-          !Number.isInteger(x) || !Number.isInteger(y)) continue;
-
-      const parentId = lod > 0 ? tileKey(face, lod - 1, x >> 1, y >> 1) : null;
-      if (parentId && this.manifestTileMap.has(parentId)) continue;
-
-      const tile = this._getOrCreateTile(face, lod, x, y, null);
-      this._ensureTileMesh(tile);
-      roots.push(tile);
-      rootIds.add(tile.id);
-    }
-    this.selectionRoots = roots;
-    this.selectionRootIds = rootIds;
-  }
-
-  _getOrCreateTile(face, lod, x, y, parent) {
-    const id = tileKey(face, lod, x, y);
-    let tile = this.tiles.get(id);
-    if (tile) {
-      if (!tile.parent && parent) tile.parent = parent;
-      return tile;
-    }
-    tile = new Tile(face, lod, x, y, parent);
-    tile.meta = this._getTileMeta(tile);
-    this.tiles.set(id, tile);
-    return tile;
-  }
-
-  // Maps a runtime tile to its baked asset coords. The offline baker and this
-  // renderer share the same cubeToDirection() convention and every cube face is
-  // right-handed (tangent du x dv points outward), so geometry tiles map directly
-  // to their baked files with NO flip. Keeping this an identity transform ensures
-  // the content baked for a direction is displayed at that same direction (any
-  // per-face mirror here would scramble geography and place refined tiles on the
-  // mirrored longitude).
-  _assetCoords(face, lod, x, y) {
-    return { ax: x, ay: y };
-  }
-
-  // Sub-tile sample/UV transform matching _assetCoords (identity).
-  _assetUv(face, u01, v01) {
-    return { su: u01, sv: v01 };
-  }
-
-  // True only if the manifest contains ALL four child tile assets. Requiring the
-  // full quad keeps the tree gap-free and prevents 404 storms at ragged region
-  // boundaries (where a rectangular baked region only partially covers a parent's
-  // four children). Such boundary parents simply stay one LOD coarser.
-  _hasChildAssets(tile) {
-    const l = tile.lod + 1;
-    const x2 = tile.x * 2;
-    const y2 = tile.y * 2;
-    const childXY = [[x2, y2], [x2 + 1, y2], [x2, y2 + 1], [x2 + 1, y2 + 1]];
-    const parentLayer = this.tileSourceMap.get(tile.id)?.layerIndex ?? 0;
-    for (const [cx, cy] of childXY) {
-      const { ax, ay } = this._assetCoords(tile.face, l, cx, cy);
-      const childKey = tileKey(tile.face, l, ax, ay);
-      if (!this.manifestTileMap.has(childKey)) return false;
-      // Once an overlay owns a parent, refinement must not replace it with
-      // descendants from a lower-priority layer (typically the base Earth).
-      // A same-layer or later overlay child is safe; a base child is not.
-      const childLayer = this.tileSourceMap.get(childKey)?.layerIndex ?? 0;
-      if (childLayer < parentLayer) return false;
-    }
-    return true;
-  }
-
-  // Per-tile metadata from the manifest (looked up at the baked asset coords).
-  _getTileMeta(tile) {
-    const { ax, ay } = this._assetCoords(tile.face, tile.lod, tile.x, tile.y);
-    const meta = this.manifestTileMap.get(tileKey(tile.face, tile.lod, ax, ay));
-    if (meta) return meta;
-    return {
-      roughness: 0.15,
-      landFraction: 0.5,
-      width: 64,
-      height: 64,
-    };
-  }
-
-  // ---------------------------------------------------------------------------
-  // Per-frame update
-  // ---------------------------------------------------------------------------
-
-  update(camera) {
-    if (!camera) return;
-
-    if (this.debugStats.startupTrace.firstUpdateMs == null) {
-      const elapsedMs = performance.now() - this.debugStats.startupTrace.t0Ms;
-      this.debugStats.startupTrace.firstUpdateMs = elapsedMs;
-      this.debugStats.startupTrace.firstUpdateTileCount = this.tiles.size;
-      console.log(`[planet2][startup] firstUpdateMs +${elapsedMs.toFixed(1)}ms tiles=${this.tiles.size}`);
-    }
-
-    this.frame += 1;
-    this._updateCameraSpeed(camera);
-    if (typeof window !== 'undefined') this.viewportHeight = window.innerHeight;
-
-    this.group.updateWorldMatrix(true, false);
-    this.group.getWorldPosition(this.planetWorldCenter);
-    this.viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    this.frustum.setFromProjectionMatrix(this.viewProjection);
-
-    // Pixels-per-radian-of-error scale for screen-space error.
-    const fov = (camera.fov || 50) * DEG2RAD;
-    this._sseScale = this.viewportHeight / (2 * Math.tan(fov / 2));
-
-    this.visibleTiles.clear();
-
-    for (const root of this.selectionRoots) {
-      if (this.tiles.get(root.id) === root) this._selectTilesRecursive(root, camera);
-    }
-
-    this._applyVisibility();
-    this._updateEdgeMorph();
-    this._processQueue();
-    this._evictLRU();
-
-    this.debugStats.queue = this.priorityQueue.size;
-    this.debugStats.inflight = this.inflightLoads;
-    this.debugStats.loadedTiles = this.tiles.size;
-    this.debugStats.visibleTiles = this.visibleTiles.size;
-    this.debugStats.maxQueue = Math.max(this.debugStats.maxQueue, this.priorityQueue.size);
-    this.debugStats.maxInflight = Math.max(this.debugStats.maxInflight, this.inflightLoads);
-    this.debugStats.maxLoadedTiles = Math.max(this.debugStats.maxLoadedTiles, this.tiles.size);
-    this.debugStats.maxVisibleTiles = Math.max(this.debugStats.maxVisibleTiles, this.visibleTiles.size);
-    this._flushStartupChartIfReady();
-  }
-
-  _updateCameraSpeed(camera) {
-    const t = performance.now() * 0.001;
-    const dt = Math.max(1e-3, t - this.lastTimeSec);
-    this.cameraSpeedMps = camera.position.distanceTo(this.lastCameraPos) / dt;
-    this.lastCameraPos.copy(camera.position);
-    this.lastTimeSec = t;
-  }
-
-  // Recursively selects visible tiles, always keeping a parent visible until ALL
-  // of its children are loaded and ready (so no holes appear during streaming).
-  _selectTilesRecursive(tile, camera) {
-    // The first asset may itself be a sparse regional tileset (for example,
-    // planet2Assets=['hawaii_lodvis']). Do not display or enqueue cube-face roots
-    // and other tiles that its explicit manifest does not contain.
-    if (this.manifestReady && this.manifest?.tiles &&
-        !this.manifestTileMap.has(tile.id)) {
-      return;
-    }
-
-    tile.lastUsedFrame = this.frame;
-
-    if (!this._isTileVisible(tile, camera)) {
-      return;
-    }
-
-    const shouldRefine = this._shouldRefine(tile, camera);
-    tile.refinementActive = shouldRefine;
-    if (shouldRefine) {
-      this._ensureChildren(tile);
-
-      let allReady = true;
-      for (const child of tile.children) {
-        child.lastUsedFrame = this.frame;
-        child.priority = this._computePriority(child, camera);
-        if (!child.ready) {
-          this._enqueueLoad(child, child.priority);
-          allReady = false;
-        }
-      }
-
-      if (allReady) {
-        for (const child of tile.children) {
-          this._selectTilesRecursive(child, camera);
-        }
-        return; // Parent is fully replaced by its children this frame.
-      }
-      // else: fall through and keep this parent visible while children stream in.
-    }
-
-    this.visibleTiles.add(tile.id);
-    tile.priority = this._computePriority(tile, camera);
-    if (!tile.ready) this._enqueueLoad(tile, tile.priority);
-  }
-
-  // Frustum + conservative horizon (backside) culling. Roots are never culled so
-  // the globe silhouette is always complete.
-  _isTileVisible(tile, camera) {
-    this._updateTileBounds(tile);
-
-    tile.worldCenter.copy(tile.center).applyMatrix4(this.group.matrixWorld);
-    this.worldSphere.center.copy(tile.worldCenter);
-    this.worldSphere.radius = tile.boundingRadius;
-
-    if (!this.frustum.intersectsSphere(this.worldSphere)) return false;
-
-    if (tile.lod === this.rootLod) return true;
-
-    // Horizon test: cull tiles whose surface faces away from the camera. Uses a
-    // generous margin so partially visible limb tiles are kept.
-    this._tmpCamDir.copy(camera.position).sub(this.planetWorldCenter).normalize();
-    const worldNormal = this._tmpTileDir
-      .copy(tile.centerNormal)
-      .transformDirection(this.group.matrixWorld);
-    const facing = worldNormal.dot(this._tmpCamDir);
-    return facing > -0.25;
-  }
-
-  // Screen-space-error driven refinement with hysteresis and speed throttling.
-  // Refinement is asset-driven: a tile only refines if higher-LOD child tiles
-  // were actually generated (present in the manifest), which prevents 404 storms
-  // and the flicker/evict churn they cause.
-  _shouldRefine(tile, camera) {
-    const meta = tile.meta || this._getTileMeta(tile);
-    if (tile.lod >= this.maxAvailableLod) return false;
-    if (!this._hasChildAssets(tile)) return false;
-
-    // Enhancement overlays should refine all the way through their own manifest
-    // so the whole overlay region fills in, not just the camera-facing slice.
-    if (this.tileSourceMap.has(tile.id)) return true;
-
-    if (this.cameraSpeedMps > this.fastCameraSpeed && tile.lod >= this.maxLodWhileFast) {
-      return false;
-    }
-
-    const distance = Math.max(1, tile.worldCenter.distanceTo(camera.position));
-    const geometricError = this._tileGeometricError(tile);
-    const sse = (geometricError / distance) * this._sseScale;
-
-    // Terrain-aware bias: rougher / mountainous / interesting tiles refine sooner;
-    // open-ocean / flat tiles refine later.
-    const boost = this._priorityBoost(tile, meta);
-    const threshold = tile.refinementActive
-      ? this.sseThreshold * this.hysteresisCollapse
-      : this.sseThreshold * this.hysteresisExpand;
-    return sse > threshold / boost;
-  }
-
-  // Approximate world-space geometric error: half a tile's surface span.
-  _tileGeometricError(tile) {
-    const tileSpan = 2 / Math.pow(2, tile.lod); // in cube-face [-1,1] units
-    return 0.5 * tileSpan * this.meanRadius;
-  }
-
-  // True if the tile's surface footprint overlaps a location-of-interest disc.
-  _tileWithinLocation(tile, loc) {
-    this._updateTileBounds(tile);
-    const angular = tile.center.clone().normalize().angleTo(loc.dir);
-    const tileAngularRadius = tile.boundingRadius / this.meanRadius;
-    const locAngularRadius = (loc.radiusKm * 1000) / this.meanRadius;
-    return angular < (tileAngularRadius + locAngularRadius);
-  }
-
-  // Multiplicative priority/refinement boost from terrain + locations of interest.
-  _priorityBoost(tile, meta) {
-    let boost = 1;
-    const land = clamp01(meta.landFraction ?? 0.5);
-    // Make the coarse globe establish itself quickly before we spend budget on
-    // deeper refinements. This helps avoid back-face / far-side starvation when
-    // the queue is busy with near-camera tiles.
-    boost += Math.max(0, 3 - tile.lod) * 2.5;
-    if (tile.lod === 0) boost *= 12;
-    else if (tile.lod === 1) boost *= 5;
-    // Overlay tiles should win against the base globe so the enhancement layer
-    // becomes complete instead of being partially starved by base tile traffic.
-    if (this.tileSourceMap.has(tile.id)) boost += 8;
-    boost += 2.5 * clamp01((meta.roughness ?? 0.1) * 6);        // rough/mountainous
-    boost += 1.2 * land;                                         // land over ocean
-    boost -= 0.6 * (1 - land);                                   // de-prioritize ocean
-    for (const loc of this.locationInterests) {
-      if (this._tileWithinLocation(tile, loc)) boost += 2 * loc.lodBoost;
-    }
-    return Math.max(0.4, boost);
-  }
-
-  _computePriority(tile, camera) {
-    const meta = tile.meta || this._getTileMeta(tile);
-    const distance = Math.max(1, tile.worldCenter.distanceTo(camera.position));
-
-    // Closer + higher LOD + interesting terrain = higher load priority.
-    let priority = 1e6 / distance;
-    priority += tile.lod * 50;
-    priority *= this._priorityBoost(tile, meta);
-    if (this.tileSourceMap.has(tile.id)) priority *= 20;
-
-    // Strongly prefer camera-facing tiles.
-    this._tmpCamDir.copy(camera.position).sub(this.planetWorldCenter).normalize();
-    const facing = this._tmpTileDir.copy(tile.centerNormal)
-      .transformDirection(this.group.matrixWorld).dot(this._tmpCamDir);
-    const facingWeight = tile.lod <= 1 ? 1 : 0.5 + 0.5 * clamp01(facing);
-    priority *= facingWeight;
-
-    return priority;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Geometric bounds
-  // ---------------------------------------------------------------------------
-
-  _updateTileBounds(tile) {
-    if (tile.boundsValid) return;
-    const tileSpan = 2 / Math.pow(2, tile.lod);
-    const cu = -1 + tile.x * tileSpan + tileSpan * 0.5;
-    const cv = -1 + tile.y * tileSpan + tileSpan * 0.5;
-
-    cubeToDirection(tile.face, cu, cv, this._tmpDir);
-    rayEllipsoidIntersection(this._tmpDir, this.a, this.b, tile.center);
-    ellipsoidNormal(tile.center, this.a, this.b, tile.centerNormal);
-
-    // Bounding radius from center to the farthest tile corner (plus a height
-    // allowance). Using only one corner can underestimate the tile's true
-    // footprint and make edge tiles blink out near the frustum boundary.
-    let maxCornerDist = 0;
-    const corners = [
-      [cu - tileSpan * 0.5, cv - tileSpan * 0.5],
-      [cu + tileSpan * 0.5, cv - tileSpan * 0.5],
-      [cu - tileSpan * 0.5, cv + tileSpan * 0.5],
-      [cu + tileSpan * 0.5, cv + tileSpan * 0.5],
-    ];
-    for (const [u, v] of corners) {
-      cubeToDirection(tile.face, u, v, this._tmpDir);
-      rayEllipsoidIntersection(this._tmpDir, this.a, this.b, this._tmpA);
-      maxCornerDist = Math.max(maxCornerDist, tile.center.distanceTo(this._tmpA));
-    }
-    const heightAllowance = 10000 * Math.max(1, this.displacementScaleMultiplier);
-    tile.boundingRadius = maxCornerDist + heightAllowance;
-    tile.boundsValid = true;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Geometry construction
-  // ---------------------------------------------------------------------------
-
-  _ensureTileMesh(tile) {
-    if (tile.mesh) return;
-    const geometry = this._buildTileGeometry(tile);
-    const material = this.baseMaterial.clone();
-    this._configureSurfaceDetail(material);
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.name = `tile:${tile.id}`;
-    mesh.frustumCulled = false; // we do our own conservative culling
-    mesh.receiveShadow = this.receiveSurfaceShadows;
-    mesh.visible = false;
-    mesh.matrixAutoUpdate = false;
-    mesh.updateMatrix();
-
-    tile.mesh = mesh;
-    tile.geometry = geometry;
-    tile.material = material;
-  }
-
-  // Adds repeat-free synthetic regolith detail in planet-local meters. The real
-  // height mesh still controls silhouettes and terrain clearance; these bands
-  // affect only lighting/color and fade out before they can shimmer at distance.
-  _configureSurfaceDetail(material) {
-    if (!this.surfaceDetail) return;
-    const settings = this.surfaceDetail;
-    material.onBeforeCompile = (shader) => {
-      shader.uniforms.lunarDetailNear = { value: settings.nearMeters };
-      shader.uniforms.lunarDetailFar = { value: settings.farMeters };
-      shader.uniforms.lunarNormalStrength = { value: settings.normalStrength };
-      shader.uniforms.lunarAlbedoStrength = { value: settings.albedoStrength };
-      shader.uniforms.lunarRoughnessStrength = { value: settings.roughnessStrength };
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', `#include <common>
-varying vec3 vPlanetDetailPosition;`)
-        .replace('#include <begin_vertex>', `#include <begin_vertex>
-vPlanetDetailPosition = position;`);
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', `#include <common>
-varying vec3 vPlanetDetailPosition;
-uniform float lunarDetailNear;
-uniform float lunarDetailFar;
-uniform float lunarNormalStrength;
-uniform float lunarAlbedoStrength;
-uniform float lunarRoughnessStrength;
-
-float lunarHash(vec3 p) {
-  p = fract(p * 0.1031);
-  p += dot(p, p.yzx + 33.33);
-  return fract((p.x + p.y) * p.z);
-}
-
-float lunarNoise(vec3 p) {
-  vec3 i = floor(p);
-  vec3 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  float n000 = lunarHash(i);
-  float n100 = lunarHash(i + vec3(1.0, 0.0, 0.0));
-  float n010 = lunarHash(i + vec3(0.0, 1.0, 0.0));
-  float n110 = lunarHash(i + vec3(1.0, 1.0, 0.0));
-  float n001 = lunarHash(i + vec3(0.0, 0.0, 1.0));
-  float n101 = lunarHash(i + vec3(1.0, 0.0, 1.0));
-  float n011 = lunarHash(i + vec3(0.0, 1.0, 1.0));
-  float n111 = lunarHash(i + vec3(1.0, 1.0, 1.0));
-  return mix(mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
-             mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
-}
-
-float lunarFbm(vec3 p) {
-  return 0.57 * lunarNoise(p) + 0.28 * lunarNoise(p * 2.03 + 17.1) +
-         0.15 * lunarNoise(p * 4.11 + 41.7);
-}
-
-float lunarBandVisibility(float pixelFootprintMeters, float spatialScale) {
-  // spatialScale is cycles/metre. Remove a band before a screen pixel spans a
-  // significant fraction of its noise cell (procedural equivalent of a mipmap).
-  // The broad interval prevents visible concentric transition bands as the
-  // camera moves: detail starts softening near Nyquist and takes ~8x growth in
-  // pixel footprint to disappear completely.
-  return 1.0 - smoothstep(0.25, 2.0, pixelFootprintMeters * spatialScale);
-}
-
-vec3 lunarNoiseGradient(vec3 p, float scale) {
-  vec3 q = p * scale;
-  const float e = 0.35;
-  return vec3(
-    lunarNoise(q + vec3(e, 0.0, 0.0)) - lunarNoise(q - vec3(e, 0.0, 0.0)),
-    lunarNoise(q + vec3(0.0, e, 0.0)) - lunarNoise(q - vec3(0.0, e, 0.0)),
-    lunarNoise(q + vec3(0.0, 0.0, e)) - lunarNoise(q - vec3(0.0, 0.0, e))
-  );
-}`)
-        .replace('#include <map_fragment>', `#include <map_fragment>
-float lunarFade = 1.0 - smoothstep(lunarDetailNear, lunarDetailFar, length(vViewPosition));
-float lunarPixelFootprint = max(length(dFdx(vPlanetDetailPosition)),
-                                length(dFdy(vPlanetDetailPosition)));
-float lunarMacroVis = lunarBandVisibility(lunarPixelFootprint, 0.0012);
-float lunarRegolithVis = lunarBandVisibility(lunarPixelFootprint, 0.035);
-float lunarPitsVis = lunarBandVisibility(lunarPixelFootprint, 0.075);
-float lunarMacro = lunarFbm(vPlanetDetailPosition * 0.0012);
-float lunarRegolith = lunarFbm(vPlanetDetailPosition * 0.035);
-float lunarPits = smoothstep(0.78, 0.94, lunarNoise(vPlanetDetailPosition * 0.075));
-float lunarTone = (lunarMacro - 0.5) * 0.7 * lunarMacroVis +
-                  (lunarRegolith - 0.5) * 0.3 * lunarRegolithVis;
-diffuseColor.rgb *= 1.0 + lunarFade * lunarAlbedoStrength * lunarTone;
-diffuseColor.rgb *= 1.0 - lunarFade * lunarPits * lunarPitsVis * 0.08;`)
-        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
-float lunarNormalLargeVis = lunarBandVisibility(lunarPixelFootprint, 0.012);
-float lunarNormalMediumVis = lunarBandVisibility(lunarPixelFootprint, 0.11);
-float lunarNormalFineVis = lunarBandVisibility(lunarPixelFootprint, 0.65);
-float lunarNormalDistantVis = lunarBandVisibility(lunarPixelFootprint, 0.0018);
-vec3 lunarGrad = lunarNoiseGradient(vPlanetDetailPosition, 0.0018) *
-                   (0.42 * lunarNormalDistantVis) +
-                 lunarNoiseGradient(vPlanetDetailPosition, 0.012) *
-                   (0.75 * lunarNormalLargeVis) +
-                 lunarNoiseGradient(vPlanetDetailPosition, 0.11) *
-                   (0.35 * lunarNormalMediumVis) +
-                 lunarNoiseGradient(vPlanetDetailPosition, 0.65) *
-                   (0.12 * lunarNormalFineVis);
-lunarGrad -= normal * dot(lunarGrad, normal);
-normal = normalize(normal - lunarFade * lunarNormalStrength * lunarGrad);`)
-        .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
-  (lunarRegolith - 0.35) * lunarRegolithVis, 0.55, 1.0);`);
-    };
-    material.customProgramCacheKey = () => 'planet2-lunar-regolith-v3-gradual';
-    material.roughness = 0.88;
-    material.needsUpdate = true;
-  }
-
-  // Builds an indexed, watertight tile mesh on the ellipsoid with baked displacement.
-  // UV == (u01, v01) and height sampling == (u01, v01): a direct, self-consistent
-  // mapping that matches the offline asset generator at every LOD.
-  _buildTileGeometry(tile) {
-    const seg = this.segments;
-    const tileSpan = 2 / Math.pow(2, tile.lod);
-    const u0 = -1 + tile.x * tileSpan;
-    const v0 = -1 + tile.y * tileSpan;
-
-    const total = (seg + 1) * (seg + 1);
-
-    const positions = new Float32Array(total * 3);
-    const normals = new Float32Array(total * 3);
-    const uvs = new Float32Array(total * 2);
-
-    const displacementScale = this.displacementScaleMultiplier;
-    const dir = this._tmpDir;
-    const pos = this._tmpA;
-    const nor = this._tmpB;
-
-    const write = (index, p, n, u, v) => {
-      const i3 = index * 3;
-      const i2 = index * 2;
-      positions[i3] = p.x; positions[i3 + 1] = p.y; positions[i3 + 2] = p.z;
-      normals[i3] = n.x; normals[i3 + 1] = n.y; normals[i3 + 2] = n.z;
-      uvs[i2] = u; uvs[i2 + 1] = v;
-    };
-
-    for (let y = 0; y <= seg; y++) {
-      const v01 = y / seg;
-      const v = v0 + tileSpan * v01;
-      for (let x = 0; x <= seg; x++) {
-        const u01 = x / seg;
-        const u = u0 + tileSpan * u01;
-
-        cubeToDirection(tile.face, u, v, dir);
-        rayEllipsoidIntersection(dir, this.a, this.b, pos);
-        ellipsoidNormal(pos, this.a, this.b, nor);
-
-        // Sample the baked asset at the flipped coords and store the same coords
-        // as the texture UV so color + height + geometry all stay aligned.
-        const { su, sv } = this._assetUv(tile.face, u01, v01);
-        const h = this._sampleHeight(tile, su, sv) * displacementScale;
-        pos.addScaledVector(nor, h);
-
-        write(y * (seg + 1) + x, pos, nor, su, sv);
-      }
-    }
-
-    // CDLOD edge morph: where an edge faces a coarser neighbor, collapse the in-between
-    // boundary vertices onto the segment between the coarse tile's shared vertices so the
-    // fine edge matches the coarse vertex spacing (removes T-junction cracks). Handles
-    // multi-level differences via a per-edge step of 2^(levelDiff).
-    const steps = tile.edgeSteps || [1, 1, 1, 1];
-    if (steps[0] > 1 || steps[1] > 1 || steps[2] > 1 || steps[3] > 1) {
-      const idx = (x, y) => y * (seg + 1) + x;
-      const lerp = (i, a, b, t) => {
-        const i3 = i * 3, a3 = a * 3, b3 = b * 3;
-        positions[i3] = positions[a3] + (positions[b3] - positions[a3]) * t;
-        positions[i3 + 1] = positions[a3 + 1] + (positions[b3 + 1] - positions[a3 + 1]) * t;
-        positions[i3 + 2] = positions[a3 + 2] + (positions[b3 + 2] - positions[a3 + 2]) * t;
-      };
-      const morphEdge = (step, vert, get) => {
-        let s = Math.min(step, seg);
-        while (s > 1 && seg % s !== 0) s >>= 1; // clamp to a divisor of seg
-        if (s <= 1) return;
-        for (let i = 0; i < seg; i++) {
-          if (i % s === 0) continue;
-          const lo = Math.floor(i / s) * s, hi = lo + s;
-          lerp(get(i), get(lo), get(hi), (i - lo) / s);
-        }
-      };
-      morphEdge(steps[0], true, (x) => idx(x, 0));     // T
-      morphEdge(steps[1], true, (x) => idx(x, seg));   // B
-      morphEdge(steps[2], true, (y) => idx(0, y));     // L
-      morphEdge(steps[3], true, (y) => idx(seg, y));   // R
-    }
-
-    // Choose the winding that makes front faces point outward for this face's
-    // (u,v) handedness, so FrontSide culling never opens holes.
-    const reversed = this._needsReversedWinding(positions, normals, seg);
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-    geometry.setIndex(this.indexBufferCache.getIndexAttribute(seg, reversed));
-    // The initial normals describe only the smooth ellipsoid. Recompute them from
-    // the displaced triangles so kilometer-scale LOLA relief participates in the
-    // same directional lighting as the synthetic fine regolith normals.
-    geometry.computeVertexNormals();
-    geometry.computeBoundingSphere();
-    return geometry;
-  }
-
-  // Determines whether the forward index winding produces inward-facing triangles
-  // for this tile (in which case the reversed winding is needed).
-  _needsReversedWinding(positions, normals, seg) {
-    const ia = 0;
-    const ib = 1;
-    const ic = seg + 1;
-    const ax = positions[ia * 3], ay = positions[ia * 3 + 1], az = positions[ia * 3 + 2];
-    const e1x = positions[ib * 3] - ax, e1y = positions[ib * 3 + 1] - ay, e1z = positions[ib * 3 + 2] - az;
-    const e2x = positions[ic * 3] - ax, e2y = positions[ic * 3 + 1] - ay, e2z = positions[ic * 3 + 2] - az;
-    // geometric normal = e1 x e2
-    const gx = e1y * e2z - e1z * e2y;
-    const gy = e1z * e2x - e1x * e2z;
-    const gz = e1x * e2y - e1y * e2x;
-    const dot = gx * normals[0] + gy * normals[1] + gz * normals[2];
-    return dot < 0;
   }
 
   // Bilinear height lookup in meters at tile-local (u01, v01).
@@ -1605,630 +1036,11 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     return a + (b - a) * ty;
   }
 
-  sampleTerrainHeight(latDeg, lonDeg) {
-    if (!Number.isFinite(latDeg) || !Number.isFinite(lonDeg)) return null;
-
-    const direction = latLonToDirection(
-      THREE.MathUtils.degToRad(latDeg), THREE.MathUtils.degToRad(lonDeg),
-      new THREE.Vector3(), this.planetE2);
-    const faceUv = directionToFaceUV(direction, { face: '+X', u: 0, v: 0 });
-    const globalU = clamp01((faceUv.u + 1) * 0.5);
-    const globalV = clamp01((faceUv.v + 1) * 0.5);
-
-    // Prefer the deepest resident height tile, falling back through loaded
-    // ancestors. Tiles are streamed asynchronously, so absence is not an error.
-    for (let lod = this.maxAvailableLod; lod >= this.rootLod; lod--) {
-      const count = 1 << lod;
-      const x = Math.min(count - 1, Math.floor(globalU * count));
-      const y = Math.min(count - 1, Math.floor(globalV * count));
-      const tile = this.tiles.get(tileKey(faceUv.face, lod, x, y));
-      if (!tile?.heightSamples || !tile.heightWidth || !tile.heightHeight) continue;
-      const localU = globalU * count - x;
-      const localV = globalV * count - y;
-      return {
-        heightMeters: this._sampleHeight(tile, localU, localV),
-        face: faceUv.face,
-        lod,
-        x,
-        y,
-        u: localU,
-        v: localV,
-        tileId: tile.id,
-      };
-    }
-    return null;
-  }
-
-  _ensureChildren(tile) {
-    const l = tile.lod + 1;
-    const x2 = tile.x * 2;
-    const y2 = tile.y * 2;
-    const coords = [[x2, y2], [x2 + 1, y2], [x2, y2 + 1], [x2 + 1, y2 + 1]];
-    // Keep a stable 4-slot array. Eviction may null out individual slots (see
-    // _disposeTile) while siblings stay live, so refill only the vacated slots
-    // rather than rebuilding the whole quad -- rebuilding used to drop references
-    // to the still-alive siblings and corrupt the tree linkage.
-    if (!tile.children) tile.children = [null, null, null, null];
-    for (let i = 0; i < 4; i++) {
-      if (tile.children[i]) continue;
-      const child = this._getOrCreateTile(tile.face, l, coords[i][0], coords[i][1], tile);
-      this._ensureTileMesh(child);
-      tile.children[i] = child;
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Visibility application
-  // ---------------------------------------------------------------------------
-
-  _applyVisibility() {
-    for (const tile of this.tiles.values()) {
-      if (!tile.mesh) continue;
-      const visible = this.visibleTiles.has(tile.id);
-      tile.visible = visible;
-      tile.mesh.visible = visible;
-      if (visible && tile.ready && this.debugStats.startupTrace.firstVisibleReadyMs == null) {
-        const elapsedMs = performance.now() - this.debugStats.startupTrace.t0Ms;
-        this.debugStats.startupTrace.firstVisibleReadyMs = elapsedMs;
-        this.debugStats.startupTrace.firstVisibleReadyTileId = tile.id;
-        console.log(`[planet2][startup] firstVisibleReadyMs +${elapsedMs.toFixed(1)}ms tile=${tile.id}`);
-      }
-      if (visible && tile.ready) this._recordStartupTileEvent(tile, 'visible');
-      if (visible && tile.mesh.parent !== this.group) {
-        this.group.add(tile.mesh);
-      }
-    }
-    if (this.debugMode !== 'none') this._applyDebugColors();
-  }
-
-  // Computes each visible tile's coarser-neighbor edge mask and rebuilds geometry
-  // when it changes, so edges morph to match coarser same-face neighbors. Cross-
-  // face edges are left untouched (no T-junction within a single face there).
-  _updateEdgeMorph() {
-    const count = 1 << this.rootLod;
-    for (const id of this.visibleTiles) {
-      const tile = this.tiles.get(id);
-      if (!tile || !tile.ready) continue;
-      const tc = 1 << tile.lod;
-      // For each edge, find how many LOD levels coarser the visible neighbor is by
-      // walking up ancestors. step = 2^d where d is that difference (1 = same/finer).
-      // Resolve the neighbor across an edge, then find how many LOD levels coarser
-      // the visible neighbor is (step = 2^d; 1 == same/finer, no morph needed).
-      // Within the face this is plain (x,y) arithmetic; across a cube seam we
-      // evaluate the shared parametrization just past the edge and invert it to the
-      // owning face + cell -- the same principle as within-face, no adjacency table.
-      const nstep = (dx, dy) => {
-        let nface = tile.face;
-        let nx = tile.x + dx;
-        let ny = tile.y + dy;
-        if (nx < 0 || ny < 0 || nx >= tc || ny >= tc) {
-          const span = 2 / tc;
-          const u = -1 + (nx + 0.5) * span; // cell-center cube coords (may exceed +/-1)
-          const v = -1 + (ny + 0.5) * span;
-          cubeToDirection(tile.face, u, v, this._tmpMorphDir);
-          directionToFaceUV(this._tmpMorphDir, this._tmpFaceUV);
-          nface = this._tmpFaceUV.face;
-          nx = Math.min(tc - 1, Math.max(0, Math.floor((this._tmpFaceUV.u + 1) * 0.5 * tc)));
-          ny = Math.min(tc - 1, Math.max(0, Math.floor((this._tmpFaceUV.v + 1) * 0.5 * tc)));
-        }
-        for (let d = 1; tile.lod - d >= this.rootLod; d++) {
-          if (this.visibleTiles.has(tileKey(nface, tile.lod - d, nx >> d, ny >> d))) return 1 << d;
-        }
-        return 1;
-      };
-      const steps = [
-        nstep(0, -1), // T
-        nstep(0, 1),  // B
-        nstep(-1, 0), // L
-        nstep(1, 0),  // R
-      ];
-      const mask = steps[0] | (steps[1] << 5) | (steps[2] << 10) | (steps[3] << 15);
-      if (mask !== tile.edgeMask) {
-        tile.edgeMask = mask;
-        tile.edgeSteps = steps;
-        if (tile.mesh) {
-          const newGeom = this._buildTileGeometry(tile);
-          const old = tile.mesh.geometry;
-          tile.mesh.geometry = newGeom;
-          tile.geometry = newGeom;
-          if (old && old !== newGeom) old.dispose();
-        }
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Streaming
-  // ---------------------------------------------------------------------------
-
-  _enqueueLoad(tile, priority) {
-    if (tile.loading || tile.ready || tile.retryScheduled) return;
-    if (this.queuedSet.has(tile.id)) return;
-    this.queuedSet.add(tile.id);
-    tile.queuedAtMs = performance.now();
-    this.priorityQueue.push(tile, priority);
-    if (this.debugStats.startupTrace.firstEnqueueMs == null) {
-      const elapsedMs = performance.now() - this.debugStats.startupTrace.t0Ms;
-      this.debugStats.startupTrace.firstEnqueueMs = elapsedMs;
-      this.debugStats.startupTrace.firstEnqueueTileId = tile.id;
-      console.log(`[planet2][startup] firstEnqueueMs +${elapsedMs.toFixed(1)}ms tile=${tile.id}`);
-    }
-    this._recordStartupTileEvent(tile, 'enqueue');
-    this.debugStats.maxQueue = Math.max(this.debugStats.maxQueue, this.priorityQueue.size);
-  }
-
-  _processQueue() {
-    // Wait for the manifest so tiles load with correct dimensions/meta.
-    if (!this.manifestReady) return;
-    while (this.inflightLoads < this.maxConcurrentLoads && this.priorityQueue.size > 0) {
-      const tile = this.priorityQueue.pop();
-      if (!tile) break;
-      this.queuedSet.delete(tile.id);
-      // Eviction cannot cheaply remove an arbitrary item from the heap. Ignore
-      // stale entries rather than starting a load for a tile that is no longer
-      // part of the live quadtree.
-      if (this.tiles.get(tile.id) !== tile) continue;
-      // Loads can be queued before the manifest arrives. Discard any that the
-      // resolved sparse manifest says do not exist instead of issuing 404s.
-      if (this.manifest?.tiles && !this.manifestTileMap.has(tile.id)) continue;
-      if (tile.ready || tile.loading) continue;
-      this._loadTile(tile);
-    }
-  }
-
-  async _loadTile(tile) {
-    tile.loading = true;
-    tile.loadGeneration += 1;
-    const generation = tile.loadGeneration;
-    tile.abortController = new AbortController();
-    const signal = tile.abortController.signal;
-    tile.debugColorFetchMs = 0;
-    tile.debugColorTransferBytes = 0;
-    tile.debugHeightFetchMs = 0;
-    tile.debugHeightTransferBytes = 0;
-    const sourceKey = this._getTileSourceKey(tile);
-    const sourceStats = this._getSourceStats(sourceKey);
-    const lodStats = this._getLodStats(sourceStats, tile.lod);
-    const loadStartedAt = performance.now();
-    const queueWaitMs = tile.queuedAtMs > 0 ? Math.max(0, loadStartedAt - tile.queuedAtMs) : 0;
-    tile.queuedAtMs = 0;
-    tile.loadStartedAtMs = loadStartedAt;
-    tile.debugSourceKey = sourceKey;
-    if (this.debugStats.startupTrace.firstLoadStartedMs == null) {
-      const elapsedMs = loadStartedAt - this.debugStats.startupTrace.t0Ms;
-      this.debugStats.startupTrace.firstLoadStartedMs = elapsedMs;
-      this.debugStats.startupTrace.firstLoadTileId = tile.id;
-      console.log(`[planet2][startup] firstLoadStartedMs +${elapsedMs.toFixed(1)}ms tile=${tile.id}`);
-    }
-    this._recordStartupTileEvent(tile, 'start');
-    this.debugStats.loadStarted += 1;
-    sourceStats.loadStarted += 1;
-    lodStats.loadStarted += 1;
-    sourceStats.queueWaitMs += queueWaitMs;
-    lodStats.queueWaitMs += queueWaitMs;
-    sourceStats.maxQueueWaitMs = Math.max(sourceStats.maxQueueWaitMs, queueWaitMs);
-    lodStats.maxQueueWaitMs = Math.max(lodStats.maxQueueWaitMs, queueWaitMs);
-    this.inflightLoads += 1;
-    this.debugStats.maxInflight = Math.max(this.debugStats.maxInflight, this.inflightLoads);
-
-    let colorMs = 0;
-    let heightMs = 0;
-    let colorPromise = null;
-    let heightPromise = null;
-    try {
-      const colorStartedAt = performance.now();
-      const heightStartedAt = performance.now();
-      colorPromise = this._loadColor(tile, signal).finally(() => {
-        colorMs = performance.now() - colorStartedAt;
-      });
-      heightPromise = this._loadHeight(tile, signal).finally(() => {
-        heightMs = performance.now() - heightStartedAt;
-      });
-      const [texture, height] = await Promise.all([colorPromise, heightPromise]);
-      const colorFetchMs = tile.debugColorFetchMs || 0;
-      const heightFetchMs = tile.debugHeightFetchMs || 0;
-      const colorTransferBytes = tile.debugColorTransferBytes || 0;
-      const heightTransferBytes = tile.debugHeightTransferBytes || 0;
-
-      if (tile.loadGeneration !== generation) {
-        const totalMs = performance.now() - loadStartedAt;
-        this._recordLoadMetrics(sourceStats, lodStats, {
-          queueWaitMs,
-          colorMs,
-          heightMs,
-          loadMs: totalMs,
-          colorFetchMs,
-          heightFetchMs,
-          colorTransferBytes,
-          heightTransferBytes,
-          outcome: 'superseded',
-        });
-        if (texture) texture.dispose();
-        return; // superseded by a newer load / disposed
-      }
-
-      if (texture) {
-        tile.texture = texture;
-        tile.colorReady = true;
-      } else {
-        tile.colorReady = true; // tolerate missing color (keep parent fallback)
-      }
-
-      tile.heightSamples = height.samples;
-      tile.heightWidth = height.width;
-      tile.heightHeight = height.height;
-      tile.minHeightMeters = height.minHeightMeters;
-      tile.maxHeightMeters = height.maxHeightMeters;
-      tile.heightReady = true;
-
-      tile.estimatedBytes = (height.samples.byteLength || 0) +
-        (texture ? this._estimateTextureBytes(texture) : 0);
-      this.debugStats.gpuBytes += tile.estimatedBytes;
-      const totalMs = performance.now() - loadStartedAt;
-      this._recordLoadMetrics(sourceStats, lodStats, {
-        queueWaitMs,
-        colorMs,
-        heightMs,
-        loadMs: totalMs,
-        colorFetchMs,
-        heightFetchMs,
-        colorTransferBytes,
-        heightTransferBytes,
-        outcome: 'success',
-      });
-      if (this.debugStats.startupTrace.firstLoadFinishedMs == null) {
-        const elapsedMs = performance.now() - this.debugStats.startupTrace.t0Ms;
-        this.debugStats.startupTrace.firstLoadFinishedMs = elapsedMs;
-        this.debugStats.startupTrace.firstFinishedTileId = tile.id;
-        console.log(`[planet2][startup] firstLoadFinishedMs +${elapsedMs.toFixed(1)}ms tile=${tile.id}`);
-      }
-      this._recordStartupTileEvent(tile, 'colorDone');
-      this._recordStartupTileEvent(tile, 'heightDone');
-
-      this._applyTileData(tile);
-      this._recordStartupTileEvent(tile, 'apply');
-    } catch (error) {
-      if (colorPromise && heightPromise) {
-        await Promise.allSettled([colorPromise, heightPromise]);
-      }
-      if (!signal.aborted) {
-        tile.loadAttempts += 1;
-        const totalMs = performance.now() - loadStartedAt;
-        if (tile.loadAttempts < this.maxLoadAttempts) {
-          this._recordLoadMetrics(sourceStats, lodStats, {
-            queueWaitMs,
-            colorMs,
-            heightMs,
-            loadMs: totalMs,
-            colorFetchMs: tile.debugColorFetchMs || 0,
-            heightFetchMs: tile.debugHeightFetchMs || 0,
-            colorTransferBytes: tile.debugColorTransferBytes || 0,
-            heightTransferBytes: tile.debugHeightTransferBytes || 0,
-            outcome: 'retry',
-          });
-          // Transient failure (e.g. net::ERR_NETWORK_CHANGED). Leave the tile
-          // un-ready and re-enqueue after an exponential backoff so a brief
-          // network blip has time to clear before the next attempt. Gated by
-          // `retryScheduled` so per-frame selection doesn't re-enqueue it early.
-          const delay = Math.min(
-            this.retryMaxDelayMs,
-            this.retryBaseDelayMs * 2 ** (tile.loadAttempts - 1),
-          );
-          tile.retryScheduled = true;
-          if (tile.retryTimer) clearTimeout(tile.retryTimer);
-          tile.retryTimer = setTimeout(() => {
-            tile.retryTimer = null;
-            tile.retryScheduled = false;
-            // Only retry if this exact tile is still live and still wanted.
-            if (this.tiles.get(tile.id) === tile && !tile.ready && !tile.loading) {
-              this._enqueueLoad(tile, tile.priority);
-            }
-          }, delay);
-          return;
-        }
-        this._recordLoadMetrics(sourceStats, lodStats, {
-          queueWaitMs,
-          colorMs,
-          heightMs,
-          loadMs: totalMs,
-          colorFetchMs: tile.debugColorFetchMs || 0,
-          heightFetchMs: tile.debugHeightFetchMs || 0,
-          colorTransferBytes: tile.debugColorTransferBytes || 0,
-          heightTransferBytes: tile.debugHeightTransferBytes || 0,
-          outcome: 'failed',
-        });
-        console.warn(
-          `[planet2] tile load gave up ${tile.id} ` +
-          `after ${tile.loadAttempts} attempts, using flat fallback:`,
-          error?.message || error,
-        );
-        this.debugStats.droppedLoads += 1;
-        // Mark height ready with flat data so selection can still progress.
-        if (!tile.heightReady) {
-          tile.heightSamples = null;
-          tile.heightWidth = 0;
-          tile.heightHeight = 0;
-          tile.heightReady = true;
-        }
-        tile.colorReady = true;
-        this._applyTileData(tile);
-      }
-    } finally {
-      if (tile.loadGeneration === generation) {
-        tile.loading = false;
-        tile.abortController = null;
-      }
-      this.inflightLoads -= 1;
-    }
-  }
-
-  async _loadColor(tile, signal) {
-    const { ax, ay } = this._assetCoords(tile.face, tile.lod, tile.x, tile.y);
-    const src = this.tileSourceMap.get(tileKey(tile.face, tile.lod, ax, ay));
-    const colorBase = src ? src.colorBasePath : this.colorBasePath;
-    const url = `${colorBase}/${tile.face}/${tile.lod}/${ax}/${ay}.ktx2`;
-    const startedAt = performance.now();
-    const trace = this.debugStats.startupTrace;
-    try {
-      const texture = await this.ktx2Loader.loadAsync(url);
-      const timing = this._getLatestResourceTiming(url, startedAt);
-      tile.debugColorFetchMs = timing ? Math.max(0, timing.responseEnd - timing.startTime) : 0;
-      tile.debugColorTransferBytes = timing?.transferSize || 0;
-      const fetchEndMs = timing ? Math.max(0, timing.responseEnd - trace.t0Ms) : (performance.now() - trace.t0Ms);
-      tile.debugColorFetchEndMs = fetchEndMs;
-      this._recordStartupTileEvent(tile, 'colorFetch', fetchEndMs);
-      if (signal.aborted) { texture.dispose(); return null; }
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.flipY = false; // GPU-compressed; matches the generator's row order
-      texture.anisotropy = this.textureAnisotropy;
-      texture.needsUpdate = true;
-      const doneMs = performance.now() - trace.t0Ms;
-      tile.debugColorDoneMs = doneMs;
-      this._recordStartupTileEvent(tile, 'colorDone', doneMs);
-      return texture;
-    } catch (error) {
-      tile.debugColorFetchMs = 0;
-      tile.debugColorTransferBytes = 0;
-      if (this.requireKtx2) return null;
-      throw error;
-    }
-  }
-
-  async _loadHeight(tile, signal) {
-    const meta = tile.meta || this._getTileMeta(tile);
-    const width = meta.width ?? 64;
-    const height = meta.height ?? 64;
-    const minHeightMeters = this.heightMinMeters;
-    const maxHeightMeters = this.heightMaxMeters;
-
-    const { ax, ay } = this._assetCoords(tile.face, tile.lod, tile.x, tile.y);
-    const src = this.tileSourceMap.get(tileKey(tile.face, tile.lod, ax, ay));
-    const heightBase = src ? src.heightBasePath : this.heightBasePath;
-    const url = `${heightBase}/${tile.face}/${tile.lod}/${ax}/${ay}.bin`;
-    const startedAt = performance.now();
-    const trace = this.debugStats.startupTrace;
-    const response = await fetch(url, { signal, cache: 'no-cache' });
-
-    if (!response.ok) {
-      tile.debugHeightFetchMs = 0;
-      tile.debugHeightTransferBytes = 0;
-      const fetchEndMs = performance.now() - trace.t0Ms;
-      tile.debugHeightFetchEndMs = fetchEndMs;
-      this._recordStartupTileEvent(tile, 'heightFetch', fetchEndMs);
-      tile.debugHeightDoneMs = fetchEndMs;
-      this._recordStartupTileEvent(tile, 'heightDone', fetchEndMs);
-      if (response.status === 404) {
-        return { width, height, minHeightMeters, maxHeightMeters, samples: new Uint16Array(width * height) };
-      }
-      throw new Error(`height fetch ${response.status} for ${url}`);
-    }
-
-    const buffer = await response.arrayBuffer();
-    const timing = this._getLatestResourceTiming(url, startedAt);
-    tile.debugHeightFetchMs = timing ? Math.max(0, timing.responseEnd - timing.startTime) : 0;
-    tile.debugHeightTransferBytes = timing?.transferSize || 0;
-    const fetchEndMs = timing ? Math.max(0, timing.responseEnd - trace.t0Ms) : (performance.now() - trace.t0Ms);
-    tile.debugHeightFetchEndMs = fetchEndMs;
-    this._recordStartupTileEvent(tile, 'heightFetch', fetchEndMs);
-    const samples = new Uint16Array(buffer);
-    let outWidth = width;
-    let outHeight = height;
-    if (samples.length !== width * height) {
-      // Height tiles are always square, so the .bin is self-describing. Trust its
-      // actual size over the manifest metadata when they disagree (e.g. after a
-      // partial/mixed re-bake or manual file copy) so decoding stays correct
-      // instead of reading past the buffer or misindexing the grid.
-      const side = Math.round(Math.sqrt(samples.length));
-      if (side > 0 && side * side === samples.length) {
-        outWidth = side;
-        outHeight = side;
-      } else {
-        console.warn(`[planet2] height size mismatch ${tile.id}: got ${samples.length}, expected ${width * height}`);
-      }
-    }
-    const doneMs = performance.now() - trace.t0Ms;
-    tile.debugHeightDoneMs = doneMs;
-    this._recordStartupTileEvent(tile, 'heightDone', doneMs);
-    return { width: outWidth, height: outHeight, minHeightMeters, maxHeightMeters, samples };
-  }
-
   _estimateTextureBytes(texture) {
     const img = texture.image;
     const w = (img && img.width) || 256;
     const h = (img && img.height) || 256;
     return Math.ceil(w * h * 1.34); // compressed + mip chain estimate
-  }
-
-  // Rebuilds geometry (with height) and swaps the streamed color map into place.
-  _applyTileData(tile) {
-    if (!tile.mesh) return;
-
-    const newGeometry = this._buildTileGeometry(tile);
-    const oldGeometry = tile.mesh.geometry;
-    tile.mesh.geometry = newGeometry;
-    tile.geometry = newGeometry;
-    if (oldGeometry && oldGeometry !== newGeometry) oldGeometry.dispose();
-
-    if (tile.texture && this.debugMode === 'none') {
-      tile.material.map = tile.texture;
-      tile.material.color.set(0xffffff);
-      tile.material.needsUpdate = true;
-    }
-    // Use a uniform finish across all tiles; deriving roughness from per-tile
-    // terrain variance makes refined regions visibly matte/shiny vs their parent.
-    tile.material.roughness = 1;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Eviction (LRU, budget-bounded). Roots and ancestors-of-visible are protected.
-  // ---------------------------------------------------------------------------
-
-  _evictLRU() {
-    let tileCount = this.tiles.size;
-    let gpuBytes = this.debugStats.gpuBytes;
-    if (tileCount <= this.maxTileCount && gpuBytes <= this.maxGpuBytes) return;
-
-    const candidates = [];
-    for (const tile of this.tiles.values()) {
-      if (tile.lod === this.rootLod) continue;
-      if (this.selectionRootIds.has(tile.id)) continue;
-      // Selection touches every tile required to preserve the current view,
-      // including off-screen siblings needed for an atomic parent-to-children
-      // transition. Evicting one of those siblings makes the selector recreate
-      // and reload it next frame, producing an endless coarse/detail cycle.
-      if (tile.lastUsedFrame === this.frame) continue;
-      if (this.visibleTiles.has(tile.id)) continue;
-      if (this._isAncestorOfVisible(tile)) continue;
-      candidates.push(tile);
-    }
-    candidates.sort((a, b) => a.lastUsedFrame - b.lastUsedFrame);
-
-    for (const tile of candidates) {
-      if (tileCount <= this.maxTileCount && gpuBytes <= this.maxGpuBytes) break;
-      gpuBytes = Math.max(0, gpuBytes - tile.estimatedBytes);
-      this._getSourceStats(this._getTileSourceKey(tile)).evictedTiles += 1;
-      this._disposeTile(tile);
-      tileCount -= 1;
-      this.debugStats.evictedTiles += 1;
-    }
-    this.debugStats.gpuBytes = gpuBytes;
-  }
-
-  _isAncestorOfVisible(tile) {
-    if (!tile.children) return false;
-    const stack = tile.children.slice();
-    while (stack.length) {
-      const t = stack.pop();
-      if (!t) continue;
-      if (this.visibleTiles.has(t.id)) return true;
-      if (t.children) stack.push(...t.children);
-    }
-    return false;
-  }
-
-  _disposeTile(tile) {
-    if (tile.abortController) {
-      tile.abortController.abort();
-      tile.abortController = null;
-    }
-    if (tile.retryTimer) {
-      clearTimeout(tile.retryTimer);
-      tile.retryTimer = null;
-      tile.retryScheduled = false;
-    }
-    if (tile.mesh && tile.mesh.parent) tile.mesh.parent.remove(tile.mesh);
-    if (tile.texture) { tile.texture.dispose(); tile.texture = null; }
-    if (tile.mesh?.geometry) tile.mesh.geometry.dispose();
-    if (tile.material && tile.material !== this.baseMaterial) tile.material.dispose();
-
-    // Detach ONLY this tile from its parent's child list, leaving live siblings
-    // in place. Nulling the whole array here would orphan the siblings and make
-    // _isAncestorOfVisible() wrongly report the parent has no visible descendants,
-    // so the LRU would then evict ancestors of on-screen tiles (visible shards).
-    const parent = tile.parent;
-    if (parent && parent.children) {
-      const idx = parent.children.indexOf(tile);
-      if (idx !== -1) parent.children[idx] = null;
-    }
-
-    this.queuedSet.delete(tile.id);
-    this.tiles.delete(tile.id);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Debug
-  // ---------------------------------------------------------------------------
-
-  setDebugMode(mode) {
-    this.debugMode = mode || 'none';
-    if (this.debugMode === 'none') {
-      // Restore streamed textures.
-      for (const tile of this.tiles.values()) {
-        if (!tile.material) continue;
-        tile.material.wireframe = false;
-        if (tile.texture) {
-          tile.material.map = tile.texture;
-          tile.material.color.set(0xffffff);
-        }
-        tile.material.needsUpdate = true;
-      }
-    } else {
-      this._applyDebugColors();
-    }
-  }
-
-  setDoubleSided(doubleSided) {
-    const side = doubleSided ? THREE.DoubleSide : THREE.FrontSide;
-    this.baseMaterial.side = side;
-    this.baseMaterial.needsUpdate = true;
-    for (const tile of this.tiles.values()) {
-      if (!tile.material) continue;
-      tile.material.side = side;
-      tile.material.needsUpdate = true;
-    }
-  }
-
-  _applyDebugColors() {
-    const mode = this.debugMode;
-    for (const tile of this.tiles.values()) {
-      if (!tile.material || !this.visibleTiles.has(tile.id)) continue;
-      const meta = tile.meta || this._getTileMeta(tile);
-      let color = null;
-      let wireframe = false;
-
-      switch (mode) {
-        case 'tileBorders':
-          wireframe = true;
-          color = new THREE.Color(0x00ff88);
-          break;
-        case 'lod':
-          color = colorRamp01(tile.lod / Math.max(1, this.maxAvailableLod));
-          break;
-        case 'priority':
-          color = colorRamp01(clamp01(tile.priority / 5e6));
-          break;
-        case 'roughness':
-          color = colorRamp01(clamp01((meta.roughness ?? 0) * 6));
-          break;
-        case 'landWater':
-          color = new THREE.Color().setRGB(
-            clamp01(meta.landFraction ?? 0.5), 0.3, clamp01(meta.waterFraction ?? 0.5));
-          break;
-        case 'loading':
-          color = tile.ready ? new THREE.Color(0x2266ff)
-            : tile.loading ? new THREE.Color(0xffaa00)
-              : new THREE.Color(0xff2244);
-          break;
-        default:
-          color = new THREE.Color(0x8aa7c2);
-          break;
-      }
-
-      tile.material.wireframe = wireframe;
-      tile.material.map = null;
-      if (color) tile.material.color.copy(color);
-      tile.material.needsUpdate = true;
-    }
   }
 
   getDebugStats() {
@@ -2270,190 +1082,1314 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     return {
       ...this.debugStats,
       sourceStats,
-      queue: this.priorityQueue.size,
+      queue: this.wantedTiles.length,
       inflight: this.inflightLoads,
       loadedTiles: this.tiles.size,
-      visibleTiles: this.visibleTiles.size,
+      visibleTiles: this.visibleList.length,
       cameraSpeedMps: Math.round(this.cameraSpeedMps),
     };
+  }
+
+  // Six root tiles so a low-resolution globe is visible immediately.
+  _initRoots() {
+    for (const face of FACE_NAMES) {
+      const tile = this._getOrCreateTile(face, this.rootLod, 0, 0, null);
+      this._ensureTileMesh(tile);
+      this.group.add(tile.mesh);
+      this.selectionRoots.push(tile);
+      this.selectionRootIds.add(tile.id);
+      // Without assets there is nothing to stream: tiles are flat and ready.
+      if (!this.hasAssets) this._markFlatReady(tile);
+    }
+  }
+
+  _markFlatReady(tile) {
+    tile.colorReady = true;
+    tile.heightReady = true;
+  }
+
+  // A regional visualization can be the first/only asset and may intentionally
+  // omit LOD0 and every tile outside its footprint. Treat every manifest tile
+  // whose parent is absent as a root of a sparse quadtree forest.
+  _rebuildSelectionRoots() {
+    if (!this.manifest?.tiles) return;
+
+    const roots = [];
+    const rootIds = new Set();
+    for (const id of this.manifestTileMap.keys()) {
+      const [face, lodText, xText, yText] = id.split('/');
+      const lod = Number(lodText);
+      const x = Number(xText);
+      const y = Number(yText);
+      if (!FACE_NAMES.includes(face) || !Number.isInteger(lod) ||
+          !Number.isInteger(x) || !Number.isInteger(y)) continue;
+
+      const parentId = lod > 0 ? tileKey(face, lod - 1, x >> 1, y >> 1) : null;
+      if (parentId && this.manifestTileMap.has(parentId)) continue;
+
+      const tile = this._getOrCreateTile(face, lod, x, y, null);
+      this._ensureTileMesh(tile);
+      roots.push(tile);
+      rootIds.add(tile.id);
+    }
+    this.selectionRoots = roots;
+    this.selectionRootIds = rootIds;
+  }
+
+  _getTile(faceIndex, lod, x, y) {
+    return this.tiles.get(tileNumKey(faceIndex, lod, x, y));
+  }
+
+  _getOrCreateTile(face, lod, x, y, parent) {
+    let tile = this._getTile(FACE_INDEX[face], lod, x, y);
+    if (tile) {
+      // Always (re-)link: the parent may itself have been re-created after an
+      // eviction, and the child must point at the live instance.
+      if (parent) tile.parent = parent;
+      return tile;
+    }
+    tile = new Tile(face, lod, x, y, parent);
+    tile.meta = this._getTileMeta(tile);
+    this.tiles.set(tile.numKey, tile);
+    if (!this.hasAssets) this._markFlatReady(tile);
+    return tile;
+  }
+
+  // Refreshes the per-tile caches that depend only on manifest data.
+  _refreshTileCache(tile) {
+    if (tile.cacheVersion === this.manifestVersion) return;
+    tile.cacheVersion = this.manifestVersion;
+    tile.hasChildAssets = this._computeHasChildAssets(tile);
+    tile.boost = this._priorityBoost(tile, tile.meta || this._getTileMeta(tile));
+  }
+
+  // True only if the manifest contains ALL four child tile assets. Requiring the
+  // full quad keeps the tree gap-free and prevents 404 storms at ragged region
+  // boundaries (where a rectangular baked region only partially covers a parent's
+  // four children). Such boundary parents simply stay one LOD coarser.
+  _computeHasChildAssets(tile) {
+    if (!this.hasAssets) return tile.lod < this.maxAvailableLod;
+    const l = tile.lod + 1;
+    const parentLayer = this.tileSourceMap.get(tile.id)?.layerIndex ?? 0;
+    for (let i = 0; i < 4; i++) {
+      const childKey = tileKey(tile.face, l, tile.x * 2 + (i & 1), tile.y * 2 + (i >> 1));
+      if (!this.manifestTileMap.has(childKey)) return false;
+      // Once an overlay owns a parent, refinement must not replace it with
+      // descendants from a lower-priority layer (typically the base Earth).
+      // A same-layer or later overlay child is safe; a base child is not.
+      const childLayer = this.tileSourceMap.get(childKey)?.layerIndex ?? 0;
+      if (childLayer < parentLayer) return false;
+    }
+    return true;
+  }
+
+  // Per-tile metadata from the manifest.
+  _getTileMeta(tile) {
+    return this.manifestTileMap.get(tile.id) || DEFAULT_TILE_META;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Per-frame update
+  // ---------------------------------------------------------------------------
+
+  // Height of the surface the camera renders into, in physical pixels.
+  _viewportHeight() {
+    const r = this.renderer;
+    if (r) {
+      const target = r.getRenderTarget?.();
+      if (target) return target.height;
+      if (r.getDrawingBufferSize) return r.getDrawingBufferSize(this._tmpV2).y || 1080;
+    }
+    return (typeof window !== 'undefined') ? window.innerHeight : 1080;
+  }
+
+  update(camera) {
+    if (!camera || !this.enabled) return;
+
+    if (this.debugStats.startupTrace.firstUpdateMs == null) {
+      this.debugStats.startupTrace.firstUpdateTileCount = this.tiles.size;
+      this._traceFirst('firstUpdateMs');
+    }
+
+    this.frame += 1;
+
+    // The camera may live inside a moved parent (e.g. the VR camera group), so
+    // always work from its world transform.
+    camera.updateWorldMatrix(true, false);
+    camera.getWorldPosition(this._camWorld);
+    this._updateCameraSpeed();
+
+    this.group.updateWorldMatrix(true, false);
+    this._groupInverse.copy(this.group.matrixWorld).invert();
+    this._groupScale = this.group.matrixWorld.getMaxScaleOnAxis();
+    this._camLocal.copy(this._camWorld).applyMatrix4(this._groupInverse);
+    this._camDistLocal = this._camLocal.length();
+    if (this._camDistLocal > 0) this._camDirLocal.copy(this._camLocal).divideScalar(this._camDistLocal);
+
+    this.viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    this.frustum.setFromProjectionMatrix(this.viewProjection);
+
+    // Pixels per unit of (error / distance). projectionMatrix[5] = 1/tan(fov/2),
+    // which also accounts for camera.zoom and works for cameras without .fov.
+    const p5 = camera.projectionMatrix.elements[5] || (1 / Math.tan(25 * DEG2RAD));
+    this._sseScale = 0.5 * this._viewportHeight() * p5;
+
+    // Horizon culling. A point at angle theta from the sub-camera point is
+    // hidden by the planet when theta > acos(R/d) + acos(R/(R+h)), where R is a
+    // conservative (low) occluder radius and h the highest terrain.
+    const mult = this.displacementScaleMultiplier;
+    const occluderRadius = this.b + Math.min(0, this.heightMinMeters * mult);
+    const peakRadius = this.a + Math.max(0, this.heightMaxMeters * mult);
+    if (this._camDistLocal > occluderRadius) {
+      this._horizonAngle = Math.acos(occluderRadius / this._camDistLocal);
+      this._peakAngle = Math.acos(Math.min(1, occluderRadius / peakRadius));
+    } else {
+      this._horizonAngle = Math.PI; // Camera below the occluder: do not cull.
+      this._peakAngle = 0;
+    }
+
+    this.visibleList.length = 0;
+    this.wantedTiles.length = 0;
+
+    for (const root of this.selectionRoots) {
+      if (!root.disposed) this._selectTilesRecursive(root);
+    }
+
+    this._applyVisibility();
+    this._updateEdgeMorph();
+    this._processQueue();
+    this._evictLRU();
+
+    const stats = this.debugStats;
+    stats.queue = this.wantedTiles.length;
+    stats.inflight = this.inflightLoads;
+    stats.loadedTiles = this.tiles.size;
+    stats.visibleTiles = this.visibleList.length;
+    stats.maxQueue = Math.max(stats.maxQueue, stats.queue);
+    stats.maxInflight = Math.max(stats.maxInflight, this.inflightLoads);
+    stats.maxLoadedTiles = Math.max(stats.maxLoadedTiles, this.tiles.size);
+    stats.maxVisibleTiles = Math.max(stats.maxVisibleTiles, stats.visibleTiles);
+    this._flushStartupChartIfReady();
+  }
+
+  _updateCameraSpeed() {
+    const t = performance.now() * 0.001;
+    const dt = Math.max(1e-3, t - this.lastTimeSec);
+    this.cameraSpeedMps = this.hasLastCameraPos ? this._camWorld.distanceTo(this.lastCameraPos) / dt : 0;
+    this.lastCameraPos.copy(this._camWorld);
+    this.hasLastCameraPos = true;
+    this.lastTimeSec = t;
+  }
+
+  // Recursively selects visible tiles, always keeping a parent visible until ALL
+  // of its children are loaded and ready (so no holes appear during streaming).
+  _selectTilesRecursive(tile) {
+    // The first asset may itself be a sparse regional tileset (for example,
+    // assets=['hawaii']). Do not display or load cube-face roots and other
+    // tiles that its explicit manifest does not contain.
+    if (this.manifestReady && this.manifest?.tiles &&
+        !this.manifestTileMap.has(tile.id)) {
+      return;
+    }
+
+    tile.lastUsedFrame = this.frame;
+
+    if (!this._isTileVisible(tile)) {
+      return;
+    }
+
+    const shouldRefine = this._shouldRefine(tile);
+    tile.refinementActive = shouldRefine;
+    if (shouldRefine) {
+      this._ensureChildren(tile);
+
+      let allReady = true;
+      for (const child of tile.children) {
+        child.lastUsedFrame = this.frame;
+        if (!child.ready) {
+          this._want(child);
+          allReady = false;
+        }
+      }
+
+      if (allReady) {
+        for (const child of tile.children) {
+          this._selectTilesRecursive(child);
+        }
+        return; // Parent is fully replaced by its children this frame.
+      }
+      // else: fall through and keep this parent visible while children stream in.
+    }
+
+    tile.visibleFrame = this.frame;
+    this.visibleList.push(tile);
+    if (!tile.ready) this._want(tile);
+  }
+
+  // Frustum + horizon culling. Roots are never horizon-culled so the globe
+  // silhouette is always complete.
+  _isTileVisible(tile) {
+    this._updateTileBounds(tile);
+
+    tile.worldCenter.copy(tile.center).applyMatrix4(this.group.matrixWorld);
+    this.worldSphere.center.copy(tile.worldCenter);
+    this.worldSphere.radius = tile.boundingRadius * this._groupScale;
+
+    if (!this.frustum.intersectsSphere(this.worldSphere)) return false;
+
+    if (tile.lod === this.rootLod) return true;
+    if (this._horizonAngle >= Math.PI) return true;
+
+    const cosTheta = THREE.MathUtils.clamp(tile.centerDir.dot(this._camDirLocal), -1, 1);
+    const theta = Math.acos(cosTheta);
+    return theta - tile.angularRadius < this._horizonAngle + this._peakAngle + 0.01;
+  }
+
+  // Screen-space-error driven refinement with hysteresis and speed throttling.
+  // Refinement is asset-driven: a tile only refines if higher-LOD child tiles
+  // were actually generated (present in the manifest), which prevents 404 storms
+  // and the flicker/evict churn they cause.
+  _shouldRefine(tile) {
+    if (tile.lod >= this.maxAvailableLod) return false;
+    this._refreshTileCache(tile);
+    if (!tile.hasChildAssets) return false;
+
+    // Enhancement overlays should refine all the way through their own manifest
+    // so the whole overlay region fills in, not just the camera-facing slice.
+    if (this.tileSourceMap.has(tile.id)) return true;
+
+    if (this.cameraSpeedMps > this.fastCameraSpeed && tile.lod >= this.maxLodWhileFast) {
+      return false;
+    }
+
+    const distance = Math.max(1, tile.center.distanceTo(this._camLocal));
+    const geometricError = this._tileGeometricError(tile);
+    const sse = (geometricError / distance) * this._sseScale;
+
+    // Terrain-aware bias: rougher / mountainous / interesting tiles refine sooner;
+    // open-ocean / flat tiles refine later.
+    const threshold = tile.refinementActive
+      ? this.sseThreshold * this.hysteresisCollapse
+      : this.sseThreshold * this.hysteresisExpand;
+    return sse > threshold / tile.boost;
+  }
+
+  // Approximate world-space geometric error: half a tile's surface span.
+  _tileGeometricError(tile) {
+    const tileSpan = 2 / Math.pow(2, tile.lod); // in cube-face [-1,1] units
+    return 0.5 * tileSpan * this.meanRadius;
+  }
+
+  // True if the tile's surface footprint overlaps a location-of-interest disc.
+  _tileWithinLocation(tile, loc) {
+    this._updateTileBounds(tile);
+    const angular = tile.centerDir.angleTo(loc.dir);
+    const locAngularRadius = (loc.radiusKm * 1000) / this.meanRadius;
+    return angular < (tile.angularRadius + locAngularRadius);
+  }
+
+  // Multiplicative priority/refinement boost from terrain + locations of interest.
+  // Depends only on manifest data, so it is cached per tile (_refreshTileCache).
+  _priorityBoost(tile, meta) {
+    let boost = 1;
+    const land = clamp01(meta.landFraction ?? 0.5);
+    // Make the coarse globe establish itself quickly before we spend budget on
+    // deeper refinements. This helps avoid back-face / far-side starvation when
+    // the queue is busy with near-camera tiles.
+    boost += Math.max(0, 3 - tile.lod) * 2.5;
+    if (tile.lod === 0) boost *= 12;
+    else if (tile.lod === 1) boost *= 5;
+    // Overlay tiles should win against the base globe so the enhancement layer
+    // becomes complete instead of being partially starved by base tile traffic.
+    if (this.tileSourceMap.has(tile.id)) boost += 8;
+    boost += 2.5 * clamp01((meta.roughness ?? 0.1) * 6);        // rough/mountainous
+    boost += 1.2 * land;                                         // land over ocean
+    boost -= 0.6 * (1 - land);                                   // de-prioritize ocean
+    for (const loc of this.locationInterests) {
+      if (this._tileWithinLocation(tile, loc)) boost += 2 * loc.lodBoost;
+    }
+    return Math.max(0.4, boost);
+  }
+
+  _computePriority(tile) {
+    this._updateTileBounds(tile);
+    this._refreshTileCache(tile);
+    const distance = Math.max(1, tile.center.distanceTo(this._camLocal));
+
+    // Closer + higher LOD + interesting terrain = higher load priority.
+    let priority = 1e6 / distance;
+    priority += tile.lod * 50;
+    priority *= tile.boost;
+    if (this.tileSourceMap.has(tile.id)) priority *= 20;
+
+    // Strongly prefer camera-facing tiles.
+    const facing = tile.centerNormal.dot(this._camDirLocal);
+    const facingWeight = tile.lod <= 1 ? 1 : 0.5 + 0.5 * clamp01(facing);
+    priority *= facingWeight;
+
+    return priority;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Geometric bounds
+  // ---------------------------------------------------------------------------
+
+  _updateTileBounds(tile) {
+    if (tile.boundsValid) return;
+    const tileSpan = 2 / Math.pow(2, tile.lod);
+    const cu = -1 + tile.x * tileSpan + tileSpan * 0.5;
+    const cv = -1 + tile.y * tileSpan + tileSpan * 0.5;
+
+    cubeToDirection(tile.face, cu, cv, this._tmpDir);
+    rayEllipsoidIntersection(this._tmpDir, this.a, this.b, tile.center);
+    tile.centerDir.copy(tile.center).normalize();
+    ellipsoidNormal(tile.center, this.a, this.b, tile.centerNormal);
+
+    // Bounding radius from center to the farthest tile corner (plus a height
+    // allowance). Using only one corner can underestimate the tile's true
+    // footprint and make edge tiles blink out near the frustum boundary.
+    let maxCornerDist = 0;
+    for (let i = 0; i < 4; i++) {
+      const u = cu + ((i & 1) ? 0.5 : -0.5) * tileSpan;
+      const v = cv + ((i & 2) ? 0.5 : -0.5) * tileSpan;
+      cubeToDirection(tile.face, u, v, this._tmpDir);
+      rayEllipsoidIntersection(this._tmpDir, this.a, this.b, this._tmpA);
+      maxCornerDist = Math.max(maxCornerDist, tile.center.distanceTo(this._tmpA));
+    }
+    const heightAllowance = 10000 * Math.max(1, this.displacementScaleMultiplier);
+    tile.boundingRadius = maxCornerDist + heightAllowance;
+    tile.angularRadius = maxCornerDist / this.meanRadius;
+    tile.boundsValid = true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Geometry construction
+  // ---------------------------------------------------------------------------
+
+  _ensureTileMesh(tile) {
+    if (tile.mesh) return;
+    this._updateTileBounds(tile);
+    const geometry = this._buildTileGeometry(tile);
+    const material = this.baseMaterial.clone();
+    this._configureSurfaceDetail(material, tile);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = `tile:${tile.id}`;
+    mesh.frustumCulled = false; // we do our own conservative culling
+    mesh.receiveShadow = this.receiveSurfaceShadows;
+    mesh.visible = false;
+    // Relative-to-centre rendering: vertices are local to the tile centre.
+    mesh.position.copy(tile.center);
+    mesh.matrixAutoUpdate = false;
+    mesh.updateMatrix();
+    mesh.userData.planetTile = tile.id;
+
+    tile.mesh = mesh;
+    tile.geometry = geometry;
+    tile.material = material;
+  }
+
+  // Per-tile noise offsets: (tileCentre * frequency) mod DETAIL_PERIOD, computed
+  // in float64 so the shader only ever sees small numbers.
+  _computeDetailOffsets(tile) {
+    if (!tile.detailOffsets) tile.detailOffsets = DETAIL_FREQS.map(() => new THREE.Vector3());
+    const c = tile.center;
+    for (let i = 0; i < DETAIL_FREQS.length; i++) {
+      const f = DETAIL_FREQS[i];
+      tile.detailOffsets[i].set(
+        positiveMod(c.x * f, DETAIL_PERIOD),
+        positiveMod(c.y * f, DETAIL_PERIOD),
+        positiveMod(c.z * f, DETAIL_PERIOD));
+    }
+    return tile.detailOffsets;
+  }
+
+  // Adds repeat-free synthetic regolith detail in planet-local meters. The real
+  // height mesh still controls silhouettes and terrain clearance; these bands
+  // affect only lighting/color and fade out before they can shimmer at distance.
+  // The noise is evaluated on tile-local positions plus per-tile offsets (see
+  // _computeDetailOffsets) so it stays precise in float32.
+  _configureSurfaceDetail(material, tile) {
+    if (!this.surfaceDetail) return;
+    const settings = this.surfaceDetail;
+    const offsets = this._computeDetailOffsets(tile);
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.lunarDetailNear = { value: settings.nearMeters };
+      shader.uniforms.lunarDetailFar = { value: settings.farMeters };
+      shader.uniforms.lunarNormalStrength = { value: settings.normalStrength };
+      shader.uniforms.lunarAlbedoStrength = { value: settings.albedoStrength };
+      shader.uniforms.lunarRoughnessStrength = { value: settings.roughnessStrength };
+      shader.uniforms.lunarFreq = { value: DETAIL_FREQS };
+      shader.uniforms.lunarOffset = { value: offsets };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+varying vec3 vPlanetDetailPosition;`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+vPlanetDetailPosition = position;`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+#define LUNAR_BANDS ${DETAIL_FREQS.length}
+varying vec3 vPlanetDetailPosition;
+uniform float lunarDetailNear;
+uniform float lunarDetailFar;
+uniform float lunarNormalStrength;
+uniform float lunarAlbedoStrength;
+uniform float lunarRoughnessStrength;
+uniform float lunarFreq[LUNAR_BANDS];
+uniform vec3 lunarOffset[LUNAR_BANDS];
+
+// Noise-lattice coordinate of the current fragment for band i (small numbers).
+#define LUNAR_P(i) (vPlanetDetailPosition * lunarFreq[i] + lunarOffset[i])
+
+float lunarHash(vec3 p) {
+  p = mod(p, ${DETAIL_PERIOD.toFixed(1)}); // periodic lattice: per-tile offsets wrap seamlessly
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+
+float lunarNoise(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float n000 = lunarHash(i);
+  float n100 = lunarHash(i + vec3(1.0, 0.0, 0.0));
+  float n010 = lunarHash(i + vec3(0.0, 1.0, 0.0));
+  float n110 = lunarHash(i + vec3(1.0, 1.0, 0.0));
+  float n001 = lunarHash(i + vec3(0.0, 0.0, 1.0));
+  float n101 = lunarHash(i + vec3(1.0, 0.0, 1.0));
+  float n011 = lunarHash(i + vec3(0.0, 1.0, 1.0));
+  float n111 = lunarHash(i + vec3(1.0, 1.0, 1.0));
+  return mix(mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+             mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
+}
+
+// Three-octave fBm whose octaves are bands i, i+1, i+2.
+float lunarFbm(int i) {
+  return 0.57 * lunarNoise(LUNAR_P(i)) + 0.28 * lunarNoise(LUNAR_P(i + 1) + 17.1) +
+         0.15 * lunarNoise(LUNAR_P(i + 2) + 41.7);
+}
+
+float lunarBandVisibility(float pixelFootprintMeters, float spatialScale) {
+  // spatialScale is cycles/metre. Remove a band before a screen pixel spans a
+  // significant fraction of its noise cell (procedural equivalent of a mipmap).
+  // The broad interval prevents visible concentric transition bands as the
+  // camera moves: detail starts softening near Nyquist and takes ~8x growth in
+  // pixel footprint to disappear completely.
+  return 1.0 - smoothstep(0.25, 2.0, pixelFootprintMeters * spatialScale);
+}
+
+vec3 lunarNoiseGradient(int i) {
+  vec3 q = LUNAR_P(i);
+  const float e = 0.35;
+  return vec3(
+    lunarNoise(q + vec3(e, 0.0, 0.0)) - lunarNoise(q - vec3(e, 0.0, 0.0)),
+    lunarNoise(q + vec3(0.0, e, 0.0)) - lunarNoise(q - vec3(0.0, e, 0.0)),
+    lunarNoise(q + vec3(0.0, 0.0, e)) - lunarNoise(q - vec3(0.0, 0.0, e))
+  );
+}`)
+        .replace('#include <map_fragment>', `#include <map_fragment>
+float lunarFade = 1.0 - smoothstep(lunarDetailNear, lunarDetailFar, length(vViewPosition));
+float lunarPixelFootprint = max(length(dFdx(vPlanetDetailPosition)),
+                                length(dFdy(vPlanetDetailPosition)));
+float lunarMacroVis = lunarBandVisibility(lunarPixelFootprint, lunarFreq[0]);
+float lunarRegolithVis = lunarBandVisibility(lunarPixelFootprint, lunarFreq[3]);
+float lunarPitsVis = lunarBandVisibility(lunarPixelFootprint, lunarFreq[6]);
+float lunarMacro = lunarFbm(0);
+float lunarRegolith = lunarFbm(3);
+float lunarPits = smoothstep(0.78, 0.94, lunarNoise(LUNAR_P(6)));
+float lunarTone = (lunarMacro - 0.5) * 0.7 * lunarMacroVis +
+                  (lunarRegolith - 0.5) * 0.3 * lunarRegolithVis;
+diffuseColor.rgb *= 1.0 + lunarFade * lunarAlbedoStrength * lunarTone;
+diffuseColor.rgb *= 1.0 - lunarFade * lunarPits * lunarPitsVis * 0.08;`)
+        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+float lunarNormalDistantVis = lunarBandVisibility(lunarPixelFootprint, lunarFreq[7]);
+float lunarNormalLargeVis = lunarBandVisibility(lunarPixelFootprint, lunarFreq[8]);
+float lunarNormalMediumVis = lunarBandVisibility(lunarPixelFootprint, lunarFreq[9]);
+float lunarNormalFineVis = lunarBandVisibility(lunarPixelFootprint, lunarFreq[10]);
+vec3 lunarGrad = lunarNoiseGradient(7) * (0.42 * lunarNormalDistantVis) +
+                 lunarNoiseGradient(8) * (0.75 * lunarNormalLargeVis) +
+                 lunarNoiseGradient(9) * (0.35 * lunarNormalMediumVis) +
+                 lunarNoiseGradient(10) * (0.12 * lunarNormalFineVis);
+lunarGrad -= normal * dot(lunarGrad, normal);
+normal = normalize(normal - lunarFade * lunarNormalStrength * lunarGrad);`)
+        .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
+  (lunarRegolith - 0.35) * lunarRegolithVis, 0.55, 1.0);`);
+    };
+    material.customProgramCacheKey = () => 'planet-lunar-regolith-v4-rtc';
+    material.roughness = 0.88;
+    material.needsUpdate = true;
+  }
+
+  // Builds an indexed tile mesh on the ellipsoid with baked displacement. The
+  // vertex positions are relative to tile.center (the mesh position).
+  // UV == (u01, v01) and height sampling == (u01, v01): a direct, self-consistent
+  // mapping that matches the offline asset generator at every LOD.
+  _buildTileGeometry(tile) {
+    this._updateTileBounds(tile);
+    const seg = this.segments;
+    const tileSpan = 2 / Math.pow(2, tile.lod);
+    const u0 = -1 + tile.x * tileSpan;
+    const v0 = -1 + tile.y * tileSpan;
+    const cx = tile.center.x, cy = tile.center.y, cz = tile.center.z;
+
+    const total = (seg + 1) * (seg + 1);
+
+    const positions = new Float32Array(total * 3);
+    const normals = new Float32Array(total * 3);
+    const uvs = new Float32Array(total * 2);
+
+    const displacementScale = this.displacementScaleMultiplier;
+    const dir = this._tmpDir;
+    const pos = this._tmpA;
+    const nor = this._tmpB;
+
+    for (let y = 0; y <= seg; y++) {
+      const v01 = y / seg;
+      const v = v0 + tileSpan * v01;
+      for (let x = 0; x <= seg; x++) {
+        const u01 = x / seg;
+        const u = u0 + tileSpan * u01;
+
+        cubeToDirection(tile.face, u, v, dir);
+        rayEllipsoidIntersection(dir, this.a, this.b, pos);
+        ellipsoidNormal(pos, this.a, this.b, nor);
+
+        const h = this._sampleHeight(tile, u01, v01) * displacementScale;
+        pos.addScaledVector(nor, h);
+
+        // Subtract the centre in float64 before narrowing to float32.
+        const index = y * (seg + 1) + x;
+        const i3 = index * 3;
+        const i2 = index * 2;
+        positions[i3] = pos.x - cx; positions[i3 + 1] = pos.y - cy; positions[i3 + 2] = pos.z - cz;
+        normals[i3] = nor.x; normals[i3 + 1] = nor.y; normals[i3 + 2] = nor.z;
+        uvs[i2] = u01; uvs[i2 + 1] = v01;
+      }
+    }
+
+    // CDLOD edge morph: where an edge faces a coarser neighbor, collapse the in-between
+    // boundary vertices onto the segment between the coarse tile's shared vertices so the
+    // fine edge matches the coarse vertex spacing (removes T-junction cracks). Handles
+    // multi-level differences via a per-edge step of 2^(levelDiff).
+    const steps = tile.edgeSteps;
+    if (steps[0] > 1 || steps[1] > 1 || steps[2] > 1 || steps[3] > 1) {
+      const idx = (x, y) => y * (seg + 1) + x;
+      const lerp = (i, a, b, t) => {
+        const i3 = i * 3, a3 = a * 3, b3 = b * 3;
+        positions[i3] = positions[a3] + (positions[b3] - positions[a3]) * t;
+        positions[i3 + 1] = positions[a3 + 1] + (positions[b3 + 1] - positions[a3 + 1]) * t;
+        positions[i3 + 2] = positions[a3 + 2] + (positions[b3 + 2] - positions[a3 + 2]) * t;
+      };
+      const morphEdge = (step, get) => {
+        let s = Math.min(step, seg);
+        while (s > 1 && seg % s !== 0) s >>= 1; // clamp to a divisor of seg
+        if (s <= 1) return;
+        for (let i = 0; i < seg; i++) {
+          if (i % s === 0) continue;
+          const lo = Math.floor(i / s) * s, hi = lo + s;
+          lerp(get(i), get(lo), get(hi), (i - lo) / s);
+        }
+      };
+      morphEdge(steps[0], (x) => idx(x, 0));     // T
+      morphEdge(steps[1], (x) => idx(x, seg));   // B
+      morphEdge(steps[2], (y) => idx(0, y));     // L
+      morphEdge(steps[3], (y) => idx(seg, y));   // R
+    }
+
+    // Choose the winding that makes front faces point outward for this face's
+    // (u,v) handedness, so FrontSide culling never opens holes.
+    const reversed = this._needsReversedWinding(positions, normals, seg);
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geometry.setIndex(this.indexBufferCache.getIndexAttribute(seg, reversed));
+    // The initial normals describe only the smooth ellipsoid. Recompute them from
+    // the displaced triangles so kilometer-scale relief participates in the
+    // same directional lighting as the synthetic fine regolith normals.
+    geometry.computeVertexNormals();
+    geometry.computeBoundingSphere();
+    return geometry;
+  }
+
+  // Determines whether the forward index winding produces inward-facing triangles
+  // for this tile (in which case the reversed winding is needed).
+  _needsReversedWinding(positions, normals, seg) {
+    const ia = 0;
+    const ib = 1;
+    const ic = seg + 1;
+    const ax = positions[ia * 3], ay = positions[ia * 3 + 1], az = positions[ia * 3 + 2];
+    const e1x = positions[ib * 3] - ax, e1y = positions[ib * 3 + 1] - ay, e1z = positions[ib * 3 + 2] - az;
+    const e2x = positions[ic * 3] - ax, e2y = positions[ic * 3 + 1] - ay, e2z = positions[ic * 3 + 2] - az;
+    // geometric normal = e1 x e2
+    const gx = e1y * e2z - e1z * e2y;
+    const gy = e1z * e2x - e1x * e2z;
+    const gz = e1x * e2y - e1y * e2x;
+    const dot = gx * normals[0] + gy * normals[1] + gz * normals[2];
+    return dot < 0;
+  }
+
+  _replaceGeometry(tile) {
+    if (!tile.mesh) return;
+    const newGeometry = this._buildTileGeometry(tile);
+    const oldGeometry = tile.mesh.geometry;
+    tile.mesh.geometry = newGeometry;
+    tile.geometry = newGeometry;
+    if (oldGeometry && oldGeometry !== newGeometry) oldGeometry.dispose();
+  }
+
+  /**
+   * Samples the resident terrain at a geodetic lat/lon (degrees). Returns null
+   * when no height tile covering the point is resident. `heightMeters` includes
+   * the displacement multiplier (it is the rendered surface height);
+   * `rawHeightMeters` is the baked height.
+   */
+  sampleTerrainHeight(latDeg, lonDeg) {
+    if (!Number.isFinite(latDeg) || !Number.isFinite(lonDeg)) return null;
+
+    const direction = latLonToDirection(
+      latDeg * DEG2RAD, lonDeg * DEG2RAD, this._tmpDir, this.planetE2);
+    const faceUv = directionToFaceUV(direction, this._tmpFaceUV);
+    const faceIndex = FACE_INDEX[faceUv.face];
+    const globalU = clamp01((faceUv.u + 1) * 0.5);
+    const globalV = clamp01((faceUv.v + 1) * 0.5);
+
+    // Prefer the deepest resident height tile, falling back through loaded
+    // ancestors. Tiles are streamed asynchronously, so absence is not an error.
+    for (let lod = this.maxAvailableLod; lod >= this.rootLod; lod--) {
+      const count = 1 << lod;
+      const x = Math.min(count - 1, Math.floor(globalU * count));
+      const y = Math.min(count - 1, Math.floor(globalV * count));
+      const tile = this._getTile(faceIndex, lod, x, y);
+      if (!tile?.heightSamples || !tile.heightWidth || !tile.heightHeight) continue;
+      const localU = globalU * count - x;
+      const localV = globalV * count - y;
+      const raw = this._sampleHeight(tile, localU, localV);
+      return {
+        heightMeters: raw * this.displacementScaleMultiplier,
+        rawHeightMeters: raw,
+        face: faceUv.face,
+        lod,
+        x,
+        y,
+        u: localU,
+        v: localV,
+        tileId: tile.id,
+      };
+    }
+    return null;
+  }
+
+  _ensureChildren(tile) {
+    const l = tile.lod + 1;
+    // Keep a stable 4-slot array. Eviction may null out individual slots (see
+    // _disposeTile) while siblings stay live, so refill only the vacated (or
+    // disposed) slots rather than rebuilding the whole quad.
+    if (!tile.children) tile.children = [null, null, null, null];
+    for (let i = 0; i < 4; i++) {
+      const existing = tile.children[i];
+      if (existing && !existing.disposed) continue;
+      const child = this._getOrCreateTile(tile.face, l, tile.x * 2 + (i & 1), tile.y * 2 + (i >> 1), tile);
+      this._ensureTileMesh(child);
+      tile.children[i] = child;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Visibility application
+  // ---------------------------------------------------------------------------
+
+  _applyVisibility() {
+    for (const tile of this.tiles.values()) {
+      if (!tile.mesh) continue;
+      const visible = tile.visibleFrame === this.frame;
+      tile.visible = visible;
+      tile.mesh.visible = visible;
+      if (visible && tile.ready && this.debugStats.startupTrace.firstVisibleReadyMs == null) {
+        this._traceFirst('firstVisibleReadyMs', tile, 'firstVisibleReadyTileId');
+      }
+      if (visible && tile.ready) this._recordStartupTileEvent(tile, 'visible');
+      if (visible && tile.mesh.parent !== this.group) {
+        this.group.add(tile.mesh);
+      }
+    }
+    if (this.debugMode !== 'none') this._applyDebugColors();
+  }
+
+  // How many LOD levels coarser the visible neighbour across an edge is
+  // (returns 2^d; 1 == same/finer, no morph needed). Within the face this is
+  // plain (x,y) arithmetic; across a cube seam we evaluate the shared
+  // parametrization just past the edge and invert it to the owning face + cell.
+  _neighborStep(tile, dx, dy) {
+    const tc = 1 << tile.lod;
+    let nfaceIndex = tile.faceIndex;
+    let nx = tile.x + dx;
+    let ny = tile.y + dy;
+    if (nx < 0 || ny < 0 || nx >= tc || ny >= tc) {
+      const span = 2 / tc;
+      const u = -1 + (nx + 0.5) * span; // cell-center cube coords (may exceed +/-1)
+      const v = -1 + (ny + 0.5) * span;
+      cubeToDirection(tile.face, u, v, this._tmpMorphDir);
+      directionToFaceUV(this._tmpMorphDir, this._tmpFaceUV);
+      nfaceIndex = FACE_INDEX[this._tmpFaceUV.face];
+      nx = Math.min(tc - 1, Math.max(0, Math.floor((this._tmpFaceUV.u + 1) * 0.5 * tc)));
+      ny = Math.min(tc - 1, Math.max(0, Math.floor((this._tmpFaceUV.v + 1) * 0.5 * tc)));
+    }
+    for (let d = 1; tile.lod - d >= this.rootLod; d++) {
+      const n = this._getTile(nfaceIndex, tile.lod - d, nx >> d, ny >> d);
+      if (n && n.visibleFrame === this.frame) return 1 << d;
+    }
+    return 1;
+  }
+
+  // Computes each visible tile's coarser-neighbor edge mask and rebuilds geometry
+  // when it changes, so edges morph to match coarser neighbors.
+  _updateEdgeMorph() {
+    const steps = this._steps;
+    for (const tile of this.visibleList) {
+      if (!tile.ready) continue;
+      steps[0] = this._neighborStep(tile, 0, -1); // T
+      steps[1] = this._neighborStep(tile, 0, 1);  // B
+      steps[2] = this._neighborStep(tile, -1, 0); // L
+      steps[3] = this._neighborStep(tile, 1, 0);  // R
+      const mask = steps[0] | (steps[1] << 5) | (steps[2] << 10) | (steps[3] << 15);
+      if (mask !== tile.edgeMask) {
+        tile.edgeMask = mask;
+        tile.edgeSteps = steps.slice();
+        this._replaceGeometry(tile);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Streaming
+  // ---------------------------------------------------------------------------
+
+  // Marks a tile as wanted this frame with a freshly computed priority.
+  _want(tile) {
+    if (tile.wantedFrame === this.frame) return;
+    tile.wantedFrame = this.frame;
+    tile.priority = this._computePriority(tile);
+    if (tile.loading || tile.ready || tile.retryScheduled || !this.hasAssets) return;
+    if (tile.queuedAtMs === 0) {
+      tile.queuedAtMs = performance.now();
+      this._traceFirst('firstEnqueueMs', tile, 'firstEnqueueTileId');
+      this._recordStartupTileEvent(tile, 'enqueue');
+    }
+    this.wantedTiles.push(tile);
+  }
+
+  _processQueue() {
+    // Wait for the manifest so tiles load with correct dimensions/meta.
+    if (!this.manifestReady || !this.hasAssets) return;
+    const free = this.maxConcurrentLoads - this.inflightLoads;
+    const wanted = this.wantedTiles;
+    if (free <= 0 || wanted.length === 0) return;
+    if (wanted.length > free) wanted.sort(byPriorityDesc);
+    let started = 0;
+    for (let i = 0; i < wanted.length && started < free; i++) {
+      const tile = wanted[i];
+      if (tile.disposed || tile.ready || tile.loading || tile.retryScheduled) continue;
+      // Loads can be wanted before the manifest arrives. Skip any that the
+      // resolved sparse manifest says do not exist instead of issuing 404s.
+      if (this.manifest?.tiles && !this.manifestTileMap.has(tile.id)) continue;
+      this._loadTile(tile);
+      started += 1;
+    }
+  }
+
+  _addTileBytes(tile, bytes) {
+    tile.estimatedBytes += bytes;
+    this.debugStats.gpuBytes += bytes;
+  }
+
+  async _loadTile(tile) {
+    tile.loading = true;
+    tile.loadGeneration += 1;
+    const generation = tile.loadGeneration;
+    tile.abortController = new AbortController();
+    const signal = tile.abortController.signal;
+    tile.debugColorFetchMs = 0;
+    tile.debugColorTransferBytes = 0;
+    tile.debugHeightFetchMs = 0;
+    tile.debugHeightTransferBytes = 0;
+    const sourceKey = this._getTileSourceKey(tile);
+    const sourceStats = this._getSourceStats(sourceKey);
+    const lodStats = this._getLodStats(sourceStats, tile.lod);
+    const loadStartedAt = performance.now();
+    const queueWaitMs = tile.queuedAtMs > 0 ? Math.max(0, loadStartedAt - tile.queuedAtMs) : 0;
+    tile.queuedAtMs = 0;
+    tile.loadStartedAtMs = loadStartedAt;
+    tile.debugSourceKey = sourceKey;
+    this._traceFirst('firstLoadStartedMs', tile, 'firstLoadTileId');
+    this._recordStartupTileEvent(tile, 'start');
+    this.debugStats.loadStarted += 1;
+    sourceStats.loadStarted += 1;
+    lodStats.loadStarted += 1;
+    this.inflightLoads += 1;
+    this.debugStats.maxInflight = Math.max(this.debugStats.maxInflight, this.inflightLoads);
+
+    // Only fetch the streams that are still missing: a previous attempt may
+    // already have delivered one of them.
+    const needColor = !tile.colorReady;
+    const needHeight = !tile.heightReady;
+    let colorMs = 0;
+    let heightMs = 0;
+    const metrics = (outcome) => ({
+      queueWaitMs,
+      colorMs,
+      heightMs,
+      loadMs: performance.now() - loadStartedAt,
+      colorFetchMs: tile.debugColorFetchMs || 0,
+      heightFetchMs: tile.debugHeightFetchMs || 0,
+      colorTransferBytes: tile.debugColorTransferBytes || 0,
+      heightTransferBytes: tile.debugHeightTransferBytes || 0,
+      outcome,
+    });
+
+    try {
+      const startedAt = performance.now();
+      const colorPromise = needColor
+        ? this._loadColor(tile, signal).finally(() => { colorMs = performance.now() - startedAt; })
+        : Promise.resolve(null);
+      const heightPromise = needHeight
+        ? this._loadHeight(tile, signal).finally(() => { heightMs = performance.now() - startedAt; })
+        : Promise.resolve(null);
+      const [colorResult, heightResult] = await Promise.allSettled([colorPromise, heightPromise]);
+
+      // Evicted (or superseded) while the request was in flight: drop the data.
+      if (tile.disposed || tile.loadGeneration !== generation) {
+        if (colorResult.status === 'fulfilled' && colorResult.value) colorResult.value.dispose();
+        this._recordLoadMetrics(sourceStats, lodStats, metrics('superseded'));
+        return;
+      }
+
+      if (needColor && colorResult.status === 'fulfilled') {
+        const texture = colorResult.value;
+        tile.texture = texture; // null => tolerated missing color (flat material)
+        tile.colorReady = true;
+        if (texture) this._addTileBytes(tile, this._estimateTextureBytes(texture));
+        this._recordStartupTileEvent(tile, 'colorDone');
+      }
+      if (needHeight && heightResult.status === 'fulfilled') {
+        const height = heightResult.value;
+        tile.heightSamples = height.samples;
+        tile.heightWidth = height.width;
+        tile.heightHeight = height.height;
+        tile.minHeightMeters = height.minHeightMeters;
+        tile.maxHeightMeters = height.maxHeightMeters;
+        tile.heightReady = true;
+        this._addTileBytes(tile, height.samples.byteLength || 0);
+        this._recordStartupTileEvent(tile, 'heightDone');
+      }
+
+      if (tile.ready) {
+        this._recordLoadMetrics(sourceStats, lodStats, metrics('success'));
+        this._traceFirst('firstLoadFinishedMs', tile, 'firstFinishedTileId');
+        this._applyTileData(tile);
+        this._recordStartupTileEvent(tile, 'apply');
+        return;
+      }
+
+      // At least one stream failed.
+      const error = colorResult.status === 'rejected' ? colorResult.reason : heightResult.reason;
+      if (signal.aborted) return;
+      tile.loadAttempts += 1;
+      if (tile.loadAttempts < this.maxLoadAttempts) {
+        this._recordLoadMetrics(sourceStats, lodStats, metrics('retry'));
+        // Transient failure (e.g. net::ERR_NETWORK_CHANGED). Leave the tile
+        // un-ready and let selection want it again after an exponential backoff
+        // so a brief network blip has time to clear before the next attempt.
+        const delay = Math.min(
+          this.retryMaxDelayMs,
+          this.retryBaseDelayMs * 2 ** (tile.loadAttempts - 1),
+        );
+        tile.retryScheduled = true;
+        if (tile.retryTimer) clearTimeout(tile.retryTimer);
+        tile.retryTimer = setTimeout(() => {
+          tile.retryTimer = null;
+          tile.retryScheduled = false;
+        }, delay);
+        return;
+      }
+      this._recordLoadMetrics(sourceStats, lodStats, metrics('failed'));
+      console.warn(
+        `[planet] tile load gave up ${tile.id} ` +
+        `after ${tile.loadAttempts} attempts, using flat fallback:`,
+        error?.message || error,
+      );
+      this.debugStats.droppedLoads += 1;
+      // Mark the missing streams ready with flat data so selection can progress.
+      if (!tile.heightReady) {
+        tile.heightSamples = null;
+        tile.heightWidth = 0;
+        tile.heightHeight = 0;
+        tile.heightReady = true;
+      }
+      tile.colorReady = true;
+      this._applyTileData(tile);
+    } finally {
+      if (tile.loadGeneration === generation) {
+        tile.loading = false;
+        tile.abortController = null;
+      }
+      this.inflightLoads -= 1;
+    }
+  }
+
+  _colorUrl(tile) {
+    const src = this.tileSourceMap.get(tile.id);
+    const colorBase = src ? src.colorBasePath : this.colorBasePath;
+    return `${colorBase}/${tile.face}/${tile.lod}/${tile.x}/${tile.y}.ktx2`;
+  }
+
+  _heightUrl(tile) {
+    const src = this.tileSourceMap.get(tile.id);
+    const heightBase = src ? src.heightBasePath : this.heightBasePath;
+    return `${heightBase}/${tile.face}/${tile.lod}/${tile.x}/${tile.y}.bin`;
+  }
+
+  async _loadColor(tile, signal) {
+    const url = this._colorUrl(tile);
+    const startedAt = performance.now();
+    const trace = this.debugStats.startupTrace;
+    try {
+      const texture = await this.ktx2Loader.loadAsync(url);
+      if (this.traceEnabled) {
+        const timing = this._getLatestResourceTiming(url, startedAt);
+        tile.debugColorFetchMs = timing ? Math.max(0, timing.responseEnd - timing.startTime) : 0;
+        tile.debugColorTransferBytes = timing?.transferSize || 0;
+        const fetchEndMs = timing ? Math.max(0, timing.responseEnd - trace.t0Ms) : (performance.now() - trace.t0Ms);
+        this._recordStartupTileEvent(tile, 'colorFetch', fetchEndMs);
+      } else {
+        tile.debugColorFetchMs = performance.now() - startedAt;
+      }
+      if (signal.aborted) { texture.dispose(); return null; }
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.flipY = false; // GPU-compressed; matches the generator's row order
+      texture.anisotropy = this.textureAnisotropy;
+      texture.needsUpdate = true;
+      return texture;
+    } catch (error) {
+      tile.debugColorFetchMs = 0;
+      tile.debugColorTransferBytes = 0;
+      if (this.requireKtx2) return null;
+      throw error;
+    }
+  }
+
+  async _loadHeight(tile, signal) {
+    const meta = tile.meta || this._getTileMeta(tile);
+    const width = meta.width ?? 64;
+    const height = meta.height ?? 64;
+    const minHeightMeters = this.heightMinMeters;
+    const maxHeightMeters = this.heightMaxMeters;
+
+    const url = this._heightUrl(tile);
+    const startedAt = performance.now();
+    const trace = this.debugStats.startupTrace;
+    // Tiles are immutable build outputs: use normal HTTP caching.
+    const response = await fetch(url, { signal });
+
+    if (!response.ok) {
+      tile.debugHeightFetchMs = 0;
+      tile.debugHeightTransferBytes = 0;
+      this._recordStartupTileEvent(tile, 'heightFetch');
+      if (response.status === 404) {
+        return { width, height, minHeightMeters, maxHeightMeters, samples: new Uint16Array(width * height) };
+      }
+      throw new Error(`height fetch ${response.status} for ${url}`);
+    }
+
+    const buffer = await response.arrayBuffer();
+    if (this.traceEnabled) {
+      const timing = this._getLatestResourceTiming(url, startedAt);
+      tile.debugHeightFetchMs = timing ? Math.max(0, timing.responseEnd - timing.startTime) : 0;
+      tile.debugHeightTransferBytes = timing?.transferSize || 0;
+      const fetchEndMs = timing ? Math.max(0, timing.responseEnd - trace.t0Ms) : (performance.now() - trace.t0Ms);
+      this._recordStartupTileEvent(tile, 'heightFetch', fetchEndMs);
+    } else {
+      tile.debugHeightFetchMs = performance.now() - startedAt;
+      tile.debugHeightTransferBytes = buffer.byteLength;
+    }
+    const samples = new Uint16Array(buffer);
+    let outWidth = width;
+    let outHeight = height;
+    if (samples.length !== width * height) {
+      // Height tiles are always square, so the .bin is self-describing. Trust its
+      // actual size over the manifest metadata when they disagree (e.g. after a
+      // partial/mixed re-bake or manual file copy) so decoding stays correct
+      // instead of reading past the buffer or misindexing the grid.
+      const side = Math.round(Math.sqrt(samples.length));
+      if (side > 0 && side * side === samples.length) {
+        outWidth = side;
+        outHeight = side;
+      } else {
+        console.warn(`[planet] height size mismatch ${tile.id}: got ${samples.length}, expected ${width * height}`);
+      }
+    }
+    return { width: outWidth, height: outHeight, minHeightMeters, maxHeightMeters, samples };
+  }
+
+  // Rebuilds geometry (with height) and swaps the streamed color map into place.
+  _applyTileData(tile) {
+    if (!tile.mesh || tile.disposed) return;
+
+    this._replaceGeometry(tile);
+
+    if (tile.texture && this.debugMode === 'none') {
+      tile.material.map = tile.texture;
+      tile.material.color.set(0xffffff);
+      tile.material.needsUpdate = true;
+    }
+    // Use a uniform finish across all tiles; deriving roughness from per-tile
+    // terrain variance makes refined regions visibly matte/shiny vs their parent.
+    tile.material.roughness = 1;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Eviction (LRU, budget-bounded). Roots and ancestors-of-visible are protected.
+  // ---------------------------------------------------------------------------
+
+  _overBudget() {
+    return this.tiles.size > this.maxTileCount || this.debugStats.gpuBytes > this.maxGpuBytes;
+  }
+
+  _evictLRU() {
+    if (!this._overBudget()) return;
+
+    const candidates = this._evictCandidates;
+    candidates.length = 0;
+    for (const tile of this.tiles.values()) {
+      if (tile.lod === this.rootLod) continue;
+      if (this.selectionRootIds.has(tile.id)) continue;
+      // Selection touches every tile required to preserve the current view,
+      // including off-screen siblings needed for an atomic parent-to-children
+      // transition. Evicting one of those siblings makes the selector recreate
+      // and reload it next frame, producing an endless coarse/detail cycle.
+      if (tile.lastUsedFrame === this.frame) continue;
+      if (tile.visibleFrame === this.frame) continue;
+      if (this._isAncestorOfVisible(tile)) continue;
+      candidates.push(tile);
+    }
+    // Least recently used first; deepest first among equals.
+    candidates.sort((a, b) => (a.lastUsedFrame - b.lastUsedFrame) || (b.lod - a.lod));
+
+    for (const tile of candidates) {
+      if (!this._overBudget()) break;
+      if (tile.disposed) continue; // already removed together with an ancestor
+      this._disposeTile(tile, true);
+    }
+    candidates.length = 0;
+  }
+
+  _isAncestorOfVisible(tile) {
+    if (!tile.children) return false;
+    const stack = this._evictStack;
+    stack.length = 0;
+    for (const c of tile.children) if (c) stack.push(c);
+    while (stack.length) {
+      const t = stack.pop();
+      if (t.visibleFrame === this.frame) { stack.length = 0; return true; }
+      if (t.children) for (const c of t.children) if (c) stack.push(c);
+    }
+    return false;
+  }
+
+  // Disposes a tile and (first) all of its descendants, so no child is ever left
+  // linked under a parent that no longer exists.
+  _disposeTile(tile, countAsEviction = false) {
+    if (tile.disposed) return;
+    if (tile.children) {
+      for (const child of tile.children) {
+        if (!child || child.disposed || child.parent !== tile) continue;
+        if (this.selectionRootIds.has(child.id) || child.lastUsedFrame === this.frame) {
+          child.parent = null; // still needed this frame: just unlink
+          continue;
+        }
+        this._disposeTile(child, countAsEviction);
+      }
+      tile.children = null;
+    }
+
+    tile.disposed = true;
+    tile.loadGeneration += 1; // invalidates any in-flight load
+    if (tile.abortController) {
+      tile.abortController.abort();
+      tile.abortController = null;
+    }
+    tile.loading = false;
+    if (tile.retryTimer) {
+      clearTimeout(tile.retryTimer);
+      tile.retryTimer = null;
+      tile.retryScheduled = false;
+    }
+    if (tile.mesh && tile.mesh.parent) tile.mesh.parent.remove(tile.mesh);
+    if (tile.texture) { tile.texture.dispose(); tile.texture = null; }
+    if (tile.mesh?.geometry) tile.mesh.geometry.dispose();
+    if (tile.material && tile.material !== this.baseMaterial) tile.material.dispose();
+    tile.heightSamples = null;
+    this.debugStats.gpuBytes = Math.max(0, this.debugStats.gpuBytes - tile.estimatedBytes);
+    tile.estimatedBytes = 0;
+
+    // Detach ONLY this tile from its parent's child list, leaving live siblings
+    // in place.
+    const parent = tile.parent;
+    if (parent && parent.children) {
+      const idx = parent.children.indexOf(tile);
+      if (idx !== -1) parent.children[idx] = null;
+    }
+    tile.parent = null;
+
+    if (this.tiles.get(tile.numKey) === tile) this.tiles.delete(tile.numKey);
+    if (countAsEviction) {
+      this.debugStats.evictedTiles += 1;
+      this._getSourceStats(this._getTileSourceKey(tile)).evictedTiles += 1;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Public controls
+  // ---------------------------------------------------------------------------
+
+  // When disabled, update() does nothing (no selection, no streaming).
+  setEnabled(enabled) {
+    this.enabled = !!enabled;
+  }
+
+  setDebugMode(mode) {
+    this.debugMode = mode || 'none';
+    if (this.debugMode === 'none') {
+      // Restore streamed textures.
+      for (const tile of this.tiles.values()) {
+        if (!tile.material) continue;
+        tile.material.wireframe = false;
+        if (tile.texture) {
+          tile.material.map = tile.texture;
+          tile.material.color.set(0xffffff);
+        } else {
+          tile.material.map = null;
+          tile.material.color.copy(this.baseMaterial.color);
+        }
+        tile.material.needsUpdate = true;
+      }
+    } else {
+      this._applyDebugColors();
+    }
+  }
+
+  setDoubleSided(doubleSided) {
+    const side = doubleSided ? THREE.DoubleSide : THREE.FrontSide;
+    for (const material of this._allMaterials()) {
+      if (material.side === side) continue;
+      material.side = side;
+      material.needsUpdate = true;
+    }
+  }
+
+  // Opacity in [0,1] for the base material and every current tile material
+  // (future tiles inherit it from the base material).
+  setOpacity(value) {
+    const opacity = THREE.MathUtils.clamp(Number(value) || 0, 0, 1);
+    this.opacity = opacity;
+    const transparent = opacity < 1;
+    for (const material of this._allMaterials()) {
+      material.opacity = opacity;
+      if (material.transparent !== transparent) {
+        material.transparent = transparent;
+        material.depthWrite = !transparent;
+        material.needsUpdate = true;
+      }
+    }
+  }
+
+  // Changes the terrain exaggeration and rebuilds every resident tile.
+  setDisplacementScale(multiplier) {
+    const m = Math.max(0, Number(multiplier) || 0);
+    if (m === this.displacementScaleMultiplier) return;
+    this.displacementScaleMultiplier = m;
+    for (const tile of this.tiles.values()) {
+      tile.boundsValid = false;
+      this._updateTileBounds(tile);
+      if (tile.mesh) this._replaceGeometry(tile);
+    }
+  }
+
+  *_allMaterials() {
+    yield this.baseMaterial;
+    for (const tile of this.tiles.values()) {
+      if (tile.material) yield tile.material;
+    }
+  }
+
+  // Intersections with the currently displayed tiles only (coarse parents that
+  // are hidden while their children are shown are ignored), nearest first.
+  raycast(raycaster, intersects = []) {
+    if (!this.group.visible) return intersects;
+    this.group.updateWorldMatrix(true, false);
+    for (const tile of this.visibleList) {
+      const mesh = tile.mesh;
+      if (!mesh || !mesh.visible || tile.disposed) continue;
+      if (!raycaster.layers.test(mesh.layers)) continue;
+      mesh.updateWorldMatrix(false, false);
+      mesh.raycast(raycaster, intersects);
+    }
+    intersects.sort((a, b) => a.distance - b.distance);
+    return intersects;
+  }
+
+  _applyDebugColors() {
+    const mode = this.debugMode;
+    const color = this._tmpColor;
+    for (const tile of this.visibleList) {
+      if (!tile.material) continue;
+      const meta = tile.meta || this._getTileMeta(tile);
+      let wireframe = false;
+
+      switch (mode) {
+        case 'tileBorders':
+          wireframe = true;
+          color.setHex(0x00ff88);
+          break;
+        case 'lod':
+          colorRamp01(tile.lod / Math.max(1, this.maxAvailableLod), color);
+          break;
+        case 'priority':
+          colorRamp01(clamp01(tile.priority / 5e6), color);
+          break;
+        case 'roughness':
+          colorRamp01(clamp01((meta.roughness ?? 0) * 6), color);
+          break;
+        case 'landWater':
+          color.setRGB(clamp01(meta.landFraction ?? 0.5), 0.3, clamp01(meta.waterFraction ?? 0.5));
+          break;
+        case 'loading':
+          color.setHex(tile.ready ? 0x2266ff : tile.loading ? 0xffaa00 : 0xff2244);
+          break;
+        default:
+          color.setHex(0x8aa7c2);
+          break;
+      }
+
+      const material = tile.material;
+      material.color.copy(color);
+      // Colour changes are plain uniform updates; only a change of map or
+      // wireframe needs a program/state refresh.
+      if (material.map !== null || material.wireframe !== wireframe) {
+        material.map = null;
+        material.wireframe = wireframe;
+        material.needsUpdate = true;
+      }
+    }
   }
 
   dispose() {
     for (const tile of [...this.tiles.values()]) this._disposeTile(tile);
     this.tiles.clear();
-    this.visibleTiles.clear();
-    this.priorityQueue.clear();
-    this.queuedSet.clear();
+    this.visibleList.length = 0;
+    this.wantedTiles.length = 0;
     this.baseMaterial.dispose();
-  }
-}
-
-// -----------------------------------------------------------------------------
-// planet2 - public factory returning [planetMeshes, atmosphereMesh, backgroundPatch]
-// with attached LOD-control hooks, matching the planet.js contract used by main.js.
-// -----------------------------------------------------------------------------
-
-export class planet2 {
-  constructor(dParamWithUnits, planetSpec, enableVR, nonGUIParams = {}) {
-    const renderer = nonGUIParams.renderer ||
-      (typeof nonGUIParams.getRenderer === 'function' ? nonGUIParams.getRenderer() : null);
-    if (renderer) {
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    } else {
-      console.warn('[planet2] renderer missing; KTX2 detectSupport(renderer) deferred.');
-    }
-
-    const planetMeshes = new THREE.Group();
-    planetMeshes.name = 'planetMeshes';
-    planetMeshes.rotation.y = PLANET_YAW; // global alignment only
-
-    const queryParams = typeof window !== 'undefined'
-      ? new URLSearchParams(window.location.search)
-      : null;
-
-    const assetNames = [];
-    let assets;
-    const baseHref = (typeof window !== 'undefined' && window.location?.href)
-      ? window.location.href
-      : 'http://localhost/';
-    const pushNames = (value) => {
-      const list = Array.isArray(value)
-        ? value
-        : typeof value === 'string'
-          ? value.split(',')
-          : [];
-      for (const name of list) {
-        const trimmed = String(name).trim();
-        if (trimmed.length > 0) assetNames.push(trimmed);
-      }
-    };
-
-    // New ordered asset stack: the first asset is the base globe, later assets
-    // overlay in the same order they are listed.
-    pushNames(queryParams?.get('planet2Assets') || '');
-    pushNames(nonGUIParams.planet2Assets);
-
-    // Legacy fallback: preserve old base + overlay wiring for callers that have
-    // not moved to the new ordered asset stack yet.
-    if (assetNames.length === 0) {
-      const legacyManifestUrl = nonGUIParams.planet2ManifestUrl ||
-        queryParams?.get('planet2ManifestUrl') ||
-        '/assets/earth/manifest.json';
-      const legacyColorBasePath = nonGUIParams.planet2ColorBasePath ||
-        queryParams?.get('planet2ColorBasePath') ||
-        '/assets/earth/color';
-      const legacyHeightBasePath = nonGUIParams.planet2HeightBasePath ||
-        queryParams?.get('planet2HeightBasePath') ||
-        '/assets/earth/height';
-      const legacyBase = (() => {
-        try {
-          const pathname = new URL(legacyManifestUrl, baseHref).pathname;
-          const parts = pathname.split('/').filter(Boolean);
-          if (parts.length >= 2) return parts[parts.length - 2];
-        } catch {
-          // Fall through to the default Earth root.
-        }
-        try {
-          const pathname = new URL(legacyColorBasePath, baseHref).pathname;
-          const parts = pathname.split('/').filter(Boolean);
-          if (parts.length >= 2) return parts[parts.length - 2];
-        } catch {
-          // Fall through to the default Earth root.
-        }
-        return 'earth';
-      })();
-      const legacyOverlayParam = (queryParams?.get('planet2Overlays')) || '';
-      const legacyOverlayNames = [
-        ...legacyOverlayParam.split(','),
-        ...(Array.isArray(nonGUIParams.planet2Overlays) ? nonGUIParams.planet2Overlays : []),
-      ]
-        .map((s) => String(s).trim())
-        .filter((s) => s.length > 0);
-      assetNames.push(legacyBase, ...legacyOverlayNames);
-      assets = [{
-        name: legacyBase,
-        manifestUrl: legacyManifestUrl,
-        colorBasePath: legacyColorBasePath,
-        heightBasePath: legacyHeightBasePath,
-      }, ...legacyOverlayNames.map((name) => ({
-        name,
-        manifestUrl: `/assets/${name}/manifest.json`,
-        colorBasePath: `/assets/${name}/color`,
-        heightBasePath: `/assets/${name}/height`,
-      }))];
-    }
-
-    const uniqueAssetNames = [...new Set(assetNames)];
-    if (typeof assets === 'undefined') {
-      assets = uniqueAssetNames.map((name) => ({
-        name,
-        manifestUrl: `/assets/${name}/manifest.json`,
-        colorBasePath: `/assets/${name}/color`,
-        heightBasePath: `/assets/${name}/height`,
-      }));
-    }
-
-    const lodRenderer = new CubedSpherePlanetRenderer({
-      group: planetMeshes,
-      renderer,
-      planetSpec,
-      assets,
-      segments: nonGUIParams.tileSegments ?? 24,
-      maxConcurrentLoads: nonGUIParams.maxConcurrentTileLoads ?? 8,
-      maxTileCount: nonGUIParams.maxCachedTiles ?? 320,
-      maxGpuBytes: nonGUIParams.maxTileGpuBytes ?? 700 * 1024 * 1024,
-      sseThreshold: nonGUIParams.tileSseThreshold ?? 3.5,
-      maxAvailableLod: nonGUIParams.maxAvailableTileLod ?? 6,
-      requireKtx2: nonGUIParams.planet2RequireKtx2 === true,
-      receiveSurfaceShadows: nonGUIParams.enableSurfaceShadows === true,
-      textureAnisotropy: nonGUIParams.planet2TextureAnisotropy ?? 4,
-      enableStartupChart: nonGUIParams.planet2StartupChart === true,
-      locationInterests: nonGUIParams.locationInterests,
-      displacementScaleMultiplier: nonGUIParams.planet2DisplacementScaleMultiplier ?? 1,
-      surfaceDetail: nonGUIParams.planet2SurfaceDetail,
-      surfaceColor: nonGUIParams.planet2SurfaceColor,
-      fastCameraSpeed: nonGUIParams.planet2FastCameraSpeed ?? Infinity,
-      maxLodWhileFast: nonGUIParams.planet2MaxLodWhileFast ?? Infinity,
-      doubleSided: dParamWithUnits?.earthTextureDoubleSided?.value === true,
-    });
-    this.lodRenderer = lodRenderer;
-
-    // Atmosphere shell (back-sided additive shader), matching the legacy stack.
-    const roughPlanetRadius = planetSpec.ellipsoid.a;
-    const atmosphereMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(roughPlanetRadius, 64, 32),
-      new THREE.ShaderMaterial({
-        vertexShader: document.getElementById('atmosphereVertexShader')?.textContent ||
-          'void main(){gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}',
-        fragmentShader: document.getElementById('atmosphereFragmentShader')?.textContent ||
-          'void main(){gl_FragColor=vec4(0.2,0.4,1.0,0.12);}',
-        blending: THREE.AdditiveBlending,
-        side: THREE.BackSide,
-        depthWrite: false,
-        transparent: true,
-      })
-    );
-    atmosphereMesh.name = 'atmosphere';
-    atmosphereMesh.visible = dParamWithUnits?.showEarthsAtmosphere?.value ?? true;
-
-    const f = planetSpec.ellipsoid.f || 0;
-    const polarScale = 1.0 - f;
-    atmosphereMesh.scale.set(1.1, 1.1 * polarScale, 1.1);
-
-    const backgroundPatchMesh = null;
-
-    const result = [planetMeshes, atmosphereMesh, backgroundPatchMesh];
-    result.updatePlanetLod = (camera) => lodRenderer.update(camera);
-    result.setPlanetDebugMode = (mode) => lodRenderer.setDebugMode(mode);
-    result.setPlanetDoubleSided = (doubleSided) => lodRenderer.setDoubleSided(doubleSided);
-    result.getPlanetDebugStats = () => lodRenderer.getDebugStats();
-    result.sampleTerrainHeight = (lat, lon) => lodRenderer.sampleTerrainHeight(lat, lon);
-    result.disposePlanetLod = () => lodRenderer.dispose();
-
-    if (typeof nonGUIParams.registerPlanetLodUpdater === 'function') {
-      nonGUIParams.registerPlanetLodUpdater(result.updatePlanetLod);
-    }
-
-    return result;
   }
 }
