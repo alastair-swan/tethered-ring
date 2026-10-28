@@ -131,7 +131,9 @@ The launcher's reference frames split the track into a few hundred zones, each k
 
 ### The screw thread model
 
-The thread's phase along the screw comes from the adaptive nut's motion (`threadTime` and `threadSpeed` in `src/launcher/launcherPhysics.js`): the thread at each point matches the nut's speed as its centre passes. With constant acceleration, the unrolled flight is a quadratic in the thread angle. The screw geometry and the grappler pads both use these functions. The thread only starts where the groove between flights can hold a grappler pad plus its lift-away clearance (`threadStartDistance`); before that the screw is a plain shaft and pads stay disengaged.
+The thread's phase along the screw comes from the adaptive nut's motion (`threadTime` and `threadSpeed` in `src/launcher/launcherPhysics.js`): the thread at each point matches the nut's speed as its centre passes. With constant acceleration, the unrolled flight is a quadratic in the thread angle. The screw geometry and the grappler pads both use these functions. The thread only starts where the groove between flights can hold a grappler pad plus its lift-away clearance (`threadStartDistance`, measured at the pad's inner edge); before that the screw is a plain shaft and pads stay disengaged.
+
+`screwThreadLayout()` decides how many starts (flights) the screw has where. It always uses the most that leave room for a pad, in a doubling sequence that ends at `launcherMassDriverScrewThreadStarts` (for 8: 2, then 4, then 8; for 12: 3, 6, 12; never 1, which would unbalance the screw). Doubling keeps the existing flights and adds new ones halfway between them. Extra starts begin at a screw segment boundary, and each grappler uses the starts of the segment it is over, so screws and pads always agree. The launcher computes the layout once and shares it with the screws, the nuts and the specs.
 
 Use `npm run profile` to measure a change (see the README).
 

@@ -245,6 +245,11 @@ export class launcher {
     dParamWithUnits = this.effectiveParams(dParamWithUnits)
     const segments = this.massDriverAccelerationScrewSegments
     const length = this.accelerationScrewLength
+    // One thread layout (where the thread starts and how many starts it has where) for the screws and
+    // the nuts' grapplers, so they always agree.
+    this.threadLayout = tram.screwThreadLayout(dParamWithUnits, length / Math.max(1, segments))
+    virtualMassDriverScrew.threadLayout = this.threadLayout
+    virtualAdaptiveNut.threadLayout = this.threadLayout
     this.objectClasses.forEach(objectClass => {
       switch (objectClass) {
         case virtualLaunchVehicle: objectClass.update(dParamWithUnits, planetSpec); break

@@ -47,7 +47,9 @@ class SledGrapplerPlacementInfo {
     this.shaftRadius = shaftRadius
     this.threadRadius = threadRadius
     this.threadThickness = threadThickness
-    this.threadStarts = Math.max(1, threadStarts)
+    // threadStarts may be a function of the distance along the screw (see screwThreadLayout).
+    this.startsAt = (typeof threadStarts === 'function') ? threadStarts : () => Math.max(1, threadStarts)
+    this.threadStarts = null // Later: the number of starts where the last placed grappler is
     this.revolutionsPerSecond = nonZero(revolutionsPerSecond, 1e-3)
     this.acceleration = nonZero(acceleration, 1e-3)
     this.initialVelocity = Math.max(1, initialVelocity)
@@ -91,6 +93,7 @@ class SledGrapplerPlacementInfo {
     // We need the distance to the middle of the grappler pad. We'll call this "gPlus"
     const gPlus = grapplerDistance + this.grapplerMidOffset
     const shift = shiftToThread(this.distanceToSledAft + grapplerDistance, this.threadStartDistance)
+    const threadStarts = this.threadStarts = this.startsAt(this.distanceToSledAft + grapplerDistance + shift)
     const time = threadTime(this.distanceToSledAft + gPlus + shift, this.initialVelocity, this.initialDistance, this.acceleration)
 
     const rateOfChangeInForwardDisplacement = threadSpeed(this.distanceToSledAft + gPlus + shift, this.initialVelocity, this.initialDistance, this.acceleration)
@@ -107,17 +110,17 @@ class SledGrapplerPlacementInfo {
 
     const rotations = this.additionalRotation + this.revolutionsPerSecond * time
     // Calculate the maximum theoretical value for rotationAwayFromMidPoint
-    const maxRotationAwayFromMidPoint = 0.5 / this.threadStarts
+    const maxRotationAwayFromMidPoint = 0.5 / threadStarts
 
     const rotationsWithTwist = rotations - maxRotationAwayFromMidPoint
     const rotationsWithTwistFrac = rotationsWithTwist - Math.floor(rotationsWithTwist)
     // Only need the midRib version of the next two signals, but we'll calculate it for all of them for now.
-    const rotationsMeasuredInThreadStartsInt = Math.floor(rotationsWithTwistFrac * this.threadStarts)
-    const rotationsMeasuredInThreadStartsFrac = rotationsWithTwistFrac * this.threadStarts - rotationsMeasuredInThreadStartsInt
-    const nearestThread = (this.threadStarts-1) - rotationsMeasuredInThreadStartsInt
+    const rotationsMeasuredInThreadStartsInt = Math.floor(rotationsWithTwistFrac * threadStarts)
+    const rotationsMeasuredInThreadStartsFrac = rotationsWithTwistFrac * threadStarts - rotationsMeasuredInThreadStartsInt
+    const nearestThread = (threadStarts-1) - rotationsMeasuredInThreadStartsInt
 
     // Convert the 0 to 1 value to a -0.5 to +0.5 value, annd then scale it down by the number of thread starts
-    const rotationAwayFromMidPoint = (rotationsMeasuredInThreadStartsFrac - 0.5) / this.threadStarts
+    const rotationAwayFromMidPoint = (rotationsMeasuredInThreadStartsFrac - 0.5) / threadStarts
     // The first range limit is the specified maximum range of motion of the grapplers (a value of +/- 0.5 would represent be "unlimited range of motion").
     const rangeLimit1 = this.launchSledGrapplerMaxRangeOfMotion
     // The second range limit is needed to cause the grappler move from thread to thread even before the grappler's range of motion is exceeded. 
@@ -147,7 +150,7 @@ class SledGrapplerPlacementInfo {
     const r0 = shaftRadiusPlus - this.shaftToGrapplerPad/2
     const r1 = (shaftRadiusPlus + this.threadRadius) / 2
     const r2 = this.threadRadius + this.shaftToGrapplerPad/2
-    const precomputedPartOfAngle1 = 2 * Math.PI * ((rotations + nearestThread / this.threadStarts) % 1)
+    const precomputedPartOfAngle1 = 2 * Math.PI * ((rotations + nearestThread / threadStarts) % 1)
     const outerThreadPitchAngle = Math.atan(outerThreadPitch)
     const innerThreadPitchAngle = Math.atan(innerThreadPitch)
     const averagePitchAngle = (outerThreadPitchAngle + innerThreadPitchAngle) / 2

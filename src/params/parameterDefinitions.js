@@ -310,7 +310,7 @@ export function createParameterDefinitions() {
   launcherMassDriverScrewMaxTipSpeed: {value: 530, units: 'm/s', autoMap: true, min: 1, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverScrewThreadThickness: {value: 0.07, units: 'm', autoMap: true, min: .01, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverScrewThreadTaperRatio: {value: 0.25, units: '', autoMap: true, min: 0, max: 1, onChange: 'updateLauncher', folder: 'Launcher'}, // This is the ratio of the thread diameter to the screw diameter
-  launcherMassDriverScrewThreadStarts: {value: 4, units: '', autoMap: true, min: 1, max: 4, step: 1, onChange: 'updateLauncher', folder: 'Launcher'},   // This is the number of individual threads in the screw
+  launcherMassDriverScrewThreadStarts: {value: 4, units: '', autoMap: true, min: 0, max: 16, step: 1, onChange: 'updateLauncher', folder: 'Launcher'},   // Maximum number of individual threads (flights) in the screw. Starting from this halved while it stays a whole number >= 2 (e.g. 8: 2, 4, 8), the screw uses the most that leave room for a grappler pad; see screwThreadLayout (0 = 8)
   // "RoughLength" should be interpreted as "RoughSpacing", or the distance from the start of one screw to the start of the next
   launcherMassDriverScrewRoughLength: {value: 5, units: "", autoMap: true, min: 0, max: 10000, step: 1, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverScrewSidewaysOffset: {value: 3, units: "m", autoMap: true, min: -100, max: 100, onChange: 'updateLauncher', folder: 'Launcher'},

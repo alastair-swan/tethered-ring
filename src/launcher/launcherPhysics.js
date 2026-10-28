@@ -354,7 +354,7 @@ export function threadSpeed(distance, initialVelocity, initialDistance, accelera
   return -initialVelocity
 }
 
-// Distance along the screw from which the thread can drive the nut. A grappler pad engages by sitting
+// Distance along the screw from which a thread with threadStarts flights can drive the nut. A grappler pad engages by sitting
 // in the groove between two adjacent flights, so the groove must fit the pad and the clearance it
 // lifts away by. The groove is measured square to the flight faces at the pad's inner edge (radius
 // padInnerRadius, where it is narrowest), as (lead / threadStarts) * cos(leadAngle) - flight thickness,
@@ -380,34 +380,55 @@ export function threadStartDistance({ initialVelocity, initialDistance, accelera
   return initialDistance + (minimumSpeed**2 - initialVelocity**2) / (2 * acceleration)
 }
 
-// threadStartDistance for the current parameters (used by both the screws and the adaptive nuts).
-export function screwThreadStartDistance(dParamWithUnits) {
+// How the screw's thread is laid out along its length (shared by the screws, the adaptive nuts and
+// the specs). The screw always uses the largest number of starts (flights) in its doubling sequence
+// that still leaves room for a grappler pad between adjacent flights (see threadStartDistance).
+// Flight k of n sits at phase k / n, so doubling n keeps the existing flights and starts new ones
+// halfway between them. A single start would unbalance the screw, so the sequence starts at 2 or
+// more. It is set by the launcherMassDriverScrewThreadStarts parameter, the maximum M: M halved for
+// as long as that stays a whole number of at least 2 (8: 2, 4, 8; 12: 3, 6, 12; 10: 5, 10; 7: 7).
+// 0 means 8, about the most the current flight and pad geometry allows. The thread begins where the
+// first number in the sequence fits; before that the screw is a plain shaft.
+// segmentLength: when given, extra starts begin at the next screw segment boundary, so each segment
+// has a single number of starts (the first flight can begin mid-segment).
+export function screwThreadLayout(dParamWithUnits, segmentLength = 0) {
   const p = (name) => dParamWithUnits[name].value
-  return threadStartDistance({
+  const common = {
     initialVelocity: p('launcherMassDriver1InitialVelocity'),
     initialDistance: p('adaptiveNutBodyLength') / 2,
     acceleration: nonZero(p('launcherMassDriverForwardAcceleration'), 1e-3),
     revolutionsPerSecond: p('launcherMassDriverScrewRevolutionsPerSecond'),
-    // (calculateThreadStarts can add starts further along; the thread always starts well before that.)
-    threadStarts: calculateThreadStarts(0, p('launcherMassDriverScrewThreadStarts')),
     shaftRadius: p('launcherMassDriverScrewShaftOuterRadius'),
     threadRadius: p('launcherMassDriverScrewThreadRadius'),
     threadThickness: p('launcherMassDriverScrewThreadThickness'),
     threadTaperRatio: p('launcherMassDriverScrewThreadTaperRatio'),
     padInnerRadius: p('launcherMassDriverScrewShaftOuterRadius') + p('adaptiveNutShaftToGrapplerPad'),
     padThickness: p('adaptiveNutGrapplerMagnetThickness') + p('adaptiveNutGrapplerPadLiftAwayDistance'),
-  })
-}
-
-export function calculateThreadStarts(baseDistanceAlongScrew, theadStarts) {
-  // ToDo: This is a proof of concept. We need to implement a more accurate algorithm for adjusting the number of thread starts as the vehicle progresses down the launcher.
-  //return (baseDistanceAlongScrew<2000) ? 1 : (baseDistanceAlongScrew<5000) ? 2 : (baseDistanceAlongScrew<20000) ? 4 : 8
-  if (theadStarts==0) {
-    //return (baseDistanceAlongScrew<400) ? 1 : (baseDistanceAlongScrew<5000) ? 2 : 4
-    return (baseDistanceAlongScrew<5000) ? 2 : 4
   }
-  else {
-    return theadStarts
+  const requested = Math.round(p('launcherMassDriverScrewThreadStarts'))
+  const maxStarts = (requested >= 1) ? Math.max(2, requested) : 8
+  let firstStarts = maxStarts
+  while (firstStarts % 2 === 0 && firstStarts / 2 >= 2) firstStarts /= 2
+  // steps[i]: { starts, distance } where that many starts begin; distances increase with starts.
+  const steps = []
+  for (let starts = firstStarts; starts <= maxStarts; starts *= 2) {
+    let distance = threadStartDistance({ ...common, threadStarts: starts })
+    if (distance === Infinity) break
+    if (starts > firstStarts && segmentLength > 0 && Number.isFinite(distance)) distance = Math.ceil(distance / segmentLength - 1e-9) * segmentLength
+    steps.push({ starts, distance })
+  }
+  const threadStart = steps.length ? steps[0].distance : Infinity
+  // Starts in use at distance d (the first in the sequence on the plain shaft before the thread).
+  const startsAt = (d) => {
+    let starts = firstStarts
+    for (const step of steps) if (d >= step.distance - 1e-6) starts = step.starts
+    return starts
+  }
+  return {
+    threadStartDistance: threadStart,
+    steps,
+    startsAt,
+    flightsAt: (d) => (d >= threadStart) ? startsAt(d) : 0,
   }
 }
 

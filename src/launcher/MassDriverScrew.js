@@ -2,7 +2,6 @@ import * as THREE from 'three'
 import { ScrewGeometry, screwLengthOffsets } from './ScrewGeometry.js'
 import { buildScrewGeometry } from './ScrewGeometryBuilder.js'
 import * as tram from '../utils/tram.js'
-import { screwThreadStartDistance } from './launcherPhysics.js'
 import { VirtualObject, parameterSignature } from './VirtualObject.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 
@@ -58,7 +57,7 @@ export class massDriverScrewModel {
 
         const segmentSpacing = launcherMassDriverLength / massDriverScrewSegments
         const baseDistanceAlongScrew = segmentIndex * segmentSpacing
-        const threadStarts = tram.calculateThreadStarts(baseDistanceAlongScrew, dParamWithUnits['launcherMassDriverScrewThreadStarts'].value)
+        const threadStarts = Math.max(1, dParamWithUnits['launcherMassDriverScrewThreadStarts'].value)
         const screwLength = segmentSpacing - bracketThickness
         const initialDistance = dParamWithUnits['adaptiveNutBodyLength'].value / 2
 
@@ -157,7 +156,7 @@ function screwGeometryFor(group, levelIndex) {
   let geometry
   const threadsFit = !level.cylinder && screwLengthOffsets(segment.screwLength, segment.baseDistanceAlongScrew,
     v.launcherMassDriver1InitialVelocity, v.initialDistance, v.launcherMassDriverForwardAcceleration,
-    v.launcherMassDriverScrewRevolutionsPerSecond, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments, v.threadStartDistance) !== null
+    v.launcherMassDriverScrewRevolutionsPerSecond, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments, v.threadLayout.threadStartDistance) !== null
   if (!threadsFit) {
     // Thread envelope, slightly thinner than the tips to account for the gaps between flights.
     geometry = new THREE.CylinderGeometry(v.threadRadius * 0.9, v.threadRadius * 0.9, segment.screwLength, 12, 1, false)
@@ -167,7 +166,7 @@ function screwGeometryFor(group, levelIndex) {
       segment.screwLength, v.shaftOuterRadius, v.shaftInnerRadius, v.threadRadius, v.threadThickness,
       v.threadTaperRatio, segment.threadStarts, segment.baseDistanceAlongScrew, v.launcherMassDriver1InitialVelocity,
       v.initialDistance, v.launcherMassDriverScrewRevolutionsPerSecond, v.launcherMassDriverForwardAcceleration,
-      segment.radialSegments, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments, v.threadStartDistance],
+      segment.radialSegments, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments, v.threadLayout.threadStartDistance],
       { async: !sync })
   }
   cache.set(levelIndex, geometry)
@@ -200,7 +199,7 @@ export class virtualMassDriverScrew extends VirtualObject {
   static signatureOf(dParamWithUnits) {
     return parameterSignature(dParamWithUnits,
       ['launcherMassDriverScrew', 'launcherMassDriverForwardAcceleration', 'launcherMassDriver1InitialVelocity', 'adaptiveNutBodyLength',
-        'adaptiveNutGrapplerMagnetThickness', 'adaptiveNutGrapplerPadLiftAwayDistance'],
+        'adaptiveNutGrapplerMagnetThickness', 'adaptiveNutGrapplerPadLiftAwayDistance', 'adaptiveNutShaftToGrapplerPad'],
       ['SidewaysOffset', 'UpwardsOffset', 'Material', 'Density', 'Cost', 'STL'])
   }
 
@@ -228,7 +227,6 @@ export class virtualMassDriverScrew extends VirtualObject {
     v.bracketThickness = dParamWithUnits['launcherMassDriverScrewBracketThickness'].value
     v.numBrackets = dParamWithUnits['launcherMassDriverScrewNumBrackets'].value
     v.initialDistance = dParamWithUnits['adaptiveNutBodyLength'].value / 2
-    v.threadStartDistance = screwThreadStartDistance(dParamWithUnits)  // plain shaft before this
     v.isVisible = dParamWithUnits['showMassDriverAccelerationScrews'].value
     v.isDynamic = true
     v.hasChanged = true
@@ -276,7 +274,8 @@ export class virtualMassDriverScrew extends VirtualObject {
     if (om._screwIndex !== this.index) {
       const segmentSpacing = v.launcherMassDriverLength / v.massDriverScrewSegments
       const baseDistanceAlongScrew = this.index * segmentSpacing
-      const threadStarts = tram.calculateThreadStarts(baseDistanceAlongScrew, v.threadStarts)
+      // (Each segment has a single number of starts: see screwThreadLayout.)
+      const threadStarts = v.threadLayout.startsAt(baseDistanceAlongScrew)
       om.screwSegment = {
         baseDistanceAlongScrew,
         threadStarts,

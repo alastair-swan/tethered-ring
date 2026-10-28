@@ -399,11 +399,11 @@ export function define_genLauncherSpecs() {
     const airDensityInTube = P / (R * T) // kg/m3
     const fri = ro  // flight inner radius
     const fro = tr  // flight outer radius
-    const launcherMassDriverScrewThreadStarts = dParamWithUnits['launcherMassDriverScrewThreadStarts'].value // m
+    const threadLayout = tram.screwThreadLayout(dParamWithUnits)
     let totalFlightSpan = 0
     const dStep = 1000 // m
     for (let d = 0; d<launcherMassDriverLength + launcherRampLength; d+=dStep) {
-      const starts = tram.calculateThreadStarts(d, launcherMassDriverScrewThreadStarts)
+      const starts = threadLayout.flightsAt(d)
       totalFlightSpan += launcherMassDriverNumScrews * starts * dStep
     }
     const Cd = 1.2 // Drag coefficient of flat plate perpendicular to flow

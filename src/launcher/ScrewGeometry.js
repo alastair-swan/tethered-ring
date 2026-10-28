@@ -17,9 +17,9 @@ export function screwLengthOffsets(screwLength, baseDistanceAlongScrew, initialV
   revolutionsPerSecond = Math.abs(nonZero(revolutionsPerSecond, 1e-3))
   acceleration = nonZero(acceleration, 1e-3)
   initialVelocity = Math.max(1, initialVelocity)
-  const threadStart = Math.min(screwLength, Math.max(0, threadStartDistance - baseDistanceAlongScrew))  // local
+  const threadStart = threadStartDistance - baseDistanceAlongScrew  // local (may be outside this segment)
   const timeAt = (d) => threadTime(baseDistanceAlongScrew + d, initialVelocity, initialDistance, acceleration)
-  const turns = revolutionsPerSecond * Math.abs(timeAt(screwLength) - timeAt(threadStart))
+  const turns = revolutionsPerSecond * Math.abs(timeAt(screwLength) - timeAt(Math.min(screwLength, Math.max(0, threadStart))))
   const lengthSegments = Math.ceil(segmentsPerMeter * screwLength)
   if (lengthSegments + turns * samplesPerTurn > maxSegments) {
     samplesPerTurn = (maxSegments - lengthSegments) / Math.max(turns, 1e-9)
@@ -42,6 +42,7 @@ export function screwLengthOffsets(screwLength, baseDistanceAlongScrew, initialV
       step = threadStart - d
     }
     d = Math.min(screwLength, d + step)
+    if (screwLength - d < screwLength * 1e-9) d = screwLength  // (no sliver of a step from rounding)
     if (d > offsets[offsets.length - 1] * screwLength) offsets.push(d / screwLength)
   }
   return offsets
