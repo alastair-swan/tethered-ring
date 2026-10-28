@@ -13,6 +13,8 @@ import { Overlays } from '../scene/Overlays.js'
 import { backgroundScene } from '../scene/backgroundScene.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 import { SubPixelFade } from '../scene/SubPixelFade.js'
+import { Ocean } from '../planet/Ocean.js'
+import { MooringCables } from '../launcher/MooringCables.js'
 import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
 import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
@@ -188,6 +190,24 @@ export class App {
     this.planetCoordSys.add(this.planet.surface, this.planet.atmosphere)
     this.planet.setVisible(d.showEarthsSurface.value)
     this.planet.setAtmosphereVisible(d.showEarthsAtmosphere.value)
+    this.ocean = null
+    if (this.planetSpec.hasOcean) {
+      this.ocean = new Ocean({
+        planetSpec: this.planetSpec,
+        parent: this.planetCoordSys,
+        scene: this.scene,
+        sampleTerrainHeight: (lat, lon) => this.planet.sampleTerrainHeight(lat, lon),
+      })
+      this.applyOceanSettings(d)
+    }
+  }
+
+  // The sea follows the planet surface's visibility (presets that hide the planet behind a background
+  // image hide the sea too).
+  applyOceanSettings(d) {
+    if (!this.ocean) return
+    this.ocean.visibility = d.underwaterVisibility.value
+    this.ocean.setEnabled(d.showOcean.value && d.showEarthsSurface.value)
   }
 
   buildRing() {
@@ -213,6 +233,7 @@ export class App {
     const r = this.ring
     const n = this.nonGUIParams
     this.launchSystem = new Launcher.launcher(this.d, this.clock.time, this.planetCoordSys, this.planetSpec, r.refCoordSys, r.mainRingCurve, r.crv, this.overlays.xyChart, null, this.specs, false, '')
+    this.launchSystem.setTerrainSampler((lat, lon) => this.planet.sampleTerrainHeight(lat, lon))
     this.launchSystem.drawLaunchTrajectoryLine(this.d, this.planetCoordSys)
 
     // A frame aligned with the end of the launch track, used by presets to place the camera
@@ -390,7 +411,8 @@ export class App {
       adjustLaunchTrajectoryOpacity: () => {},
       adjustEarthTextureSidedness: visibility((p) => this.planet.setDoubleSided(p.earthTextureDoubleSided.value)),
       adjustEarthTextureOpacity: visibility((p) => this.planet.setOpacity(p.earthTextureOpacity.value)),
-      adjustEarthSurfaceVisibility: visibility((p) => this.planet.setVisible(p.showEarthsSurface.value)),
+      adjustEarthSurfaceVisibility: visibility((p) => { this.planet.setVisible(p.showEarthsSurface.value); this.applyOceanSettings(p) }),
+      adjustOcean: visibility((p) => this.applyOceanSettings(p)),
       adjustEarthAtmosphereVisibility: visibility((p) => this.planet.setAtmosphereVisible(p.showEarthsAtmosphere.value)),
       adjustTerrainExaggeration: visibility((p) => this.planet.setDisplacementScale((this.nonGUIParams.planet2DisplacementScaleMultiplier ?? 1) * p.terrainExaggeration.value)),
       adjustBackgroundOpacity: visibility((p) => this.renderer.setClearAlpha(p.enableBackgroundAlpha.value ? 0 : 1)),
@@ -555,6 +577,10 @@ export class App {
     this.camera.playbackActive = this.shots.drivesCamera || googleEarthDrives
     this.camera.update(t, dt)
     this.planet.update(this.camera3d)
+    // The water surface follows the camera; in the water (but not inside the evacuated tube) the view
+    // switches to the underwater look (see render()).
+    this.ocean?.update(this.camera3d, (point) => this.launchSystem?.isInsideTube(point) ?? false)
+    MooringCables.refreshSome()
     this.lighting.followCameraTarget(this.camera.controls.target)
 
     if (this.trackPointLogger) {
@@ -590,8 +616,18 @@ export class App {
     this.transitSystem.pixelsPerRadian = this.camera3d.projectionMatrix.elements[5] * PixelLOD.viewportHeight / 2
     if (this.launchSystem) this.launchSystem.pixelsPerRadian = this.transitSystem.pixelsPerRadian
     this.sky.update(this.camera3d, this.planetCoordSys, this.lighting.sunLight, this.d, this.planetSpec)
+    // Under the sea surface (in the water, or dry inside the tube): no sky (or atmosphere); the
+    // background is the water colour.
+    const underwater = this.ocean?.enabled && this.ocean.cameraUnderSurface
+    const atmosphereVisible = this.planet.atmosphere.visible
+    if (underwater) {
+      renderer.getClearColor(this._clearColor ??= new THREE.Color())
+      this._clearAlpha = renderer.getClearAlpha()
+      renderer.setClearColor(this.ocean.fog.color, 1)
+      this.planet.atmosphere.visible = false
+    }
     renderer.clear()
-    this.sky.render(renderer)
+    if (!underwater) this.sky.render(renderer)
     renderer.clearDepth()
     this.googleEarth.render(renderer)
     if (this.background?.scene) {
@@ -599,6 +635,10 @@ export class App {
       renderer.clearDepth()
     }
     renderer.render(this.scene, this.camera3d)
+    if (underwater) {
+      renderer.setClearColor(this._clearColor, this._clearAlpha)
+      this.planet.atmosphere.visible = atmosphereVisible
+    }
     renderer.clearDepth()
     this.overlays.render(renderer)
   }

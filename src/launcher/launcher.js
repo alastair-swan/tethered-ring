@@ -21,6 +21,7 @@ import * as OrbitMath from './OrbitMath.js'
 import * as SaveGeometryAsSTL from '../export/SaveGeometryAsSTL.js'
 import * as EngineeringDetails from './EngineeringDetails.js'
 import { ExtractedTelemetryLoader } from './ExtractedTelemetryLoader.js'
+import { distanceToCurve } from '../curves/curveDistance.js'
 
 //import { arrow } from '../ring/markers.js'
 //import { FrontSide } from 'three'
@@ -106,6 +107,7 @@ export class launcher {
     switch (dParamWithUnits['launchTrajectorySelector'].value) {
       default:
         this.tubeModelObject = new massDriverTubeModel(dParamWithUnits)
+        this.tubeModelObject.ellipsoid = planetSpec.ellipsoid  // for the mooring cables (see setTerrainSampler)
         this.railModelObject = new massDriverRailModel(dParamWithUnits)
         this.bracketModelObject = new massDriverBracketModel(dParamWithUnits)
         this.humanFigureModelObject = new humanFigureModel()  // loads its FBX lazily, on first use
@@ -245,6 +247,7 @@ export class launcher {
     dParamWithUnits = this.effectiveParams(dParamWithUnits)
     const segments = this.massDriverAccelerationScrewSegments
     const length = this.accelerationScrewLength
+    this.tubeInnerRadius = dParamWithUnits['launcherMassDriverTubeInnerRadius'].value
     // One thread layout (where the thread starts and how many starts it has where) for the screws and
     // the nuts' grapplers, so they always agree.
     this.threadLayout = tram.screwThreadLayout(dParamWithUnits, length / Math.max(1, segments))
@@ -350,6 +353,22 @@ export class launcher {
         objectClass.needsObjects = true
       }
     })
+  }
+
+  // sampleTerrainHeight(latDeg, lonDeg) -> { heightMeters, lod } | null: where the tube's mooring cables
+  // find the sea floor. Tube segments built before it is set (or before the terrain there has loaded)
+  // refine their anchors later (see MooringCables).
+  setTerrainSampler(sampleTerrainHeight) {
+    if (this.tubeModelObject) this.tubeModelObject.sampleTerrainHeight = sampleTerrainHeight
+  }
+
+  // True if `localPoint` (planet coordinates) is inside the evacuated tube, where there is vacuum
+  // rather than water (used for the underwater view).
+  isInsideTube(localPoint) {
+    const refFrame = virtualMassDriverTube.refFrames?.[0]
+    if (!refFrame || !virtualMassDriverTube.isVisible || !this.tubeInnerRadius) return false
+    const radius = this.tubeInnerRadius
+    return refFrame.curve.superCurves.some(curve => distanceToCurve(curve, localPoint, radius) < radius)
   }
 
   // Animation state beyond (parameters, timeSinceStart): the time at which the animation is frozen while

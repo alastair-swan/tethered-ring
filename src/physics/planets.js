@@ -14,6 +14,7 @@ export function getPlanetSpec(planet) {
     case 'earth':
       return {
         name: 'Earth',
+        hasOcean: true,                           // draw a sea-level water surface (src/planet/Ocean.js)
         mass: 5.97E+24,                           // kg
         //radius: 6378100,                          // m
         // Use Earth's WGS84 ellipsoid parameters

@@ -12,7 +12,7 @@ export function launchLookingBackwards(guidParamWithUnits, nonGUIParams) {
   // Mauna Kea (19.820667, -155.468056)
   const launcherRampEndLatitude = 19.820667 // °N (Hawaii Big Island)
   const launcherRampEndLongitude = -155.468056 + .048056 // moving the end of the ramp a little bit east 
-  const massDriverAltitude = 200 // -50 // m (below sea level) (at the moment we can't see it below the ocean so, for now, raising it above the ocean)
+  const massDriverAltitude = -50 // m (below sea level: the tube is submerged and moored to the sea floor)
   const rampExitAltitude = 4500 // m  (Altitute of Mauna Kea summit (4207) plus ~300 meters which is an engineered truss structure that can be stowed underground when not in use)
   toMarsFromEarthLauncherArchitecture(guidParamWithUnits, launcherRampEndLatitude, launcherRampEndLongitude, massDriverAltitude, rampExitAltitude)
 

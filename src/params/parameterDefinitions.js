@@ -341,6 +341,10 @@ export function createParameterDefinitions() {
   // Assuming Concrete with a stainless steel outer liner for the ,assdriver tube
   launcherMassDriverTubeInnerRadius: {value: 4.5, units: 'm', autoMap: true, min: 1, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
   exagerateNonElevatedTubeFactor: {value: 1, units: '', autoMap: true, min: 1, max: 10, onChange: 'updateLauncher', folder: 'Launcher'},
+  // Where the tube is under the sea it is buoyant, held down by cables to the sea floor in inverted Vs (to resist currents).
+  launcherMassDriverMooringSpacing: {value: 200, units: 'm', autoMap: true, min: 20, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
+  launcherMassDriverMooringCableRadius: {value: 0.1, units: 'm', autoMap: true, min: 0.01, max: 1, onChange: 'updateLauncher', folder: 'Launcher'},
+  launcherMassDriverMooringSpread: {value: 1, units: '', autoMap: true, min: 0, max: 3, onChange: 'updateLauncher', folder: 'Launcher'},   // sideways distance of each anchor per metre of depth below the tube (1 = 45 degree legs)
   launcherMassDriverTubeLinerThickness: {value: 0.002, units: 'm', autoMap: true, min: 1, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverTubeWallThickness: {value: 0.01, units: 'm', autoMap: true, min: 0, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverTubeMaterial0Density: {value: 7930, units: "kg/m3", autoMap: true, min: 0, max: 20000, onChange: 'updateLauncher', folder: 'Launcher'},
@@ -534,6 +538,8 @@ export function createParameterDefinitions() {
   enableBackgroundAlpha: {value: 1, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustBackgroundOpacity', folder: 'Rendering'},
   showEarthsSurface: {value: defaultShows, units: '', autoMap: true, onChange: 'adjustEarthSurfaceVisibility', folder: 'Rendering'},
   showEarthsAtmosphere: {value: true, units: '', autoMap: true, onChange: 'adjustEarthAtmosphereVisibility', folder: 'Rendering'},
+  showOcean: {value: true, units: '', autoMap: true, onChange: 'adjustOcean', folder: 'Rendering'},
+  underwaterVisibility: {value: 120, units: 'm', autoMap: true, min: 5, max: 2000, onChange: 'adjustOcean', folder: 'Rendering'},
   earthTextureOpacity: {value: 1, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustEarthTextureOpacity', folder: 'Rendering'},
   earthTextureDoubleSided: {value: false, units: '', autoMap: true, onChange: 'adjustEarthTextureSidedness', folder: 'Rendering'},
   tetherMinOpacity: {value: 0.03, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustTetherOpacity', folder: 'Rendering'},
@@ -568,6 +574,7 @@ export function createParameterDefinitions() {
   showLaunchTrajectory: {value: false, units: '', autoMap: true, onChange: 'updateLauncher', folder: 'Rendering'},
   showMassDriverTube: {value: massDriverShows, units: '', autoMap: true, onChange: 'updateLauncher', folder: 'Rendering'},
   showLiftFans: {value: massDriverShows, units: '', autoMap: true, onChange: 'updateLauncher', folder: 'Rendering'},
+  showMooringCables: {value: massDriverShows, units: '', autoMap: true, onChange: 'updateLauncher', folder: 'Rendering'},
   showMassDriverRail: {value: massDriverShows, units: '', autoMap: true, onChange: 'updateLauncher', folder: 'Rendering'},
   showMassDriverBrackets: {value: massDriverShows, units: '', autoMap: true, onChange: 'updateLauncher', folder: 'Rendering'},
   showMassDriverAccelerationScrews: {value: massDriverShows, units: '', autoMap: true, onChange: 'updateLauncher', folder: 'Rendering'},

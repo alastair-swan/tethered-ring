@@ -4,6 +4,8 @@ import { CatmullRomSuperCurve3 } from '../curves/SuperCurves.js'
 import { VirtualObject } from './VirtualObject.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 import { SubPixelFade, withSubPixelFade } from '../scene/SubPixelFade.js'
+import { MooringCables } from './MooringCables.js'
+import { ecefToGeodetic } from '../physics/geodesy.js'
 
 // Lift fans per instanced chunk (each chunk picks its own level of detail).
 const LIFT_FAN_CHUNK = 32
@@ -71,6 +73,10 @@ export class massDriverTubeModel {
     this.massDriverTubeSegments = dParamWithUnits['numVirtualMassDriverTubes'].value
     this.radius = dParamWithUnits['launcherMassDriverTubeInnerRadius'].value
     this.showLiftFans = dParamWithUnits['showLiftFans'].value
+    this.showMooringCables = dParamWithUnits['showMooringCables'].value
+    this.mooringSpacing = dParamWithUnits['launcherMassDriverMooringSpacing'].value
+    this.mooringCableRadius = dParamWithUnits['launcherMassDriverMooringCableRadius'].value
+    this.mooringSpread = dParamWithUnits['launcherMassDriverMooringSpread'].value
   }
   
   createModel(curve, segmentIndex) {
@@ -164,6 +170,9 @@ export class massDriverTubeModel {
     if (this.showLiftFans) {
       this.createLiftFans(massDriverTubeMesh, curve, segmentIndex, liftFansPerSegment, refPoint, orientation)
     }
+    if (this.showMooringCables && this.ellipsoid) {
+      this.createMooringCables(massDriverTubeMesh, curve, segmentIndex, refPoint, orientation, this.radius * exagerateTubeFactor, tubeSegmentLength)
+    }
 
     massDriverTubeMesh.renderOrder = 999
 
@@ -173,6 +182,35 @@ export class massDriverTubeModel {
     // massDriverTubeMesh.position.copy(refPoint)
 
     return massDriverTubeMesh
+  }
+
+  // Mooring cables for the part of this segment that is under the sea (the tube's centre below sea
+  // level): a mooring point every mooringSpacing metres along the whole tube (so the spacing does not
+  // depend on segment boundaries), each holding the bottom of the tube down with an inverted V of
+  // cables to the sea floor. See MooringCables.js.
+  createMooringCables(segmentGroup, curve, segmentIndex, refPoint, orientation, tubeRadius, tubeSegmentLength) {
+    const totalLength = curve.getLength()
+    const start = segmentIndex / this.massDriverTubeSegments * totalLength
+    const end = (segmentIndex + 1) / this.massDriverTubeSegments * totalLength
+    const moorings = []
+    for (let s = Math.ceil(start / this.mooringSpacing) * this.mooringSpacing; s < end; s += this.mooringSpacing) {
+      const fraction = s / totalLength
+      const point = curve.getPointAt(fraction)
+      if (ecefToGeodetic(point.x, point.y, point.z, this.ellipsoid).alt >= 0) continue
+      const upward = curve.getNormalAt(fraction)
+      moorings.push({ apex: point.addScaledVector(upward, -tubeRadius), side: curve.getBinormalAt(fraction) })
+    }
+    if (moorings.length === 0) return
+    const cables = new MooringCables({
+      moorings,
+      toLocal: (p, target) => target.copy(p).sub(refPoint).applyQuaternion(orientation),
+      ellipsoid: this.ellipsoid,
+      getSampler: () => this.sampleTerrainHeight,
+      cableRadius: this.mooringCableRadius,
+      spread: this.mooringSpread,
+      extent: tubeSegmentLength / 2,
+    })
+    segmentGroup.add(cables.root)
   }
 
   // Lift fans: every ~4 tube radii along the elevated tube there is a fan on each side (hub, disk and
