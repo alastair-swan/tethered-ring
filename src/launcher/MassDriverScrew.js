@@ -2,6 +2,17 @@ import * as THREE from 'three'
 import { ScrewGeometry } from './ScrewGeometry.js'
 import * as tram from '../utils/tram.js'
 import { VirtualObject, parameterSignature } from './VirtualObject.js'
+import { PixelLOD } from '../scene/PixelLOD.js'
+
+// Screw levels of detail, chosen by the screw's on-screen diameter in pixels. Each thread level is
+// tessellated so a lengthwise step spans roughly 3 px at its threshold; below the last thread level
+// the threads are sub-pixel and the screw is drawn as a plain cylinder.
+const SCREW_LEVELS = [
+  { minPixels: 48, segmentsPerMeter: 16, cost: 'expensive' },  // full detail (close-ups)
+  { minPixels: 12, segmentsPerMeter: 4, cost: 'expensive' },
+  { minPixels: 3, segmentsPerMeter: 1, cost: 'cheap' },
+  { minPixels: 0.75, cylinder: true, cost: 'cheap' },
+]
 
 export class massDriverScrewModel {
 
@@ -84,6 +95,54 @@ export class massDriverScrewModel {
     }
 }
 
+// Builds the pooled screw model: a group holding the left and right screws, each a PixelLOD whose
+// levels share per-level geometry for the screw segment the model is currently placed at.
+export function createScrewModelPair(materials, threadRadius) {
+  const group = new THREE.Group()
+  group.name = 'massDriverScrews'
+  // Per-model state lives in plain properties: Object3D.clone() would JSON-copy userData.
+  group.screwGeometries = new Map()
+  group.screwSegment = null
+  for (let side = 0; side < 2; side++) {
+    const lod = new PixelLOD(2 * threadRadius, { extent: 0 })
+    lod.name = 'massDriverScrew'
+    lod.userData = side
+    if (side === 1) lod.scale.set(-1, 1, 1)
+    SCREW_LEVELS.forEach((level, levelIndex) => {
+      lod.addLevel(level.minPixels, () => {
+        const mesh = new THREE.Mesh(screwGeometryFor(lod.parent, levelIndex), materials[0])
+        mesh.name = 'massDriverScrew'
+        return mesh
+      }, { cost: level.cost })
+    })
+    group.add(lod)
+  }
+  return group
+}
+
+// Geometry for one level of the segment this pooled model currently represents (cached per model).
+function screwGeometryFor(group, levelIndex) {
+  const cache = group.screwGeometries
+  if (cache.has(levelIndex)) return cache.get(levelIndex)
+  const v = virtualMassDriverScrew
+  const segment = group.screwSegment
+  const level = SCREW_LEVELS[levelIndex]
+  let geometry
+  if (level.cylinder) {
+    // Thread envelope, slightly thinner than the tips to account for the gaps between flights.
+    geometry = new THREE.CylinderGeometry(v.threadRadius * 0.9, v.threadRadius * 0.9, segment.screwLength, 12, 1, false)
+  }
+  else {
+    geometry = new ScrewGeometry(
+      segment.screwLength, v.shaftOuterRadius, v.shaftInnerRadius, v.threadRadius, v.threadThickness,
+      v.threadTaperRatio, segment.threadStarts, segment.baseDistanceAlongScrew, v.launcherMassDriver1InitialVelocity,
+      v.initialDistance, v.launcherMassDriverScrewRevolutionsPerSecond, v.launcherMassDriverForwardAcceleration,
+      segment.radialSegments, level.segmentsPerMeter)
+  }
+  cache.set(levelIndex, geometry)
+  return geometry
+}
+
 export class virtualMassDriverScrew extends VirtualObject {
   constructor(d, index) {
     super()
@@ -162,36 +221,24 @@ export class virtualMassDriverScrew extends VirtualObject {
       this.versionNumber = v.versionNumber
     }
 
-    // Pooled models carry geometry for one segment index; regenerate it when the model is reused elsewhere.
+    // Pooled models represent one segment at a time. When reused elsewhere, drop the cached level
+    // geometry; the PixelLOD children rebuild whichever level they need, when they need it.
     if (om._screwIndex !== this.index) {
       const segmentSpacing = v.launcherMassDriverLength / v.massDriverScrewSegments
       const baseDistanceAlongScrew = this.index * segmentSpacing
       const threadStarts = tram.calculateThreadStarts(baseDistanceAlongScrew, v.threadStarts)
-      const screwLength = Math.max(0.01, (this.index < v.numBrackets) ? segmentSpacing - v.bracketThickness : segmentSpacing)
-      const modelRadialSegments = Math.max(3, Math.round(12 / Math.min(Math.max(1, threadStarts), 4)))
-      const minLengthSegmentsPerMeter = 16
-
-      // Both children (left and right screw) share one geometry; dispose it once.
-      const oldGeometry = om.children[0].geometry
-      if (oldGeometry && !oldGeometry.userData?.shared) oldGeometry.dispose()
-      const geometry = new ScrewGeometry(
-        screwLength,
-        v.shaftOuterRadius,
-        v.shaftInnerRadius,
-        v.threadRadius,
-        v.threadThickness,
-        v.threadTaperRatio,
-        threadStarts,
+      om.screwSegment = {
         baseDistanceAlongScrew,
-        v.launcherMassDriver1InitialVelocity,
-        v.initialDistance,
-        v.launcherMassDriverScrewRevolutionsPerSecond,
-        v.launcherMassDriverForwardAcceleration,
-        modelRadialSegments,
-        minLengthSegmentsPerMeter)
-      om.children.forEach(child => {
-        child.geometry = geometry
-        child.material = v.massDriverScrewMaterials[0]
+        threadStarts,
+        screwLength: Math.max(0.01, (this.index < v.numBrackets) ? segmentSpacing - v.bracketThickness : segmentSpacing),
+        radialSegments: Math.max(3, Math.round(12 / Math.min(Math.max(1, threadStarts), 4))),
+      }
+      const cache = om.screwGeometries
+      cache.forEach(geometry => geometry.dispose())
+      cache.clear()
+      om.children.forEach(lod => {
+        lod.reset({ dispose: false })
+        lod.extent = om.screwSegment.screwLength / 2
       })
       om._screwIndex = this.index
     }

@@ -10,7 +10,7 @@ import { adaptiveNutModel, virtualAdaptiveNut } from './AdaptiveNut.js'
 import { massDriverTubeModel, virtualMassDriverTube } from './MassDriverTube.js'
 import { massDriverRailModel, virtualMassDriverRail } from './MassDriverRail.js'
 import { massDriverBracketModel, virtualMassDriverBracket } from './MassDriverBracket.js'
-import { massDriverScrewModel, virtualMassDriverScrew } from './MassDriverScrew.js'
+import { massDriverScrewModel, virtualMassDriverScrew, createScrewModelPair } from './MassDriverScrew.js'
 import { humanFigureModel, virtualHumanFigure } from './HumanFigure.js'
 //import { evacuatedTubeModel, virtualEvacuatedTube } from './EvacuatedTube.js'
 import * as LauncherAnimate from './launcherAnimate.js'
@@ -281,21 +281,14 @@ export class launcher {
       [virtualLaunchSled, () => new launchSledModel(dParamWithUnits, this.scene, virtualLaunchSled.unallocatedModels, 0, this.massDriverScrewTexture)],
       [virtualAdaptiveNut, () => new adaptiveNutModel(dParamWithUnits, this.scene, virtualAdaptiveNut.unallocatedModels, 0, this.massDriverScrewTexture)],
       [virtualMassDriverScrew, () => {
-        const screwModels = new THREE.Group()
-        screwModels.name = 'massDriverScrews'
-        const screwModelObject = new massDriverScrewModel()
-        const leftModel = screwModelObject.createModel(dParamWithUnits, this.accelerationScrewLength, this.massDriverAccelerationScrewSegments, 0, this.massDriverScrewMaterials, false)
         if (dParamWithUnits['saveMassDriverScrewSTL'].value) {
+          const screwModelObject = new massDriverScrewModel()
           const saveModel = screwModelObject.createModel(dParamWithUnits, this.accelerationScrewLength, this.massDriverAccelerationScrewSegments, 0, this.massDriverScrewMaterials, true)
           this.saveGeometryAsSTL(saveModel, 'massDriverScrew.stl')
         }
-        leftModel.geometry.userData.shared = true  // shared by every clone; per-segment geometry replaces it
-        leftModel.userData = 0
-        screwModels.add(leftModel)
-        const rightModel = leftModel.clone()
-        rightModel.userData = 1
-        rightModel.scale.set(-1, 1, 1)
-        screwModels.add(rightModel)
+        const threadRadius = dParamWithUnits['launcherMassDriverScrewThreadRadius'].value
+        virtualMassDriverScrew.createPooledModel = () => createScrewModelPair(this.massDriverScrewMaterials, threadRadius)
+        const screwModels = virtualMassDriverScrew.createPooledModel()
         screwModels.visible = false
         virtualMassDriverScrew.unallocatedModels.push(screwModels)
       }],

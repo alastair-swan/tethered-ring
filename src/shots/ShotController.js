@@ -6,6 +6,7 @@ import {
   VideoRecorder, resolveCodec, defaultBitrate, evenDimension, isRecordingSupported, CODEC_LABELS, CONTAINERS,
 } from '../capture/VideoRecorder.js'
 import { downloadText } from '../app/exports.js'
+import { PixelLOD } from '../scene/PixelLOD.js'
 
 const PENDING_SHOT_KEY = 'tetheredRing.pendingShot'
 const TERRAIN_WAIT_TIMEOUT_MS = 15000
@@ -242,6 +243,9 @@ export class ShotController {
     app.renderer.setAnimationLoop(null)
     app.setRenderSize(width, height, { pixelRatio: 1 })
     app.clock.setFixedStep(1 / fps)
+    // Every recorded frame gets its intended level of detail (no deferred high-detail builds).
+    const previousBuildBudget = PixelLOD.buildBudget
+    PixelLOD.buildBudget = Infinity
     const progress = new ProgressOverlay(() => this.stop())
     try {
       for (let i = 0; ; i++) {
@@ -259,6 +263,7 @@ export class ShotController {
     }
     finally {
       progress.remove()
+      PixelLOD.buildBudget = previousBuildBudget
       app.clock.setFixedStep(null)
       app.onResizeAfterRecording()
       app.renderer.setAnimationLoop(() => app.frame())

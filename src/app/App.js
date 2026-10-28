@@ -11,6 +11,7 @@ import { Lighting } from '../scene/lighting.js'
 import { SkyPass } from '../scene/SkyPass.js'
 import { Overlays } from '../scene/Overlays.js'
 import { backgroundScene } from '../scene/backgroundScene.js'
+import { PixelLOD } from '../scene/PixelLOD.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
 import { RingAssembly } from './RingAssembly.js'
 import { transitSystem } from '../transit/transitsystems.js'
@@ -573,6 +574,7 @@ export class App {
 
   render() {
     const renderer = this.renderer
+    PixelLOD.beginFrame(renderer.info.render.frame)
     this.sky.update(this.camera3d, this.planetCoordSys, this.lighting.sunLight, this.d, this.planetSpec)
     renderer.clear()
     this.sky.render(renderer)
@@ -592,6 +594,7 @@ export class App {
   setRenderSize(width, height, { pixelRatio = Math.min(window.devicePixelRatio, 2) } = {}) {
     this.renderer.setPixelRatio(pixelRatio)
     this.renderer.setSize(width, height, false)
+    PixelLOD.viewportHeight = height * pixelRatio
     this.camera3d.aspect = width / height
     this.camera3d.updateProjectionMatrix()
     this.overlays.resize(width, height)

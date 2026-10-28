@@ -9,7 +9,8 @@
     "sync-textures": "node scripts/sync-textures.mjs",
     "smoke": "node scripts/smoke.mjs",
     "lint": "eslint .",
-    "test": "node --test"
+    "test": "node --test",
+    "profile": "node scripts/profile.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

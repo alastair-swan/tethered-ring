@@ -27,6 +27,8 @@ export function disposeModels(models, { geometries = true, materials = false, in
     if (!model) return
     if (model.parent) model.parent.remove(model)
     model.traverse(child => {
+      // Instanced and batched meshes also own per-instance GPU buffers.
+      if (child.isInstancedMesh || child.isBatchedMesh) child.dispose()
       if (geometries && child.geometry && (includeShared || !child.geometry.userData?.shared)) geometrySet.add(child.geometry)
       if (materials && child.material) {
         (Array.isArray(child.material) ? child.material : [child.material]).forEach(m => {
@@ -103,7 +105,9 @@ export class VirtualObject {
       if (pool.length === 0) return null
       // Never hand out the last model: keep it as the template for further clones. (Loader callbacks
       // that swap in higher-detail meshes update the pool and the scene, so the template stays current.)
-      if (pool.length === 1) pool.push(pool[0].clone())
+      // Grow the pool. Classes whose models hold per-model state (e.g. LOD caches) provide
+      // createPooledModel(); the rest are cloned from the template.
+      if (pool.length === 1) pool.push(typeof this.createPooledModel === 'function' ? this.createPooledModel() : pool[0].clone())
       model = pool.pop()
     }
     else {
