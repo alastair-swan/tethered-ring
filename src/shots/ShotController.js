@@ -376,6 +376,7 @@ export class ShotController {
         perFrame: (i) => {
           if (this.stopRequested) return false
           const t = i / output.fps
+          this.app.clock.setTime(shot.simulation.startTime + t)
           shot.camera.keyframes.push({ time: t, ...this.app.camera.getState() })
           const current = this.app.store.snapshot()
           for (const [k, v] of Object.entries(current)) {
