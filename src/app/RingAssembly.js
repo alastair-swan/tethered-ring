@@ -42,12 +42,13 @@ export class RingAssembly {
     })
 
     this.createSystems()
+    // Tethers first: computing them fills this.ctv, which the force arrows read.
+    this.constructTethers()
     this.earthAxis = new markers.earthAxisObject(planetCoordSys, d, this.planetRadius)
     this.earthEquator = new markers.earthEquatorObject(planetCoordSys, d, this.planetRadius)
     this.mainRingCurveMarker = new markers.mainRingCurveObject(this.refCoordSys, d, this.mainRingCurve, this.referencePoint())
     this.gravityForceArrows = new markers.gravityForceArrowsObject(planetCoordSys, d, this.mainRingCurve, this.crv, this.ctv, this.planetRadius, this.ringToPlanetRotation)
     this.gyroscopicForceArrows = new markers.gyroscopicForceArrowsObject(planetCoordSys, d, this.mainRingCurve, this.crv, this.planetRadius, this.ringToPlanetRotation, this.movingRingSpeed())
-    this.constructTethers()
   }
 
   // The first ring drives the transit system, launcher and camera helpers.

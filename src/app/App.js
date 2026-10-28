@@ -289,7 +289,14 @@ export class App {
   async loadBackgroundImage() {
     const n = this.nonGUIParams
     if (!n.displayBackgroundImage) return
-    const texture = await new THREE.TextureLoader().loadAsync(n.backgroundImageFilename)
+    let texture
+    try {
+      texture = await new THREE.TextureLoader().loadAsync(n.backgroundImageFilename)
+    }
+    catch {
+      console.warn(`Background image ${n.backgroundImageFilename} could not be loaded; continuing without it.`)
+      return
+    }
     this.backgroundImage = texture
     this.background = new backgroundScene(texture.source.data.naturalWidth, texture.source.data.naturalHeight, texture)
     if (this.background.scene) this.background.hidePlanet([this.planet.surface, this.planet.atmosphere])

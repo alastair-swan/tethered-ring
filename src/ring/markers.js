@@ -233,7 +233,11 @@ export class gravityForceArrowsObject {
     })
     this.gravityForceArrowMeshes.splice(0, this.gravityForceArrowMeshes.length)
 
-    if (dParamWithUnits['showGravityForceArrows'].value) {
+    // Tether forces only exist once the tethers have been computed (they are skipped when hidden).
+    if (dParamWithUnits['showGravityForceArrows'].value && !ctv.gravityForceAtRing[0]) {
+      console.warn('Gravity force arrows need tether forces; enable showTethers to see them.')
+    }
+    else if (dParamWithUnits['showGravityForceArrows'].value) {
       const centerOfRing = new THREE.Vector3(0, crv.yc, 0).applyQuaternion(ringToPlanetRotation)
       const lengthOfSiderealDay = 86160 // s
       const Ω = new THREE.Vector3(0, -2 * Math.PI / lengthOfSiderealDay, 0)
