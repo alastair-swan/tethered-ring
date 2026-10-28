@@ -124,6 +124,7 @@ Where it is used:
 | Brackets | InstancedProxyPool with full and low-detail (4-segment arcs) shapes |
 | Transit ring segments | Instanced layers (`src/ring/RingInstancedLayer.js`) |
 | Planet | Screen-space texel error, skirts for crack-free LOD transitions |
+| Sea surface | A sea-level copy of each terrain tile that has ground below sea level, using the tile's own imagery (so the water has the local ocean colour and ends at the terrain's coastline); follows the tile's LOD and culling |
 | Tethers | Each copy is a PixelLOD over variants with the last forks merged (the vertical fan to the rings first), used once the merged fan is under 0.1 px; a strand count keeps the combined opacity |
 | Mass-driver tube | A 1 px line along the track once the tube is under a pixel across |
 
@@ -164,3 +165,9 @@ The shot file format is documented at the top of `src/shots/ShotFormat.js`. A sh
 - `npm test` runs the unit tests: physics maths, the shot format and the camera path.
 - `npm run lint` runs ESLint.
 - `npm run smoke` loads the full app in headless Chrome/Chromium and fails on any console error. Use `SMOKE_GPU=1` with real hardware; the software renderer takes over a minute to decode a single terrain tile. `--eval "<js>"` runs code against `window.tetheredRing` and prints the result, and `--page /tests/planet.html` targets a standalone test page.
+
+## The sea
+
+On planets with oceans (`planetSpec.hasOcean`), the planet renderer draws the sea surface from above (see the table above). `src/planet/Ocean.js` handles being in the sea. When the camera is below sea level and above the sea floor, there is no sky: the background is the water colour, which darkens with depth, and the underside of the surface is drawn around the camera. When the camera is also in the water, rather than inside the evacuated tube (`launcher.isInsideTube`), everything fades into the water colour with distance (`underwaterVisibility`, a visual cue rather than realism).
+
+Where the mass-driver tube's centre is below sea level, `src/launcher/MooringCables.js` holds it down to the sea floor with inverted Vs of cables (`launcherMassDriverMooring*` parameters). The anchors use the streamed terrain heights and are re-checked as tiles load.
