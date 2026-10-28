@@ -3,15 +3,18 @@ import * as tram from '../utils/tram.js'
 import * as markers from '../ring/markers.js'
 import { tetheredRingSystem } from '../ring/tetheredRingSystem.js'
 import { TetherGeometry } from '../ring/tethers.js'
+import { groundDepthBelowSphere } from '../ring/ringGeometry.js'
 import { StructureLines } from '../scene/structureLines.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 
 const UNIVERSE = { gravitationalConstant: 6.67408e-11 }
 // Distant tether forks are merged once their branches would be less than this far apart on screen.
 const TETHER_MERGE_PIXELS = 0.1
-// Tethers are designed for the depth of the ground below the equatorial-radius sphere at their anchors,
-// rounded up to this step (so they always reach the ground) so that nearby tethers share geometry.
-const TETHER_DEPTH_STEP = 250 // m
+// The ring keeps a constant height above sea level (see mainRingCurve), so each tether is lowered
+// with it; where the ground at its anchors is deeper or shallower than below its top, it is designed
+// for that difference, rounded up to this step (so it always reaches the ground) so that nearby
+// tethers share geometry.
+const TETHER_DEPTH_STEP = 50 // m
 
 // Owns the tethered ring structure itself: one tetheredRingSystem per ring (presets can request
 // several), their tethers, and the diagnostic markers (planet axis, equator, ring curve, force
@@ -80,11 +83,11 @@ export class RingAssembly {
         this.tetherGeometries.push(geometry)
         if (this.fastTetherRender && !genKMLFile) {
           // One tether geometry per anchor depth (see TETHER_DEPTH_STEP), instanced around the ring by
-          // rotation about the ring axis. Each copy picks how many of its last forks to merge from how
-          // far apart those branches are on screen.
+          // rotation about the ring axis and lowered with it. Each copy picks how many of its last forks
+          // to merge from how far apart those branches are on screen.
           const n = d.numTethers.value
           const k = 2 * Math.PI * 2 / n
-          const depths = this.tetherAnchorDepths(geometry, crv, refCoordSys, n / 2, k)
+          const { topDepths, anchorDepths } = this.tetherDepths(geometry, crv, system.ringToPlanetQuaternion, n / 2, k)
           const byDepth = new Map()
           const levelsFor = (step) => {
             if (!byDepth.has(step)) {
@@ -98,9 +101,9 @@ export class RingAssembly {
           }
           for (let i = 0; i < n / 2; i++) {
             const theta = i * k
-            const { levels, fanWidths } = levelsFor(Math.ceil(depths[i] / TETHER_DEPTH_STEP))
+            const { levels, fanWidths } = levelsFor(Math.ceil(anchorDepths[i] / TETHER_DEPTH_STEP))
             const tether = this.createTetherLOD(levels, fanWidths)
-            tether.position.setFromSphericalCoords(this.planetRadius + crv.currentMainRingAltitude, -(Math.PI / 2 - crv.currentEquivalentLatitude), theta)
+            tether.position.setFromSphericalCoords(this.planetRadius + crv.currentMainRingAltitude - topDepths[i], -(Math.PI / 2 - crv.currentEquivalentLatitude), theta)
             tether.rotation.y = theta
             list.push(tether)
             refCoordSys.add(tether)
@@ -140,11 +143,12 @@ export class RingAssembly {
     return lod
   }
 
-  // Depth of the ground (the ellipsoid) below the equatorial-radius sphere at each tether copy's
-  // anchors (the deeper of its two), from the anchors of the sphere design (`geometry`, whose ground
-  // points are at r = a). The anchors of the deeper design are a little further out, but the ground
-  // changes slowly.
-  tetherAnchorDepths(geometry, crv, refCoordSys, count, step) {
+  // For each tether copy: topDepths, the depth of the ground below the equatorial-radius sphere under
+  // its top (the copy is lowered by this, as the ring is), and anchorDepths, how much deeper still the
+  // ground is at its anchors (the deeper of its two; negative where it is shallower). The anchors are
+  // those of the sphere design (`geometry`, whose ground points are at r = a); those of a deeper
+  // design are a little further out, but the ground changes slowly.
+  tetherDepths(geometry, crv, ringToPlanetQuaternion, count, step) {
     const position = geometry.getAttribute('position')
     const reference = new THREE.Vector3().setFromSphericalCoords(this.planetRadius + crv.currentMainRingAltitude, -(Math.PI / 2 - crv.currentEquivalentLatitude), 0)
     const anchors = []
@@ -153,17 +157,18 @@ export class RingAssembly {
       p.fromBufferAttribute(position, i).add(reference)
       if (p.length() < this.planetRadius + 1) anchors.push(p.clone())
     }
-    refCoordSys.updateMatrix()
     const yAxis = new THREE.Vector3(0, 1, 0)
-    const depths = new Float64Array(count)
+    const ellipsoid = this.planetSpec.ellipsoid
+    const topDepths = new Float64Array(count)
+    const anchorDepths = new Float64Array(count).fill(-Infinity)
     for (let i = 0; i < count; i++) {
+      topDepths[i] = groundDepthBelowSphere(p.copy(reference).applyAxisAngle(yAxis, i * step), ringToPlanetQuaternion, ellipsoid)
       for (const anchor of anchors) {
-        p.copy(anchor).applyAxisAngle(yAxis, i * step).applyMatrix4(refCoordSys.matrix)
-        const depth = p.length() * (1 - tram.ellipsoidSurfaceScale(p.x, p.y, p.z, this.planetSpec.ellipsoid))
-        depths[i] = Math.max(depths[i], depth)
+        const depth = groundDepthBelowSphere(p.copy(anchor).applyAxisAngle(yAxis, i * step), ringToPlanetQuaternion, ellipsoid)
+        anchorDepths[i] = Math.max(anchorDepths[i], depth - topDepths[i])
       }
     }
-    return depths
+    return { topDepths, anchorDepths }
   }
 
   disposeTethers() {

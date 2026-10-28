@@ -1,6 +1,19 @@
 // Shared tethered-ring dimensions and offset helpers.
 import * as THREE from 'three'
 import { lerp } from '../utils/math.js'
+import { ellipsoidSurfaceScale } from '../physics/geodesy.js'
+
+const _planetPoint = new THREE.Vector3()
+
+// How far the ground (the ellipsoid, at sea level) is below the sphere of the equatorial radius on
+// which the ring is designed, in the direction of `point` (ring frame; ringToPlanetQuaternion turns it
+// into planet coordinates, whose origin is shared). The ring keeps a constant height above sea level:
+// a point designed at r = a + h is lowered by this depth.
+export function groundDepthBelowSphere(point, ringToPlanetQuaternion, ellipsoid) {
+  _planetPoint.copy(point).applyQuaternion(ringToPlanetQuaternion)
+  const scale = ellipsoidSurfaceScale(_planetPoint.x, _planetPoint.y, _planetPoint.z, ellipsoid)
+  return ellipsoid.a - _planetPoint.length() * scale
+}
 
 export function offset_r(outwardOffset, upwardOffset, currentEquivalentLatitude) {
   return outwardOffset * Math.sin(currentEquivalentLatitude) + upwardOffset * Math.cos(currentEquivalentLatitude)

@@ -381,6 +381,7 @@ function transitVehicleDollyShotWashington(guidParamWithUnits, nonGUIParams) {
 
 
   // Seattle
+  nonGUIParams['cameraAtRingHeight'] = true // placed against the ring on the sphere; lowered with it
   nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(-3724410.278152983, 4710017.83565673, -2243449.2392905336)
   nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(-0.5810279609523532, 0.7347880213825453, -0.3499901030376074)
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-3725506.7143735993, 4709667.556950768, -2242269.015923921)
@@ -884,6 +885,7 @@ function solarPanelsCalifornia(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['numVirtualSolarArrays'].value = 1000000
 
   // California
+  nonGUIParams['cameraAtRingHeight'] = true // placed against the ring on the sphere; lowered with it
   nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(-4126649.50347885, 4336131.069876342, -2292694.6838267166)
   nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(-0.6437762083188713, 0.6764789334721483, -0.3576708629047093)
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-4127217.359602618, 4335764.529077124, -2292992.795739126)
@@ -1640,6 +1642,7 @@ function smallRing(guidParamWithUnits, nonGUIParams) {
   // nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-3835202.1426253137, 4593861.719903532, -2224488.484862578)
   // nonGUIParams['cameraUp'] = new THREE.Vector3(-0.6019616798311834, 0.7196019598240632, -0.34614325853927475)
 
+  nonGUIParams['cameraAtRingHeight'] = true // placed against the ring on the sphere; lowered with it
   nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(-3832974.594616706, 4592541.861591282, -2216451.2693740227)
   nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(-0.6008432580565791, 0.719910280322552, -0.3474428982348893)
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-3832975.279103812, 4592541.9190021865, -2216450.773449553)
@@ -1715,6 +1718,7 @@ function movingRingsOrbit(guidParamWithUnits, nonGUIParams) {
     true
   )}
 
+  nonGUIParams['cameraAtRingHeight'] = true // placed against the ring on the sphere; lowered with it
   nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(-3586160.308932927, 4822570.089538445, -2229721.126416423)
   nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(-0.5594546432906146, 0.7523392721138287, -0.34784496796102365)
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-3586158.264192416, 4822573.6952032205, -2229721.092930216)

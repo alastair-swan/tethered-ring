@@ -1,11 +1,12 @@
 import * as THREE from 'three'
 import * as tram from '../utils/tram.js'
 import * as kmlutils from '../export/kmlutils.js'
+import { groundDepthBelowSphere } from './ringGeometry.js'
 
 export class mainRingCurve {
-    constructor(dParamWithUnits, planetSpec, crv, index, genKMLFile, kmlFile) {
+    constructor(dParamWithUnits, planetSpec, crv, index, genKMLFile, kmlFile, ringToPlanetQuaternion) {
 
-    this.curveControlPoints = this.generateMainRingControlPoints(dParamWithUnits, crv, planetSpec)
+    this.curveControlPoints = this.generateMainRingControlPoints(dParamWithUnits, crv, planetSpec, ringToPlanetQuaternion)
   
     const mainRingCurve = new THREE.CatmullRomCurve3(this.curveControlPoints)
     mainRingCurve.curveType = 'centripetal'
@@ -18,7 +19,11 @@ export class mainRingCurve {
   
   }
   
-  generateMainRingControlPoints(dParamWithUnits, crv, planetSpec) {
+  // The ring is designed on a sphere of the equatorial radius, then each point is lowered by the depth
+  // of the ground below that sphere, so that the ring is at a constant height above sea level (the
+  // ellipsoid). (A ring of constant gravity would be a better design, but needs the planet's gravity
+  // field.)
+  generateMainRingControlPoints(dParamWithUnits, crv, planetSpec, ringToPlanetQuaternion) {
   
     const n = dParamWithUnits['numControlPoints'].value
     const e = dParamWithUnits['ringEccentricity'].value
@@ -37,6 +42,10 @@ export class mainRingCurve {
       positionInRingCoordSys.y = (roughPlanetRadius + crv.currentMainRingAltitude) * Math.sin(angleInRingCoordSys)
       positionInRingCoordSys.x = rInRingCoordSys * Math.cos(a)
       positionInRingCoordSys.z = rInRingCoordSys * Math.sin(a)
+      if (ringToPlanetQuaternion) {
+        const r = positionInRingCoordSys.length()
+        positionInRingCoordSys.multiplyScalar((r - groundDepthBelowSphere(positionInRingCoordSys, ringToPlanetQuaternion, planetSpec.ellipsoid)) / r)
+      }
       controlPoints.push(positionInRingCoordSys)
     }
 

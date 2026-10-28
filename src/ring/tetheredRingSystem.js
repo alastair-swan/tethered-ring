@@ -34,7 +34,7 @@ export class tetheredRingSystem {
     this.crv = new tram.commonRingVariables(roughPlanetRadius, ringFinalAltitude, equivalentLatitude, dParamWithUnits['ringAmountRaisedFactor'].value)
 
     // Create a curve to represent the shape of the tethered ring system
-    this.mainRingCurve = new mainRingCurve(dParamWithUnits, planetSpec, this.crv, index, genKMLFile, kmlFile)
+    this.mainRingCurve = new mainRingCurve(dParamWithUnits, planetSpec, this.crv, index, genKMLFile, kmlFile, this.ringToPlanetQuaternion)
 
     // KML placemark for the main ring (strings are immutable, so callers append this.kmlFile themselves)
     this.kmlFile = (index===0 && genKMLFile) ? genMainRingKML(this.mainRingCurve, planetSpec, this.ringToPlanetQuaternion) : ''
@@ -81,12 +81,10 @@ export class tetheredRingSystem {
     this.ringCenterLat = lat
     this.ringCenterLon = lon
     this.gimbalTo(lat, lon)
-    //this.updateRing()  // We will need to do this work (or schedule this work?) to adapt the ring to the planet's eccentricity and surface contours
   }
   
   gimbalTo(lat, lon) {
     // "Gimbal" code for orienting a coordinate system such as the tetheredRingRefCoordSys
-    // Note: There's additional work that needs to be done if we want to adapt the ring to the planet's eccentricity and surface contours
     // Convert Degrees to Radians
     const latRadians = lat * Math.PI / 180
     const lonRadians = lon * Math.PI / 180

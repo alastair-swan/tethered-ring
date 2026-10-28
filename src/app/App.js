@@ -305,6 +305,25 @@ export class App {
     }
   }
 
+  // For presets whose camera was placed against the ring when the ring was on the equatorial-radius
+  // sphere: lowers the camera and its target with the ring, by the depth of the ground below that
+  // sphere at the target (see mainRingCurve).
+  lowerCameraWithRing() {
+    const controls = this.camera.controls
+    const parent = this.camera3d.parent ?? this.scene
+    parent.updateWorldMatrix(true, false)
+    this.planetCoordSys.updateWorldMatrix(true, false)
+    const toPlanet = (p) => this.planetCoordSys.worldToLocal(parent.localToWorld(p.clone()))
+    const fromPlanet = (p) => parent.worldToLocal(this.planetCoordSys.localToWorld(p))
+    const target = toPlanet(controls.target)
+    const ellipsoid = this.planetSpec.ellipsoid
+    const depth = ellipsoid.a - target.length() * tram.ellipsoidSurfaceScale(target.x, target.y, target.z, ellipsoid)
+    const shift = target.clone().normalize().multiplyScalar(-depth)
+    controls.target.copy(fromPlanet(target.add(shift)))
+    controls.object.position.copy(fromPlanet(toPlanet(controls.object.position).add(shift)))
+    controls.update()
+  }
+
   buildCamera() {
     this.camera = new CameraController({
       camera: this.camera3d,
@@ -327,6 +346,7 @@ export class App {
       : new THREE.Vector3()
     this.initialReferencePoint = reference.clone()
     this.camera.placeInitially(reference)
+    if (this.nonGUIParams.cameraAtRingHeight) this.lowerCameraWithRing()
     this.camera.controls.autoRotate = this.d.orbitControlsAutoRotate.value
     this.resolveSunDate()
 
