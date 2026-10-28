@@ -20,10 +20,11 @@ export class massDriverBracketModel {
 
     this.bracketThickness = dParamWithUnits['launcherMassDriverScrewBracketThickness'].value
     this.shape = this.createShape(dParamWithUnits)
+    this.lowDetailShape = this.createShape(dParamWithUnits, 4)
 
   }
 
-  createModel(massDriverSuperCurve, launcherMassDriverLength, massDriverScrewSegments, segmentIndex) {
+  createModel(massDriverSuperCurve, launcherMassDriverLength, massDriverScrewSegments, segmentIndex, shape = this.shape) {
 
     const segmentSpacing = launcherMassDriverLength / massDriverScrewSegments
     const modelLengthSegments = 1    // This model, which is a segment of the whole mass driver, is itself divided into this many lengthwise segments
@@ -48,14 +49,15 @@ export class massDriverBracketModel {
         depth: 1,
         extrudePath: massDriverSegmentCurve
     }
-    const massDriverBracketGeometry = new THREE.ExtrudeGeometry( this.shape, extrudeSettings )
+    const massDriverBracketGeometry = new THREE.ExtrudeGeometry( shape, extrudeSettings )
     massDriverBracketGeometry.name = "massDriverBracketGeometry"
     const massDriverBracketMesh = new THREE.Mesh(massDriverBracketGeometry, this.massDriverBracketMaterial)
     massDriverBracketMesh.name = "massDriverBracket"
     return massDriverBracketMesh
   }
 
-  createShape(dParamWithUnits) {
+  // arcSegments: segments per curved part of the outline (16 for full detail, fewer for distant brackets).
+  createShape(dParamWithUnits, arcSegments = 16) {
 
     const railWidth = dParamWithUnits['launcherMassDriverRailWidth'].value
     const railHeight = dParamWithUnits['launcherMassDriverRailHeight'].value
@@ -76,15 +78,15 @@ export class massDriverBracketModel {
     // Counter-clockwise from right side of the base of rail support to bottom of right screw support
     const arc1StartAngle = -Math.acos(railWidth/4/innerRibRadius)
     const arc1EndAngle = Math.asin((screwUpwardsOffset - bracketHeight/2)/innerRibRadius)
-    for (let i = 0; i<=16; i++) {
-      const a = arc1StartAngle + i*(arc1EndAngle-arc1StartAngle)/16
+    for (let i = 0; i<=arcSegments; i++) {
+      const a = arc1StartAngle + i*(arc1EndAngle-arc1StartAngle)/arcSegments
       shape.lineTo( innerRibRadius*Math.cos(a), innerRibRadius*Math.sin(a)-railUpwardsOffset )
     }
     // Clockwise circle around the inside of the right screw
     const screwShaft1StartAngle = -Math.asin(bracketHeight/2/shaftRadius)
     const screwShaft1EndAngle = -Math.PI*2 + Math.asin(bracketHeight/2/shaftRadius)
-    for (let i = 0; i<=16; i++) {
-      const a = screwShaft1StartAngle + i*(screwShaft1EndAngle-screwShaft1StartAngle)/16
+    for (let i = 0; i<=arcSegments; i++) {
+      const a = screwShaft1StartAngle + i*(screwShaft1EndAngle-screwShaft1StartAngle)/arcSegments
       shape.lineTo( screwSidewaysOffset + Math.cos(a)*shaftRadius, screwUpwardsOffset-railUpwardsOffset + Math.sin(a)*shaftRadius )
     }
     // Clockwise circle around the inside of the tube to the left screw
@@ -97,15 +99,15 @@ export class massDriverBracketModel {
     // Counter-clockwise circle around the inside of the left screw
     const screwShaft2StartAngle = 3*Math.PI - Math.asin(bracketHeight/2/shaftRadius)
     const screwShaft2EndAngle = Math.PI + Math.asin(bracketHeight/2/shaftRadius)
-    for (let i = 0; i<=16; i++) {
-      const a = screwShaft2StartAngle + i*(screwShaft2EndAngle-screwShaft2StartAngle)/16
+    for (let i = 0; i<=arcSegments; i++) {
+      const a = screwShaft2StartAngle + i*(screwShaft2EndAngle-screwShaft2StartAngle)/arcSegments
       shape.lineTo( -screwSidewaysOffset + Math.cos(a)*shaftRadius, screwUpwardsOffset-railUpwardsOffset + Math.sin(a)*shaftRadius )
     }
     // Counter-clockwise from bottom of right screw support to the left side of the rail support
     const arc3StartAngle = -Math.PI - Math.asin((screwUpwardsOffset - bracketHeight/2) / innerRibRadius) 
     const arc3EndAngle = -Math.PI + Math.acos(railWidth/4/innerRibRadius)
-    for (let i = 0; i<=16; i++) {
-      const a = arc3StartAngle + i*(arc3EndAngle-arc3StartAngle)/16
+    for (let i = 0; i<=arcSegments; i++) {
+      const a = arc3StartAngle + i*(arc3EndAngle-arc3StartAngle)/arcSegments
       shape.lineTo( innerRibRadius*Math.cos(a), innerRibRadius*Math.sin(a)-railUpwardsOffset )
     }
     shape.lineTo(-railWidth/4, -railHeight/2)

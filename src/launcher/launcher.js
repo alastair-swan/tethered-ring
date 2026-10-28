@@ -11,6 +11,7 @@ import { massDriverTubeModel, virtualMassDriverTube } from './MassDriverTube.js'
 import { massDriverRailModel, virtualMassDriverRail } from './MassDriverRail.js'
 import { massDriverBracketModel, virtualMassDriverBracket } from './MassDriverBracket.js'
 import { massDriverScrewModel, virtualMassDriverScrew, createScrewModelPair } from './MassDriverScrew.js'
+import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
 import { humanFigureModel, virtualHumanFigure } from './HumanFigure.js'
 //import { evacuatedTubeModel, virtualEvacuatedTube } from './EvacuatedTube.js'
 import * as LauncherAnimate from './launcherAnimate.js'
@@ -293,10 +294,29 @@ export class launcher {
         virtualMassDriverScrew.unallocatedModels.push(screwModels)
       }],
       [virtualMassDriverBracket, () => {
-        const tempModel = this.bracketModelObject.createModel(this.polyCurveForrf0, this.accelerationScrewLength, (this.massDriverAccelerationScrewSegments+1), 0)
-        tempModel.name = 'massDriver2Bracket'
-        tempModel.visible = false
-        virtualMassDriverBracket.unallocatedModels.push(tempModel)
+        // Brackets are identical, so they are drawn instanced: the pooled "models" are proxies whose
+        // transforms InstancedProxyPool copies into a full-detail and a low-detail InstancedMesh.
+        virtualMassDriverBracket.instancePool?.dispose()
+        const segments = this.massDriverAccelerationScrewSegments + 1
+        const high = this.bracketModelObject.createModel(this.polyCurveForrf0, this.accelerationScrewLength, segments, 0)
+        const low = this.bracketModelObject.createModel(this.polyCurveForrf0, this.accelerationScrewLength, segments, 0, this.bracketModelObject.lowDetailShape)
+        const pool = new InstancedProxyPool({
+          name: 'massDriver2Bracket',
+          parent: this.scene,
+          size: 2 * dParamWithUnits['launcherMassDriverTubeInnerRadius'].value,
+          castShadow: true,
+          levels: [
+            { geometry: high.geometry, material: high.material, minPixels: 40 },
+            { geometry: low.geometry, material: low.material, minPixels: 1 },
+          ],
+        })
+        virtualMassDriverBracket.instancePool = pool
+        virtualMassDriverBracket.createPooledModel = () => {
+          const proxy = pool.createProxy()
+          proxy.visible = false
+          return proxy
+        }
+        virtualMassDriverBracket.unallocatedModels.push(virtualMassDriverBracket.createPooledModel())
       }],
     ])
     this.objectClasses.forEach(objectClass => {
