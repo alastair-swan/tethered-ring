@@ -13,8 +13,10 @@ const _objectPosition = new THREE.Vector3()
 //   (below the smallest threshold nothing is drawn)
 //
 // Level contents are built lazily the first time they are needed. Expensive builds are rate
-// limited per frame (PixelLOD.buildBudget, in builds per frame) so a camera move does not stall
-// on dozens of high-detail rebuilds: until a level is built the next coarser built level is shown.
+// limited per frame (PixelLOD.buildBudget, in milliseconds of build time per frame) so a camera move
+// does not stall on dozens of high-detail rebuilds: until a level is built the next coarser built
+// level is shown. A time budget (rather than a count) lets many cheap builds through when the camera
+// races along a launcher, while a few slow ones still cannot stall a frame.
 // Recording sets an unlimited budget so every frame is rendered at its intended detail.
 export class PixelLOD extends THREE.LOD {
   // Drawing-buffer height in pixels; the App keeps this up to date.
@@ -22,15 +24,16 @@ export class PixelLOD extends THREE.LOD {
   // Multiplies every threshold (1 = as designed; >1 switches to coarser levels sooner). Set by the
   // graphics-quality setting; always 1 while recording.
   static lodBias = 1
-  // Maximum lazy level builds per frame (Infinity while recording).
-  static buildBudget = 2
-  static _buildsThisFrame = 0
+  // Milliseconds per frame that expensive lazy level builds may take (Infinity while recording). A
+  // build is started only while the frame's total is below the budget.
+  static buildBudget = 6
+  static _buildMsThisFrame = 0
   static _frame = -1
 
   // Call once per rendered frame (before rendering) to reset the build budget.
   static beginFrame(frameNumber) {
     PixelLOD._frame = frameNumber
-    PixelLOD._buildsThisFrame = 0
+    PixelLOD._buildMsThisFrame = 0
   }
 
   // size: characteristic size (m) whose projection is compared with the level thresholds.
@@ -66,11 +69,14 @@ export class PixelLOD extends THREE.LOD {
 
   _build(level) {
     if (level.object !== undefined) return true
-    if (level.cost === 'expensive') {
-      if (PixelLOD._buildsThisFrame >= PixelLOD.buildBudget) return false
-      PixelLOD._buildsThisFrame++
+    if (level.cost !== 'expensive') {
+      this._attach(level, level.factory())
+      return true
     }
+    if (PixelLOD._buildMsThisFrame >= PixelLOD.buildBudget) return false
+    const start = performance.now()
     this._attach(level, level.factory())
+    PixelLOD._buildMsThisFrame += performance.now() - start
     return true
   }
 
