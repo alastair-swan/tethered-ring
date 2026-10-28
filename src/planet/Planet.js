@@ -6,7 +6,10 @@ import atmosphereFragmentShader from '../shaders/atmosphere.frag.glsl?raw';
 // The atmosphere shell is a sphere of the equatorial radius scaled by this
 // factor (and flattened like the planet). 1.1 / 1.05 reproduces the old look,
 // which scaled by 1.1 and then divided by w = 1.05 in the vertex shader.
-const ATMOSPHERE_SCALE = 1.1 / 1.05;
+// Top of the atmosphere shell above sea level (m), and the length of air for the sky to reach 63% of
+// its full opacity (see atmosphere.frag.glsl).
+const ATMOSPHERE_HEIGHT = 60000;
+const ATMOSPHERE_OPACITY_PATH = 40000;
 
 // Flat surface colours used before tiles stream in, and for bodies that have
 // no baked assets at all.
@@ -114,6 +117,12 @@ function assetNamesFromUrl() {
  *   startupChart          Log startup timing milestones and an ASCII load chart
  *                         to the console (default false).
  */
+const _atmoQuaternion = new THREE.Quaternion();
+const _atmoInverse = new THREE.Quaternion();
+const _atmoCamera = new THREE.Vector3();
+const _atmoCentre = new THREE.Vector3();
+const _atmoPole = new THREE.Vector3();
+
 export class Planet {
   constructor(planetSpec, {
     renderer = null,
@@ -144,22 +153,58 @@ export class Planet {
       water: rendererOptions.water ?? planetSpec.hasOcean === true,
     });
 
+    // The atmosphere: a shell ATMOSPHERE_HEIGHT above the sea-level ellipsoid, drawn from inside
+    // (its far side), whose opacity is worked out per pixel from the line of sight through it (see
+    // atmosphere.frag.glsl and updateAtmosphere). Finely tessellated so its edge stays smooth (the
+    // chord sag of 256 x 128 segments is about 0.5 km).
     const a = planetSpec.ellipsoid.a;
-    const polarScale = 1 - (planetSpec.ellipsoid.f || 0);
+    const b = a * (1 - (planetSpec.ellipsoid.f || 0));
+    this.ellipsoid = { a, b };
+    this.atmosphereUniforms = {
+      atmoCamera: { value: new THREE.Vector4() },
+      atmoPole: { value: new THREE.Vector4() },
+      atmoParams: { value: new THREE.Vector4(0, ATMOSPHERE_OPACITY_PATH, 0, 0) },
+      atmoSun: { value: new THREE.Vector3(0, 1, 0) },
+    };
     this.atmosphere = new THREE.Mesh(
-      new THREE.SphereGeometry(a, 64, 32),
+      new THREE.SphereGeometry(1, 256, 128),
       new THREE.ShaderMaterial({
+        uniforms: this.atmosphereUniforms,
         vertexShader: atmosphereVertexShader,
         fragmentShader: atmosphereFragmentShader,
-        blending: THREE.AdditiveBlending,
         side: THREE.BackSide,
         depthWrite: false,
         transparent: true,
       }),
     );
     this.atmosphere.name = 'atmosphere';
-    this.atmosphere.scale.set(ATMOSPHERE_SCALE, ATMOSPHERE_SCALE * polarScale, ATMOSPHERE_SCALE);
+    this.atmosphere.scale.set(a + ATMOSPHERE_HEIGHT, b + ATMOSPHERE_HEIGHT, a + ATMOSPHERE_HEIGHT);
+    this.atmosphere.frustumCulled = false; // also the sky around the camera when it is inside the shell
     this.atmosphere.visible = showAtmosphere;
+  }
+
+  /**
+   * Updates the atmosphere for this frame: camera (world) and the direction to the sun (world).
+   * The large terms are computed here in float64 so the shader works with small numbers.
+   */
+  updateAtmosphere(camera, sunDirection) {
+    const { a, b } = this.ellipsoid;
+    const k = a / b;
+    const top = a + ATMOSPHERE_HEIGHT;
+    this.atmosphere.updateWorldMatrix(true, false);
+    const q = this.atmosphere.getWorldQuaternion(_atmoQuaternion);
+    // Camera relative to the planet centre, in the planet's own axes (y = polar), then stretched.
+    camera.getWorldPosition(_atmoCamera);
+    _atmoCamera.sub(this.atmosphere.getWorldPosition(_atmoCentre)).applyQuaternion(_atmoInverse.copy(q).invert());
+    _atmoCamera.y *= k;
+    const c2 = _atmoCamera.lengthSq();
+    _atmoCamera.applyQuaternion(q);
+    const u = this.atmosphereUniforms;
+    u.atmoCamera.value.set(_atmoCamera.x, _atmoCamera.y, _atmoCamera.z, c2 - top * top);
+    _atmoPole.set(0, 1, 0).applyQuaternion(q);
+    u.atmoPole.value.set(_atmoPole.x, _atmoPole.y, _atmoPole.z, k - 1);
+    u.atmoParams.value.x = c2 - a * a;
+    u.atmoSun.value.copy(sunDirection).normalize();
   }
 
   /** Per-frame LOD selection and streaming. Call before rendering. */

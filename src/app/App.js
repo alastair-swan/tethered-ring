@@ -46,6 +46,9 @@ const TUBE_DEPLOY_RATE = 0.0025 // fraction per second
 // Frame structure (see frame()):
 //   clock.tick() -> step(dt): advance animations at clock.time -> render()
 // Recording and shot playback drive step()/render() themselves with a fixed time step.
+const _sunDirection = new THREE.Vector3()
+const _sunTarget = new THREE.Vector3()
+
 export class App {
   constructor(container, { presetId, enableVR = false, quality } = {}) {
     this.container = container
@@ -634,6 +637,8 @@ export class App {
     this.transitSystem.pixelsPerRadian = this.camera3d.projectionMatrix.elements[5] * PixelLOD.viewportHeight / 2
     if (this.launchSystem) this.launchSystem.pixelsPerRadian = this.transitSystem.pixelsPerRadian
     this.sky.update(this.camera3d, this.planetCoordSys, this.lighting.sunLight, this.d, this.planetSpec)
+    const sun = this.lighting.sunLight
+    this.planet.updateAtmosphere(this.camera3d, sun.getWorldPosition(_sunDirection).sub(sun.target.getWorldPosition(_sunTarget)))
     // Under the sea surface (in the water, or dry inside the tube): no sky (or atmosphere); the
     // background is the water colour.
     const underwater = this.ocean?.enabled && this.ocean.cameraUnderSurface

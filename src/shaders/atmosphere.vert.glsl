@@ -1,12 +1,12 @@
-// Atmosphere glow shell. The mesh is scaled explicitly (see Planet.js), so the
-// position is used as-is (w = 1).
+// Atmosphere shell (see Planet.js): passes the world position on for the per-pixel ray march.
 #include <common>
 #include <logdepthbuf_pars_vertex>
 
-varying vec3 vertexNormal;
+varying vec3 vWorldPosition;
 
 void main() {
-  vertexNormal = normalize(normalMatrix * normal);
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  vec4 world = modelMatrix * vec4(position, 1.0);
+  vWorldPosition = world.xyz;
+  gl_Position = projectionMatrix * viewMatrix * world;
   #include <logdepthbuf_vertex>
 }
