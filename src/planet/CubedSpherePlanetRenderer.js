@@ -1160,7 +1160,7 @@ export class CubedSpherePlanetRenderer {
     if (tile.cacheVersion === this.manifestVersion) return;
     tile.cacheVersion = this.manifestVersion;
     tile.hasChildAssets = this._computeHasChildAssets(tile);
-    tile.boost = this._priorityBoost(tile, tile.meta || this._getTileMeta(tile));
+    tile.boost = this.hasAssets ? this._priorityBoost(tile, tile.meta || this._getTileMeta(tile)) : 1;
   }
 
   // True only if the manifest contains ALL four child tile assets. Requiring the
@@ -1377,7 +1377,10 @@ export class CubedSpherePlanetRenderer {
   // Approximate world-space geometric error: half a tile's surface span.
   _tileGeometricError(tile) {
     const tileSpan = 2 / Math.pow(2, tile.lod); // in cube-face [-1,1] units
-    return 0.5 * tileSpan * this.meanRadius;
+    // Without streamed textures/heights only the silhouette matters, so the
+    // error is the (much smaller) per-segment span.
+    const scale = this.hasAssets ? 0.5 : 0.5 / this.segments;
+    return scale * tileSpan * this.meanRadius;
   }
 
   // True if the tile's surface footprint overlaps a location-of-interest disc.

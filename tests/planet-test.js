@@ -16,7 +16,7 @@ const SITES = {
   moon: { lat: 0.67, lon: 23.20, targetLat: 0.67, targetLon: 23.60 },
 };
 const site = SITES[bodyName] || SITES.earth;
-const ALTITUDE_ABOVE_TERRAIN = 2000;
+const ALTITUDE_ABOVE_TERRAIN = Number(params.get('altitude') || 2000);
 
 const renderer = new THREE.WebGLRenderer({ antialias: false, logarithmicDepthBuffer: true });
 renderer.setPixelRatio(1);
