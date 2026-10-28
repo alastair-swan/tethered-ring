@@ -2951,6 +2951,15 @@ function handleController( controller ) {
 
 
 if (verbose) console.log("Calling animate")
+// Debug handle for the browser console and automated tests (scripts/smoke.mjs --eval).
+window.tetheredRing = {
+  THREE, scene, camera, renderer, orbitControls, planetCoordSys,
+  get transitSystem() { return transitSystemObject },
+  get launchSystem() { return launchSystemObject },
+  get tetheredRingRefCoordSys() { return tetheredRingRefCoordSys },
+  get dParamWithUnits() { return dParamWithUnits },
+  get timeSinceStart() { return timeSinceStart },
+}
 animate()
 
 // function findNearestPointOnRing(intersectionPoint) {
