@@ -26,8 +26,8 @@ export class ElevatorCableLayer {
     this.mesh = null
     if (this.positions.length === 0) return
 
-    const halfWidth = cameraRange / this.ringCircumference
-    const maxCables = Math.min(this.positions.length, Math.ceil(2 * halfWidth * this.positions.length) + 2)
+    // The range follows the horizon (setCameraRange), which can include the whole ring.
+    const maxCables = this.positions.length
     this.buffer = new Float32Array(maxCables * 6)
     const geometry = new THREE.BufferGeometry()
     this.attribute = new THREE.BufferAttribute(this.buffer, 3)
@@ -40,6 +40,10 @@ export class ElevatorCableLayer {
     this.mesh.renderOrder = 1
     this.mesh.frustumCulled = false
     this.maxCables = maxCables
+  }
+
+  setCameraRange(range) {
+    this.cameraRange = range
   }
 
   setParent(parent) {

@@ -33,6 +33,7 @@ export class RingAssembly {
         tetherMinOpacity: { value: d.tetherMinOpacity.value },
         tetherMaxOpacity: { value: d.tetherMaxOpacity.value },
         tetherDistanceFactor: { value: 2 ** d.tetherDistanceFactor.value },
+        screenScale: { value: 1 },
         color: { value: new THREE.Color(store.get('tetherColor')) },
       },
       vertexShader: tetherVertexShader,
@@ -176,6 +177,13 @@ export class RingAssembly {
       finalLat: d[`finalLocationRingCenterLatitude${suffix}`].value,
       finalLon: d[`finalLocationRingCenterLongitude${suffix}`].value,
     }, d[`moveRingFactor${suffix}`].value)
+  }
+
+  // Keeps the tether fade tied to on-screen size (see tether.vert.glsl).
+  updateScreenScale(camera, viewportHeight) {
+    const pixelsPerRadian = camera.projectionMatrix.elements[5] * viewportHeight / 2
+    const referencePixelsPerRadian = 1080 / 2 / Math.tan(this.store.get('cameraFieldOfView') * Math.PI / 360)
+    this.tetherMaterial.uniforms.screenScale.value = pixelsPerRadian / referencePixelsPerRadian
   }
 
   setTetherUniforms() {

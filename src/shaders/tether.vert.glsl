@@ -4,6 +4,9 @@
 #include <logdepthbuf_pars_vertex>
 
 uniform float tetherDistanceFactor;
+// Camera pixels per radian relative to the reference view (default FOV at 1080 px), so the fade
+// tracks on-screen size: zooming in or rendering at 4K keeps distant tethers visible as they should be.
+uniform float screenScale;
 attribute float thickness;
 varying float apparentThickness;
 
@@ -13,5 +16,5 @@ void main() {
   #include <logdepthbuf_vertex>
   // Eye space looks down -z, so the distance to the camera is -eyeCoord.z.
   float eyeDistance = -eyeCoord.z;
-  apparentThickness = thickness / (eyeDistance * tetherDistanceFactor);
+  apparentThickness = thickness * screenScale / (eyeDistance * tetherDistanceFactor);
 }

@@ -49,6 +49,16 @@ const RANGE = {
 
 const LAYOUT_SEED = 0x7e7e5eed
 
+// Objects are kept until they are smaller than this on screen (see screenSpaceRange).
+const MIN_VISIBLE_PIXELS = 1.5
+const POOL_FOR_CLASS = {
+  virtualTransitVehicles: 'transitVehicle',
+  virtualRingTerminuses: 'ringTerminus',
+  virtualGroundTerminuses: 'groundTerminus',
+  virtualHabitats: 'habitat',
+  virtualElevatorCars: 'elevatorCar',
+}
+
 const _cameraLocal = new THREE.Vector3()
 const _pointOnRing = new THREE.Vector3()
 
@@ -101,6 +111,7 @@ export class transitSystem {
     this.layers = []
     this.movingRingLayer = null
     this.cableLayer = null
+    this.transitTubeLayer = null
     this.vehicleLayoutKey = null
     this.facilityLayoutKey = null
     this.lastTimeSinceStart = 0
@@ -319,7 +330,7 @@ export class transitSystem {
       createStationaryRingLayer(dParamWithUnits, crv, mainRingCurve, RANGE.facilities),
       this.movingRingLayer,
       createStatorMagnetLayer(dParamWithUnits, crv, mainRingCurve, RANGE.statorMagnets),
-      createTransitTubeLayer(dParamWithUnits, crv, mainRingCurve, layout.numStops, RANGE.longRange),
+      (this.transitTubeLayer = createTransitTubeLayer(dParamWithUnits, crv, mainRingCurve, layout.numStops, RANGE.longRange)),
       ...createTransitTrackLayers(dParamWithUnits, crv, mainRingCurve, layout.numStops, RANGE.facilities),
       createSolarArrayLayer(dParamWithUnits, crv, RANGE.facilities),
     ].filter(layer => layer.mesh)
@@ -341,6 +352,7 @@ export class transitSystem {
     this.movingRingLayer = null
     if (this.cableLayer) this.cableLayer.dispose()
     this.cableLayer = null
+    this.transitTubeLayer = null
   }
 
   releaseAllModels() {
@@ -457,6 +469,12 @@ export class transitSystem {
     this.nearestTrackPosition = nearestTrackPosition
     this.distanceFromCameraToRing = distanceFromCameraToRing
 
+    // The transit tube and elevator cables are visible from far away, so they are drawn out to the
+    // horizon (the planet hides anything beyond it) instead of stopping at a fixed range.
+    const horizon = this.horizonDistance(cameraPosition.length())
+    this.transitTubeLayer?.setCameraRange(Math.max(RANGE.longRange, horizon))
+    this.cableLayer?.setCameraRange(Math.max(RANGE.longRange, horizon))
+
     this.layers.forEach(layer => layer.update(curve, nearestTrackPosition, distanceFromCameraToRing))
     if (this.cableLayer) this.cableLayer.update(curve, nearestTrackPosition, distanceFromCameraToRing)
 
@@ -464,8 +482,55 @@ export class transitSystem {
     const ringCircumference = 2 * Math.PI * this.crv.mainRingRadius
     const invalidate = this.invalidateWedgeHistory
     this.invalidateWedgeHistory = false
-    this.refFrames.forEach(refFrame => this.updateWedges(refFrame, nearestTrackPosition, distanceFromCameraToRing, ringCircumference, invalidate))
+    this.refFrames.forEach((refFrame, i) => {
+      if (refFrame.baseCameraRange === undefined) refFrame.baseCameraRange = refFrame.cameraRange
+      refFrame.cameraRange = this.screenSpaceRange(refFrame, horizon, ringCircumference, invalidate)
+      this.updateWedges(refFrame, nearestTrackPosition, distanceFromCameraToRing, ringCircumference, invalidate)
+    })
     Object.values(this.pools).forEach(pool => pool.reportShortage())
+  }
+
+  // How far from the camera a reference frame's objects are given models: out to where its largest
+  // object shrinks to MIN_VISIBLE_PIXELS on screen (so nothing visibly pops in), never less than the
+  // frame's original range, never past the horizon, and capped so that no object type needs more
+  // models than its pool holds. this.pixelsPerRadian is set by the app every frame.
+  screenSpaceRange(refFrame, horizon, ringCircumference, invalidate) {
+    const ppr = this.pixelsPerRadian ?? 1303 // 1080 px at 45 degrees
+    if (invalidate || !refFrame._objectCounts) {
+      refFrame._objectCounts = {}
+      for (const wedge of refFrame.wedges ?? []) {
+        for (const [key, list] of Object.entries(wedge)) refFrame._objectCounts[key] = (refFrame._objectCounts[key] ?? 0) + list.length
+      }
+    }
+    let wanted = refFrame.baseCameraRange
+    let cap = horizon
+    for (const [key, count] of Object.entries(refFrame._objectCounts)) {
+      const pool = this.pools[POOL_FOR_CLASS[key]]
+      if (!pool || count === 0) continue
+      const size = this.modelSize(pool)
+      wanted = Math.max(wanted, size * ppr / MIN_VISIBLE_PIXELS)
+      // Objects within +/- range of the camera: 2 * range * (count / circumference).
+      cap = Math.min(cap, 0.9 * pool.size * ringCircumference / (2 * count))
+    }
+    return Math.max(refFrame.baseCameraRange, Math.min(wanted, cap))
+  }
+
+  // Largest dimension of a pool's model (measured once its template has loaded).
+  modelSize(pool) {
+    if (pool._size === undefined && pool.template) {
+      const size = new THREE.Box3().setFromObject(pool.template).getSize(new THREE.Vector3())
+      if (Number.isFinite(size.x)) pool._size = Math.max(size.x, size.y, size.z)
+    }
+    return pool._size ?? 40
+  }
+
+  // Distance at which the top of the ring structure (including the upper elevator cables) drops
+  // below the horizon for a camera `cameraRadius` metres from the planet centre.
+  horizonDistance(cameraRadius) {
+    // Slightly below the mean radius so low terrain and the ellipsoid's flattening never cut it short.
+    const R = this.radiusOfPlanet * 0.99
+    const top = this.radiusOfPlanet + this.crv.currentMainRingAltitude + (this.dParamWithUnits?.additionalUpperElevatorCable?.value ?? 0)
+    return Math.sqrt(Math.max(0, cameraRadius ** 2 - R ** 2)) + Math.sqrt(Math.max(0, top ** 2 - R ** 2))
   }
 
   updateWedges(refFrame, nearestTrackPosition, distanceFromCameraToRing, ringCircumference, invalidate) {

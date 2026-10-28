@@ -4,6 +4,8 @@ import { RingInstancedLayer } from '../ring/RingInstancedLayer.js'
 
 // The evacuated transit tube: one instance per transit stop spacing (exactly one per position;
 // the old code pushed numMainRings coincident copies of every segment).
+// cameraRange is updated every frame to the horizon distance (see transitSystem.animate), so the
+// capacity covers the whole ring.
 export function createTransitTubeLayer(dParamWithUnits, crv, mainRingCurve, numTransitStops, cameraRange) {
   const numSegments = dParamWithUnits['showTransitTube'].value ? numTransitStops : 0
   const lengthSegments = 4
@@ -21,6 +23,7 @@ export function createTransitTubeLayer(dParamWithUnits, crv, mainRingCurve, numT
     dy: offset_y(outward, upward, crv.currentEquivalentLatitude),
     rotZ: crv.currentEquivalentLatitude,
     cameraRange,
+    maxCameraRange: Infinity,
     ringCircumference: 2 * Math.PI * crv.mainRingRadius,
   })
   layer.ownedMaterial = material

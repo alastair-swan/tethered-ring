@@ -18,7 +18,8 @@ const _matrix = new THREE.Matrix4()
 
 export class RingInstancedLayer {
   // options: {name, geometry, material, numSegments, numRings=1, ringSpacing=0, dr, dy, rotZ,
-  //           cameraRange, localRotation (Quaternion applied after the ring orientation), renderOrder}
+  //           cameraRange, maxCameraRange (capacity, for layers whose range is changed per frame with
+  //           setCameraRange), localRotation (Quaternion applied after the ring orientation), renderOrder}
   constructor(options) {
     this.name = options.name
     this.numSegments = Math.max(0, Math.floor(options.numSegments))
@@ -36,7 +37,7 @@ export class RingInstancedLayer {
       options.geometry.dispose()
       return
     }
-    const halfWidth = this.cameraRange / this.ringCircumference
+    const halfWidth = (options.maxCameraRange ?? this.cameraRange) / this.ringCircumference
     const perRing = (halfWidth >= 0.5) ? this.numSegments : Math.min(this.numSegments, Math.floor(2 * halfWidth * this.numSegments) + 2)
     this.capacity = perRing * this.numRings
     this.mesh = new THREE.InstancedMesh(options.geometry, options.material, this.capacity)
@@ -44,6 +45,11 @@ export class RingInstancedLayer {
     this.mesh.count = 0
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     if (options.renderOrder !== undefined) this.mesh.renderOrder = options.renderOrder
+  }
+
+  // Changes how far from the camera segments are drawn (limited by the capacity chosen at construction).
+  setCameraRange(range) {
+    this.cameraRange = range
   }
 
   setParent(parent) {
