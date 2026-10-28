@@ -536,7 +536,7 @@ export function simRocketFlight(simInputParameters, scene, verbose) {
   // this.payloadPlusRemainingPropellant = rocketPayloadMass + rocketStage2PropellantMass - rocketStage2RecoveryPropellantMass
 
   if (verbose) {
-    console.log('Propellant Flow Rate', propellantFlowRate, dParamWithUnits['launchVehiclePropellantMassFlowRate'].value )
+    console.log('Propellant Flow Rate', propellantFlowRate)
 
     // Let's assume that the remaining propellant is considered to be payload mass
     console.log('Stage 1 Dry Mass', Math.round(rocketStage1DryMass))

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { LineSuperCurve3 } from '../curves/SuperCurves.js'
 import { ShapeUtils } from 'three'
+import { VirtualObject, parameterSignature } from './VirtualObject.js'
 
 export class massDriverBracketModel {
   // Each model along the mass driver curve is unique, since the pitch of the mass driver's drive thread changes along it's length
@@ -140,21 +141,23 @@ export class massDriverBracketModel {
   }
 }
 
-export class virtualMassDriverBracket {
-  constructor(d) {
+export class virtualMassDriverBracket extends VirtualObject {
+  constructor(d, index) {
+    super()
     this.d = d
-    this.model = null
+    this.index = index
   }
 
-  // These parameters are required for all objects
   static unallocatedModels = []
-  static tearDownParameters = []
-  static unallocatedModels = []
-  static numObjects = 0
-  static refFrames = []
-  static prevRefFrames = []
   static className = 'virtualMassDriverBrackets'
   static modelsAreRecyleable = true
+  static isDynamic = false
+
+  static signatureOf(dParamWithUnits) {
+    return parameterSignature(dParamWithUnits,
+      ['launcherMassDriverRail', 'launchRailUpwardsOffset', 'launcherMassDriverScrewSidewaysOffset', 'launcherMassDriverScrewUpwardsOffset',
+        'launcherMassDriverScrewShaftOuterRadius', 'launcherMassDriverBracket', 'launcherMassDriverTubeInnerRadius', 'launcherMassDriverScrewBracketThickness'])
+  }
 
   static isTeardownRequired(dParamWithUnits, massDriverAccelerationScrewSegments) {
     const newNumObjects = dParamWithUnits['showMassDriverBrackets'].value ? massDriverAccelerationScrewSegments : 0
@@ -163,68 +166,19 @@ export class virtualMassDriverBracket {
 
   static update(dParamWithUnits, massDriverAccelerationScrewSegments, accelerationScrewLength, versionNumber) {
     virtualMassDriverBracket.numObjects = dParamWithUnits['showMassDriverBrackets'].value ? massDriverAccelerationScrewSegments : 0
-    virtualMassDriverBracket.halfBracketThickness = dParamWithUnits['launcherMassDriverScrewBracketThickness'].value / 2 / accelerationScrewLength
+    virtualMassDriverBracket.halfBracketThickness = (accelerationScrewLength > 0) ? dParamWithUnits['launcherMassDriverScrewBracketThickness'].value / 2 / accelerationScrewLength : 0
     virtualMassDriverBracket.isVisible = dParamWithUnits['showMassDriverBrackets'].value
-    virtualMassDriverBracket.upwardsOffset = dParamWithUnits['launchRailUpwardsOffset'].value //- dParamWithUnits['launchSledHeight'].value/2 - dParamWithUnits['launcherMassDriverBracketHeight'].value/2
-    virtualMassDriverBracket.isDynamic =  false
+    virtualMassDriverBracket.upwardsOffset = dParamWithUnits['launchRailUpwardsOffset'].value
+    virtualMassDriverBracket.isDynamic = false
     virtualMassDriverBracket.hasChanged = true
     virtualMassDriverBracket.versionNumber = versionNumber
   }
 
   static addNewVirtualObjects(refFrames) {
-    virtualMassDriverBracket.hasChanged = true
-    // Add new virtual brackets into the mass driver
-    const n = virtualMassDriverBracket.numObjects
-    //let count = 0
-    console.assert(refFrames.length==1)
-    refFrames.forEach(refFrame => {
-      for (let i = 0; i < n; i++) {
-        const d = (i+0.5)/n - virtualMassDriverBracket.halfBracketThickness
-        //const zoneIndex = Math.floor(d * refFrame.numZones) % refFrame.numZones
-        const vmdb = new virtualMassDriverBracket(d)
-        const zoneIndex = refFrame.curve.getZoneIndexAt(d)
-        if ((zoneIndex>=0) && (zoneIndex<refFrame.numZones)) {
-          refFrame.wedges[zoneIndex][virtualMassDriverBracket.className].push(vmdb)
-          //count++
-        }
-        else {
-          console.log('Error')
-        }
-      }
-      refFrame.prevStartWedgeIndex = -1
-      //console.log('added '+count+' '+virtualMassDriverBracket.className+' to '+refFrame.name)
-    })
+    virtualMassDriverBracket.addEvenlySpacedObjects(refFrames, () => -virtualMassDriverBracket.halfBracketThickness)
   }
 
   placeAndOrientModel(om, refFrame) {
-    const d = this.d 
-    if (d==='undefined' || (d<0) || (d>1)) {
-      console.log("error!!!")
-    }
-    else {
-      if (virtualMassDriverBracket.isVisible) {
-        if (this.versionNumber!=virtualMassDriverBracket.versionNumber) {
-          // Something about the design has been updated so this instance also needs to be updated
-          const modelForward = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
-          const modelUpward = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
-          // const forward = refFrame.curve.getTangentAt(d)
-          const upward = refFrame.curve.getNormalAt(d)
-          // const rightward = refFrame.curve.getBinormalAt(d)
-          this.position = refFrame.curve.getPointAt(d)
-            // .add(rightward.clone().multiplyScalar(this.lr*virtualMassDriverBracket.sidewaysOffset))
-            .add(upward.clone().multiplyScalar(virtualMassDriverBracket.upwardsOffset))
-          this.orientation = refFrame.curve.getQuaternionAt(d, modelForward, modelUpward)
-          this.versionNumber = virtualMassDriverBracket.versionNumber
-        }
-
-        om.position.copy(this.position)
-        om.setRotationFromQuaternion(this.orientation)
-      }
-      om.visible = virtualMassDriverBracket.isVisible
-      om.matrixValid = false
-      if (this.perfOptimizedThreeJS) om.freeze()
-    }
+    this.placeAtD(om, refFrame, virtualMassDriverBracket.upwardsOffset)
   }
-
 }
-  

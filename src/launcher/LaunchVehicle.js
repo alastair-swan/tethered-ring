@@ -4,6 +4,11 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { FacesGeometry } from './FacesGeometry.js'
 import * as tram from '../utils/tram.js'
+import { quaternionFromFrame } from '../curves/SuperCurves.js'
+import { MovingVirtualObject, curveFrameAtTime, hash01, parameterSignature } from './VirtualObject.js'
+
+const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
+const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
 
 export class launchVehicleModel {
   constructor(dParamWithUnits, myScene, unallocatedModelsList, perfOptimizedThreeJS, gravityAtLauncherLocation) {
@@ -232,7 +237,6 @@ export class launchVehicleModel {
             }
           })
         })
-        if (perfOptimizedThreeJS) object.children.forEach(child => child.freeze())
       }
 
     }
@@ -386,8 +390,7 @@ export class launchVehicleModel {
       }
       })
       object.updateMatrixWorld()
-      if (perfOptimizedThreeJS) object.children.forEach(child => child.freeze())
-      for (let i=0; i<n; i++) {
+      for (let i=0; i<Math.max(1, n); i++) {  // at least one model: the pool's template
         const tempModel = object.clone()
         unallocatedModelsList.push(tempModel)
       }
@@ -397,325 +400,164 @@ export class launchVehicleModel {
 }
   
 
-export class virtualLaunchVehicle {
+// Rendered vehicle model (pooled; see VirtualObject.js). The k-th launch happens at k * launch spacing.
+export class virtualLaunchVehicle extends MovingVirtualObject {
 
-  constructor(timeLaunched) {
-
-    // The virtual vehicle has a position along the launch trajectory curve.
-    this.timeLaunched = timeLaunched
-    this.model = null
-
-  }
-
-  // These parameters are required for all objects
-  static updateParameters = []
-  static tearDownParameters = []
   static unallocatedModels = []
-  static numObjects = 0
-  static refFrames = []
-  static prevRefFrames = []
+  static activeObjects = new Map()
   static className = 'virtualLaunchVehicles'
   static modelsAreRecyleable = true
-  
-  // The following properties are common to all virtual vehicles...
-  static currentEquivalentLatitude
-  static isVisible
-  static isDynamic
-  static hasChanged
-  
+  static isDynamic = true
+  static useT = true
+
+  // Parameters that change the procedurally generated vehicle model (offsets/spacing only affect placement).
+  static signatureOf(dParamWithUnits) {
+    return parameterSignature(dParamWithUnits,
+      ['launchVehicle', 'launchSystem', 'launchFromPlanet', 'showLaunchVehiclePointLight', 'launcherMassDriverForwardAcceleration'],
+      ['Spacing', 'Offset', 'CameraRange', 'Mass', 'Thrust', 'FlowRate', 'Exhaust', 'Desired', 'Drag', 'TipRadius'])
+  }
+
   static isTeardownRequired(dParamWithUnits) {
     const newNumObjects = dParamWithUnits['showLaunchVehicles'].value ? dParamWithUnits['numVirtualLaunchVehicles'].value : 0
     return newNumObjects!==virtualLaunchVehicle.numObjects
   }
 
   static update(dParamWithUnits, planetSpec) {
-    virtualLaunchVehicle.useT = true
-    //virtualLaunchVehicle.written = false
-    //virtualLaunchVehicle.history = []
-    virtualLaunchVehicle.numObjects = dParamWithUnits['showLaunchVehicles'].value ? dParamWithUnits['numVirtualLaunchVehicles'].value : 0
+    const v = virtualLaunchVehicle
+    v.numObjects = dParamWithUnits['showLaunchVehicles'].value ? dParamWithUnits['numVirtualLaunchVehicles'].value : 0
 
-    virtualLaunchVehicle.planetSpec = planetSpec
-    virtualLaunchVehicle.planetRadius = tram.radiusAtLatitude(dParamWithUnits['launcherRampEndLatitude'].value, planetSpec.ellipsoid)
+    v.planetSpec = planetSpec
+    // radiusAtLatitude takes degrees (it used to be given radians, putting the vehicle's altitude for
+    // air-density purposes ~10 km too low at 45 degrees)
+    v.planetRadius = tram.radiusAtLatitude(dParamWithUnits['launcherRampEndLatitude'].value, planetSpec.ellipsoid)
 
-    virtualLaunchVehicle.tInc = dParamWithUnits['launchVehicleSpacingInSeconds'].value
-    virtualLaunchVehicle.sidewaysOffset = dParamWithUnits['launchVehicleSidewaysOffset'].value
-    virtualLaunchVehicle.upwardsOffset = dParamWithUnits['launchVehicleUpwardsOffset'].value
-    virtualLaunchVehicle.forwardsOffset = dParamWithUnits['launchVehicleForwardsOffset'].value
-    virtualLaunchVehicle.bodyLength = dParamWithUnits['launchVehicleBodyLength'].value
-    virtualLaunchVehicle.noseconeLength = dParamWithUnits['launchVehicleNoseconeLength'].value
-    virtualLaunchVehicle.flameLength = dParamWithUnits['launchVehicleFlameLength'].value
-    virtualLaunchVehicle.shockwaveConeLength = dParamWithUnits['launchVehicleShockwaveConeLength'].value
-    virtualLaunchVehicle.isVisible = dParamWithUnits['showLaunchVehicles'].value
-    virtualLaunchVehicle.showLaunchVehiclePointLight = dParamWithUnits['showLaunchVehiclePointLight'].value
-    virtualLaunchVehicle.slowDownPassageOfTime = dParamWithUnits['launcherSlowDownPassageOfTime'].value
-    virtualLaunchVehicle.launcherStartDelayInSeconds = dParamWithUnits['launcherStartDelayInSeconds'].value
-    virtualLaunchVehicle.launchVehicleAdaptiveThrust = dParamWithUnits['launchVehicleAdaptiveThrust'].value
-    virtualLaunchVehicle.maxPropellantMassFlowRate = dParamWithUnits['launchVehiclePropellantMassFlowRate'].value
+    v.tInc = dParamWithUnits['launchVehicleSpacingInSeconds'].value
+    v.sidewaysOffset = dParamWithUnits['launchVehicleSidewaysOffset'].value
+    v.upwardsOffset = dParamWithUnits['launchVehicleUpwardsOffset'].value
+    v.forwardsOffset = dParamWithUnits['launchVehicleForwardsOffset'].value
+    v.bodyLength = dParamWithUnits['launchVehicleBodyLength'].value
+    v.noseconeLength = dParamWithUnits['launchVehicleNoseconeLength'].value
+    v.flameLength = dParamWithUnits['launchVehicleFlameLength'].value
+    v.shockwaveConeLength = dParamWithUnits['launchVehicleShockwaveConeLength'].value
+    v.isVisible = dParamWithUnits['showLaunchVehicles'].value
+    v.showLaunchVehiclePointLight = dParamWithUnits['showLaunchVehiclePointLight'].value
+    v.slowDownPassageOfTime = dParamWithUnits['launcherSlowDownPassageOfTime'].value
+    v.launcherStartDelayInSeconds = dParamWithUnits['launcherStartDelayInSeconds'].value
+    v.launchVehicleAdaptiveThrust = dParamWithUnits['launchVehicleAdaptiveThrust'].value
+    v.maxPropellantMassFlowRate = dParamWithUnits['launchVehiclePropellantMassFlowRate'].value
+    // Distance (in model units) from the model origin (tail) to the middle of the hull
+    const isLunarLaunch = dParamWithUnits['launchFromPlanet']?.value === 'Moon'
+    v.hullCentre = (v.bodyLength + v.noseconeLength) / 2 * (isLunarLaunch ? 0.6 : 1)
+    v.forwardScale = dParamWithUnits['launchSystemForwardScaleFactor'].value * dParamWithUnits['launchVehicleScaleFactor'].value
 
-    virtualLaunchVehicle.isDynamic =  true
-    virtualLaunchVehicle.hasChanged = true
-
+    v.isDynamic = true
+    v.hasChanged = true
   }
 
-  static addNewVirtualObjects(refFrames) {
-    virtualLaunchVehicle.hasChanged = true
-    const n1 = virtualLaunchVehicle.numObjects
-    const tStart = 0
-    const tInc = virtualLaunchVehicle.tInc
-    
-    console.assert(refFrames.length==1)
-    refFrames.forEach(refFrame => {
-      const adjustedTimeSinceStart = tram.adjustedTimeSinceStart(
-        this.slowDownPassageOfTime, refFrame.timeSinceStart,
-        virtualLaunchVehicle.launcherStartDelayInSeconds)
-      // Going backwards in time since we want to add vehicles that were launched in the past.
-      const durationOfLaunchTrajectory = refFrame.curve.getDuration()
-      let count = 0
-      for (let t = tStart, i = 0; (t > -(tStart+durationOfLaunchTrajectory)) && (i<n1); t -= tInc, i++) {
-        // Calculate where along the launcher to place the vehicle.
-        const deltaT = adjustedTimeSinceStart - t
-        const zoneIndex = refFrame.curve.getZoneIndex(deltaT)
-        if ((zoneIndex>=0) && (zoneIndex<refFrame.numZones)) {
-          refFrame.wedges[zoneIndex][virtualLaunchVehicle.className].push(new virtualLaunchVehicle(t))
-          count++
-        }
-        else {
-          console.log('Error')
-        }
-      }
-      console.log('added '+count+' '+virtualLaunchVehicle.className+' to '+refFrame.name)
-      refFrame.prevStartWedgeIndex = -1
-    })
+  // Frame of the rendered model `deltaT` seconds after launch.
+  // position: model origin (tail) including offsets; centre: middle of the hull (what trackers aim at).
+  frameAt(refFrame, deltaT) {
+    const v = virtualLaunchVehicle
+    const f = curveFrameAtTime(refFrame.curve, deltaT, v.useT)
+    const forward = f.forward
+    const upward = f.upward
+    if (upward.dot(f.point) < 0) {
+      // When there isn't enough curvature the curve's normal can point down; keep "up" away from the planet
+      upward.negate()
+    }
+    const rightward = new THREE.Vector3().crossVectors(forward, upward)
+    const position = f.point.clone()
+      .addScaledVector(rightward, v.sidewaysOffset)
+      .addScaledVector(upward, v.upwardsOffset)
+      .addScaledVector(forward, v.forwardsOffset)
 
+    let orientation
+    let modelForward = forward
+    if (f.curve.name === 'freeFlightPositionCurve' && f.curve.freeFlightOrientationCurve) {
+      // The orientation curve's "points" are direction vectors (vehicle orientation relative to the planet)
+      const oc = f.curve.freeFlightOrientationCurve
+      const orientationVector = (f.byT ? oc.getPoint(f.i) : oc.getPointAt(f.d)).normalize()
+      modelForward = orientationVector
+      orientation = quaternionFromFrame(orientationVector, rightward.clone().cross(orientationVector), MODEL_FORWARD, MODEL_UPWARD)
+    }
+    else {
+      orientation = quaternionFromFrame(forward, upward, MODEL_FORWARD, MODEL_UPWARD)
+    }
+    const centre = position.clone().addScaledVector(modelForward, v.hullCentre * v.forwardScale)
+    return { f, position, centre, forward, upward, rightward, orientation }
   }
 
   placeAndOrientModel(om, refFrame) {
+    const v = virtualLaunchVehicle
+    const adj = v.adjustedTime(refFrame.timeSinceStart)
+    const deltaT = Math.max(0, adj - this.timeLaunched)
+    const frame = this.frameAt(refFrame, deltaT)
+    const relevantCurve = frame.f.curve
 
-    const adjustedTimeSinceStart = tram.adjustedTimeSinceStart(
-      virtualLaunchVehicle.slowDownPassageOfTime, refFrame.timeSinceStart,
-      virtualLaunchVehicle.launcherStartDelayInSeconds)
-    const deltaT = adjustedTimeSinceStart - this.timeLaunched
-    const res = refFrame.curve.findRelevantCurve(deltaT)
-    const relevantCurve = res.relevantCurve
+    om.position.copy(frame.position)
+    om.quaternion.copy(frame.orientation)
+    om.visible = v.isVisible
 
-    const modelForward = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
-    const modelUpward = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
-    // const t = deltaT/relevantCurve.duration
-    const t = Math.max(0, deltaT - res.relevantCurveStartTime)
-    const i = relevantCurve.tToi(t)
-    const d = relevantCurve.tTod(t) / res.relevantCurveLength
-
-    let pointOnRelevantCurve, forward, upward, rightward, orientation
-    if (virtualLaunchVehicle.useT) {
-      pointOnRelevantCurve = relevantCurve.getPoint(i)
-      forward = relevantCurve.getTangent(i)
-      upward = relevantCurve.getNormal(i)
-      rightward = relevantCurve.getBinormal(i)
-      orientation = relevantCurve.getQuaternion(i, modelForward, modelUpward)
-    }
-    else {
-      pointOnRelevantCurve = relevantCurve.getPointAt(d)
-      forward = relevantCurve.getTangentAt(d)
-      upward = relevantCurve.getNormalAt(d)
-      rightward = relevantCurve.getBinormalAt(d)
-      orientation = relevantCurve.getQuaternionAt(d, modelForward, modelUpward)
-    }
-
-    if (upward.clone().dot(pointOnRelevantCurve)<0) {
-      // Sometimes the normal and binormal vectors point in the wrong direction when there isn't enough curvature. This check fixes that issue.
-      upward.negate()
-      rightward.negate()
-    }
-
-    om.position.copy(pointOnRelevantCurve)
-        .add(rightward.clone().multiplyScalar(virtualLaunchVehicle.sidewaysOffset))
-        .add(upward.clone().multiplyScalar(virtualLaunchVehicle.upwardsOffset))
-        .add(forward.clone().multiplyScalar(virtualLaunchVehicle.forwardsOffset))
-
-    if ((relevantCurve.name==='freeFlightPositionCurve')) {
-      let orientationVector  // This is "vehicleOrientationRelativeToPlanet". in other words, it's a vector in the ECEF coordinate system.
-      if (virtualLaunchVehicle.useT) {
-        orientationVector = relevantCurve.freeFlightOrientationCurve.getPoint(i)  // This curve's "positions" are made from of tangent
-      }
-      else {
-        orientationVector = relevantCurve.freeFlightOrientationCurve.getPointAt(d)  // This curve's "positions" are made from of tangent vectors
-      }
-      if (false) {
-        // This mode doesn't seem to work correctly for the rocket launch.
-        orientation.multiply(new THREE.Quaternion().setFromUnitVectors(forward, orientationVector))
-      }
-      else {
-        const normal = rightward.clone().cross(orientationVector)
-        const q1 = new THREE.Quaternion()
-        q1.setFromUnitVectors(modelForward, orientationVector)
-        const rotatedObjectUpwardVector = modelUpward.clone().applyQuaternion(q1)
-        orientation.setFromUnitVectors(rotatedObjectUpwardVector, normal)
-        orientation.multiply(q1)
+    // Cache the sub-meshes (Object3D.clone() does not copy custom properties, so each model caches its own)
+    if (!om._parts) {
+      om._parts = {
+        flame: om.getObjectByName('launchVehicle_flame'),
+        pointLight: om.getObjectByName('launchVehicle_pointLight'),
+        shockwaveCone: om.getObjectByName('launchVehicle_shockwaveCone'),
       }
     }
-    
-    om.setRotationFromQuaternion(orientation)
+    const { flame: flame_model, pointLight: pointlight_model, shockwaveCone: shockwaveCone_model } = om._parts
 
-    om.visible = virtualLaunchVehicle.isVisible
-
-    const altitude = pointOnRelevantCurve.length() - virtualLaunchVehicle.planetRadius
-    const airDensity = virtualLaunchVehicle.planetSpec.airDensityAtAltitude(altitude)
-    let speedOfSound = 1000
-    if (virtualLaunchVehicle.planetSpec.speedOfSoundAtAltitude!==undefined) {
-      speedOfSound = virtualLaunchVehicle.planetSpec.speedOfSoundAtAltitude(altitude)
-    }
-
-    // Turn on the flame at the exit of the launch tube
-    // ToDo: Some of this code does not need to be executed for every virtual vehicle.  We could improve performance it we can find a way to
-    // execute it just once per animated frame.
-    const flame_model = om.getObjectByName('launchVehicle_flame')
-    const pointlight_model = om.getObjectByName('launchVehicle_pointLight')
-    const shockwaveCone_model = om.getObjectByName('launchVehicle_shockwaveCone')
-    let fuelFlowRateFactor
-    let shockwaveConeSizeFactor
-    let shockwaveConeLengthFactor
     if (relevantCurve.name==='freeFlightPositionCurve') {
-      if (virtualLaunchVehicle.launchVehicleAdaptiveThrust) {
-        const vehicleTelemetry = relevantCurve.freeFlightTelemetryCurve.getPoint(i)
+      const altitude = frame.f.point.length() - v.planetRadius
+      const airDensity = v.planetSpec.airDensityAtAltitude(altitude)
+      const speedOfSound = (v.planetSpec.speedOfSoundAtAltitude!==undefined) ? v.planetSpec.speedOfSoundAtAltitude(altitude) : 1000
+      let fuelFlowRateFactor
+      let shockwaveConeSizeFactor
+      let shockwaveConeLengthFactor
+      if (v.launchVehicleAdaptiveThrust && relevantCurve.freeFlightTelemetryCurve) {
+        const tc = relevantCurve.freeFlightTelemetryCurve
+        const vehicleTelemetry = frame.f.byT ? tc.getPoint(frame.f.i) : tc.getPointAt(frame.f.d)
         const vehicleAirSpeed = vehicleTelemetry.x
-        const aerodynamicDrag = vehicleTelemetry.y 
+        const aerodynamicDrag = vehicleTelemetry.y
         const fuelFlowRate = vehicleTelemetry.z
-        fuelFlowRateFactor = fuelFlowRate / virtualLaunchVehicle.maxPropellantMassFlowRate
+        fuelFlowRateFactor = (v.maxPropellantMassFlowRate > 0) ? fuelFlowRate / v.maxPropellantMassFlowRate : 0
         shockwaveConeSizeFactor = aerodynamicDrag / 2.279e6   // Using the max thrust of an RS-25 vacuum engine as a baseline
         shockwaveConeLengthFactor = vehicleAirSpeed / speedOfSound
-        flame_model.visible = (fuelFlowRateFactor>0.01)
-        if (vehicleAirSpeed>speedOfSound) {
-          shockwaveCone_model.visible = true
-        }
-        else {
-          shockwaveCone_model.visible = false
-        }
+        if (flame_model) flame_model.visible = (fuelFlowRateFactor>0.01)
+        if (shockwaveCone_model) shockwaveCone_model.visible = (vehicleAirSpeed>speedOfSound)
       }
       else {
         const airDensityFactor = Math.min(1, airDensity/0.0184)     // 0.0184 kg/m^3 is rougly the air density at 30000m
-        flame_model.visible = (airDensityFactor>0.1)
+        if (flame_model) flame_model.visible = (airDensityFactor>0.1)
         fuelFlowRateFactor = airDensityFactor
-        shockwaveCone_model.visible = (airDensityFactor>0.01)
-        shockwaveConeSizeFactor = Math.min(1, airDensity/0.0184)   // Using the max thrust of an RS-25 vacuum engine as a baseline
+        if (shockwaveCone_model) shockwaveCone_model.visible = (airDensityFactor>0.01)
+        shockwaveConeSizeFactor = airDensityFactor
         shockwaveConeLengthFactor = 1
       }
 
-      if (flame_model.visible) {
-        flame_model.position.set(0, -virtualLaunchVehicle.flameLength*fuelFlowRateFactor/2, 0)
-        flame_model.scale.set(1, fuelFlowRateFactor, 1)
+      if (flame_model && flame_model.visible) {
+        flame_model.position.set(0, -v.flameLength*fuelFlowRateFactor/2, 0)
+        flame_model.scale.set(1, Math.max(1e-6, fuelFlowRateFactor), 1)
       }
 
-      if (shockwaveCone_model.visible) {
-        const shockwaveConeSizeFactorScaled = shockwaveConeSizeFactor * (0.9 + Math.random() * 0.2)
+      if (shockwaveCone_model && shockwaveCone_model.visible) {
+        // +/-10% flicker from a deterministic hash of the launch index and a 20 Hz time bucket
+        // (was Math.random(), which made captures irreproducible)
+        const flicker = 0.9 + 0.2 * hash01(this.launchIndex, Math.floor(adj * 20))
+        const shockwaveConeSizeFactorScaled = Math.max(1e-6, shockwaveConeSizeFactor * flicker)
         const lengthScale = shockwaveConeSizeFactorScaled * shockwaveConeLengthFactor
         const widthScale = shockwaveConeSizeFactorScaled
-        const yPos = virtualLaunchVehicle.bodyLength + virtualLaunchVehicle.noseconeLength - virtualLaunchVehicle.shockwaveConeLength*lengthScale/2
+        const yPos = v.bodyLength + v.noseconeLength - v.shockwaveConeLength*lengthScale/2
         shockwaveCone_model.position.set(0, yPos, 0)
-        shockwaveCone_model.scale.set(widthScale, lengthScale, widthScale)
-        shockwaveCone_model.updateMatrixWorld()
+        shockwaveCone_model.scale.set(widthScale, Math.max(1e-6, lengthScale), widthScale)
       }
     }
     else {
-      flame_model.visible = false
-      shockwaveCone_model.visible = false
+      if (flame_model) flame_model.visible = false
+      if (shockwaveCone_model) shockwaveCone_model.visible = false
     }
 
-    pointlight_model.visible = virtualLaunchVehicle.showLaunchVehiclePointLight
-    om.matrixValid = false
-
+    if (pointlight_model) pointlight_model.visible = v.showLaunchVehiclePointLight
   }
-
-  getFuturePosition(refFrame, timeDeltaInSeconds) {
-
-    const adjustedTimeSinceStart = tram.adjustedTimeSinceStart(
-      virtualLaunchVehicle.slowDownPassageOfTime,
-      refFrame.timeSinceStart + timeDeltaInSeconds,
-      virtualLaunchVehicle.launcherStartDelayInSeconds)
-    const deltaT = adjustedTimeSinceStart - this.timeLaunched
-    if (deltaT<=refFrame.curve.getDuration()) {
-      const res = refFrame.curve.findRelevantCurve(deltaT)
-      const relevantCurve = res.relevantCurve
-      //const t = deltaT/relevantCurve.duration
-      let pointOnRelevantCurve
-      const t = Math.max(0, deltaT - res.relevantCurveStartTime)
-      if (virtualLaunchVehicle.useT) {
-        const i = relevantCurve.tToi(t)
-        pointOnRelevantCurve = relevantCurve.getPoint(i)
-        const forwardToCenter = relevantCurve.getTangent(i).multiplyScalar(virtualLaunchVehicle.forwardsOffset + (virtualLaunchVehicle.bodyLength + virtualLaunchVehicle.noseconeLength)/2)
-        pointOnRelevantCurve.add(forwardToCenter)
-      }
-      else {
-        const d = relevantCurve.tTod(t) / res.relevantCurveLength
-        pointOnRelevantCurve = relevantCurve.getPointAt(d)
-        const forwardToCenter = relevantCurve.getTangentAt(d).multiplyScalar(virtualLaunchVehicle.forwardsOffset + (virtualLaunchVehicle.bodyLength + virtualLaunchVehicle.noseconeLength)/2)
-        pointOnRelevantCurve.add(forwardToCenter)
-      }
-      return pointOnRelevantCurve
-    }
-    else {
-      return null
-    }
-
-  }
-  
-  getFutureFrame(refFrame, timeDeltaInSeconds) {
-
-    const adjustedTimeSinceStart = tram.adjustedTimeSinceStart(
-      virtualLaunchVehicle.slowDownPassageOfTime,
-      refFrame.timeSinceStart + timeDeltaInSeconds,
-      virtualLaunchVehicle.launcherStartDelayInSeconds)
-    const deltaT = adjustedTimeSinceStart - this.timeLaunched
-    if (deltaT<=refFrame.curve.getDuration()) {
-      const res = refFrame.curve.findRelevantCurve(deltaT)
-      const relevantCurve = res.relevantCurve
-      const modelForward = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
-      const modelUpward = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
-      let position, forward, upward, rightward, orientation
-      const t = Math.max(0, deltaT - res.relevantCurveStartTime)
-      if (virtualLaunchVehicle.useT) {
-        const i = relevantCurve.tToi(t)
-        position = relevantCurve.getPoint(i)
-        forward = relevantCurve.getTangent(i)
-        upward = relevantCurve.getNormal(i)
-        rightward = relevantCurve.getBinormal(i)
-        orientation = relevantCurve.getQuaternion(i, modelForward, modelUpward)
-      }
-      else {
-        const d = relevantCurve.tTod(t) / res.relevantCurveLength
-        position = relevantCurve.getPointAt(d)
-        forward = relevantCurve.getTangentAt(d)
-        upward = relevantCurve.getNormalAt(d)
-        rightward = relevantCurve.getBinormalAt(d)
-        orientation = relevantCurve.getQuaternionAt(d, modelForward, modelUpward)
-      }
-
-      position.add(forward.clone().multiplyScalar(virtualLaunchVehicle.forwardsOffset + (virtualLaunchVehicle.bodyLength + virtualLaunchVehicle.noseconeLength)/2))
-
-      return {
-        position: position,
-        forward: forward,
-        upward: upward,
-        rightward: rightward,
-        orientation: orientation
-      }
-    }
-    else {
-      return null
-    }
-
-  }
-      
-}
-
-function downloadJSON(data, filename = 'structure_bad.json') {
-  const jsonStr = JSON.stringify(data, null, 2)
-  const blob = new Blob([jsonStr], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  a.click()
-
-  URL.revokeObjectURL(url)
 }

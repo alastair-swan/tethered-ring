@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { CatmullRomSuperCurve3 } from '../curves/SuperCurves.js'
-import { arrow } from '../ring/markers.js'
+import { VirtualObject } from './VirtualObject.js'
 
 export class massDriverTubeModel {
   // Each model along the mass driver curve is unique, since the pitch of the mass driver's drive thread changes along it's length
@@ -43,6 +43,9 @@ export class massDriverTubeModel {
 
     this.liftFanPylonGeometry = new THREE.CylinderGeometry(this.radius/16, this.radius/8, this.radius*2, 16)
     this.liftFanPylonGeometry.rotateZ(Math.PI/2)
+    // These geometries and materials are shared by every tube segment; releasing a segment must not dispose them.
+    ;[this.liftFanHubGeometry, this.liftFanDiskGeometry, this.liftFanPylonGeometry].forEach(g => { g.userData.shared = true })
+    ;[this.massDriverTubeMaterial1, this.massDriverTubeMaterial2, this.massDriverTubeMaterial3, this.massDriverTubeMaterial4, this.massDriverTubeMaterial5].forEach(m => { m.userData.shared = true })
 
     this.exagerateNonElevatedTubeFactor = dParamWithUnits['exagerateNonElevatedTubeFactor'].value
 
@@ -100,13 +103,7 @@ export class massDriverTubeModel {
     // We need to define a curve for this segment of the mass driver, and then use that curve to create a tube geometry for this model
     for (let i = 0; i<=modelLengthSegments; i++) {
       const modelsCurvePosition = (segmentIndex + i/modelLengthSegments) / this.massDriverTubeSegments
-      try {
-        tubePoints.push(curve.getPointAt(modelsCurvePosition).sub(refPoint).applyQuaternion(orientation))
-      }
-      catch (e) {
-        console.log('error!!!')
-        curve.getPointAt(modelsCurvePosition)
-      }
+      tubePoints.push(curve.getPointAt(modelsCurvePosition).sub(refPoint).applyQuaternion(orientation))
     }
 
     const massDriverSegmentCurve = new CatmullRomSuperCurve3(tubePoints)
@@ -221,92 +218,37 @@ export class massDriverTubeModel {
 
 }
 
-export class virtualMassDriverTube {
-    constructor(d) {
-      this.d = d
-      this.model = null
-    }
-
-    // These parameters are required for all objects
-    static updateParameters = []
-    static tearDownParameters = []
-    static unallocatedModels = []
-    static numObjects = 0
-    static refFrames = []
-    static prevRefFrames = []
-    static className = 'virtualMassDriverTubes'
-    static modelsAreRecyleable = false
-      
-    static isTeardownRequired(dParamWithUnits) {
-      const newNumObjects = dParamWithUnits['showMassDriverTube'].value ? dParamWithUnits['numVirtualMassDriverTubes'].value : 0
-      return newNumObjects!==virtualMassDriverTube.numObjects
-    }
-  
-    static update(dParamWithUnits, versionNumber) {
-      virtualMassDriverTube.numObjects = dParamWithUnits['showMassDriverTube'].value ? dParamWithUnits['numVirtualMassDriverTubes'].value : 0
-      virtualMassDriverTube.isVisible = dParamWithUnits['showMassDriverTube'].value
-      virtualMassDriverTube.isDynamic =  true
-      virtualMassDriverTube.hasChanged = true
-      virtualMassDriverTube.versionNumber = versionNumber
-    }
-
-    static addNewVirtualObjects(refFrames, scene, tubeModelObject) {
-      virtualMassDriverTube.hasChanged = true
-      const n = virtualMassDriverTube.numObjects
-      //let count = 0
-      console.assert(refFrames.length==1)
-      refFrames.forEach(refFrame => {
-        // Add new mass driver tubes to the launch system
-        for (let i = 0; i < n; i++) {
-          const d = (i+0.5)/n
-          const vmdt = new virtualMassDriverTube(d)
-          vmdt.index = i
-          vmdt.model = tubeModelObject.createModel(refFrame.curve, i)
-          vmdt.model.name = 'massDriverTube'
-          const zoneIndex = refFrame.curve.getZoneIndexAt(d)
-          if ((zoneIndex>=0) && (zoneIndex<refFrame.numZones)) {
-            refFrame.wedges[zoneIndex][virtualMassDriverTube.className].push(vmdt)
-            scene.add(vmdt.model)
-            //count++
-          }
-          else {
-            console.log('Error')
-          }
-        }
-        refFrame.prevStartWedgeIndex = -1
-        //console.log('added '+count+' '+virtualMassDriverTube.className+' to '+refFrame.name)
-      })
-    }
-  
-    placeAndOrientModel(om, refFrame) {
-      const d = this.d 
-      if (d===undefined || (d<0) || (d>1)) {
-        console.log("error!!!")
-      }
-      else {
-        if (virtualMassDriverTube.isVisible) {
-          if (virtualMassDriverTube.hasChanged || this.versionNumber!=virtualMassDriverTube.versionNumber) {
-            // Something about the design has been updated so this instance also needs to be updated
-            const modelForward = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
-            const modelUpward = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
-            // const forward = refFrame.curve.getTangentAt(d)
-            // const upward = refFrame.curve.getNormalAt(d)
-            // const rightward = refFrame.curve.getBinormalAt(d)
-            this.position = refFrame.curve.getPointAt(d)
-              // .add(rightward.clone().multiplyScalar(this.lr*virtualMassDriverTube.sidewaysOffset))
-              // .add(upward.clone().multiplyScalar(virtualMassDriverTube.upwardsOffset))
-            this.orientation = refFrame.curve.getQuaternionAt(d, modelForward, modelUpward)
-            this.versionNumber = virtualMassDriverTube.versionNumber
-          }
-  
-          om.position.copy(this.position)
-          om.setRotationFromQuaternion(this.orientation)
-        }
-        om.visible = virtualMassDriverTube.isVisible
-        om.matrixValid = false
-        if (this.perfOptimizedThreeJS) om.freeze()
-      }
-    }
-  
+export class virtualMassDriverTube extends VirtualObject {
+  constructor(d, index) {
+    super()
+    this.d = d
+    this.index = index
   }
-  
+
+  static unallocatedModels = []
+  static className = 'virtualMassDriverTubes'
+  static modelsAreRecyleable = false  // each tube segment is built for its own stretch of the curve
+  static isDynamic = false
+
+  static isTeardownRequired(dParamWithUnits) {
+    const newNumObjects = dParamWithUnits['showMassDriverTube'].value ? dParamWithUnits['numVirtualMassDriverTubes'].value : 0
+    return newNumObjects!==virtualMassDriverTube.numObjects
+  }
+
+  static update(dParamWithUnits, versionNumber) {
+    virtualMassDriverTube.numObjects = dParamWithUnits['showMassDriverTube'].value ? dParamWithUnits['numVirtualMassDriverTubes'].value : 0
+    virtualMassDriverTube.isVisible = dParamWithUnits['showMassDriverTube'].value
+    virtualMassDriverTube.isDynamic = false
+    virtualMassDriverTube.hasChanged = true
+    virtualMassDriverTube.versionNumber = versionNumber
+  }
+
+  static addNewVirtualObjects(refFrames) {
+    virtualMassDriverTube.addEvenlySpacedObjects(refFrames)
+  }
+
+  placeAndOrientModel(om, refFrame) {
+    if (virtualMassDriverTube.hasChanged) this.position = null  // the curve may have been reshaped
+    this.placeAtD(om, refFrame)
+  }
+}

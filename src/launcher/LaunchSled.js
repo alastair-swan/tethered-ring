@@ -1,6 +1,10 @@
 import * as THREE from 'three'
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
-import * as tram from '../utils/tram.js'
+import { quaternionFromFrame } from '../curves/SuperCurves.js'
+import { MovingVirtualObject, curveFrameAtTime, parameterSignature } from './VirtualObject.js'
+
+const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
+const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
 
 export class launchSledModel {
   constructor(dParamWithUnits, myScene, unallocatedModelsList, perfOptimizedThreeJS, massDriverScrewTexture) {
@@ -79,8 +83,7 @@ export class launchSledModel {
       }
       })
       object.updateMatrixWorld()
-      if (perfOptimizedThreeJS) object.children.forEach(child => child.freeze())
-      for (let i=0; i<n; i++) {
+      for (let i=0; i<Math.max(1, n); i++) {  // at least one model: the pool's template
           const tempModel = object.clone()
           unallocatedModelsList.push(tempModel)
       }
@@ -90,112 +93,72 @@ export class launchSledModel {
   
 }
 
-export class virtualLaunchSled {
-    constructor(timeLaunched) {
-        // The virtual vehicle has a position along the launch trajectory curve.
-        // 0 represents the begginning of the mass driver, 1 represents 't==durationOfLaunchTrajectory'
-        this.timeLaunched = timeLaunched
-        this.model = null
-    }
+export class virtualLaunchSled extends MovingVirtualObject {
 
-    // These parameters are required for all objects
-    static updateParameters = []
-    static tearDownParameters = []
-    static unallocatedModels = []
-    static numObjects = 0
-    static refFrames = []
-    static prevRefFrames = []
-    static className = 'virtualLaunchSleds'
-    static modelsAreRecyleable = true
+  static unallocatedModels = []
+  static activeObjects = new Map()
+  static className = 'virtualLaunchSleds'
+  static modelsAreRecyleable = true
+  static isDynamic = true
 
-    static isTeardownRequired(dParamWithUnits) {
-      const newNumObjects = dParamWithUnits['showLaunchSleds'].value ? dParamWithUnits['numVirtualLaunchSleds'].value : 0
-      return newNumObjects!==virtualLaunchSled.numObjects
-    }
-
-    static update(dParamWithUnits) {
-      virtualLaunchSled.numObjects = dParamWithUnits['showLaunchSleds'].value ? dParamWithUnits['numVirtualLaunchSleds'].value : 0
-      virtualLaunchSled.tInc = dParamWithUnits['launchVehicleSpacingInSeconds'].value
-
-      virtualLaunchSled.sidewaysOffset = dParamWithUnits['launchSledSidewaysOffset'].value
-      virtualLaunchSled.upwardsOffset = dParamWithUnits['launchSledUpwardsOffset'].value
-      virtualLaunchSled.forwardsOffset = dParamWithUnits['launchSledForwardsOffset'].value
-      virtualLaunchSled.isVisible = dParamWithUnits['showLaunchSleds'].value
-      virtualLaunchSled.slowDownPassageOfTime = dParamWithUnits['launcherSlowDownPassageOfTime'].value
-      virtualLaunchSled.launcherStartDelayInSeconds = dParamWithUnits['launcherStartDelayInSeconds'].value
-
-      virtualLaunchSled.isDynamic =  true
-      virtualLaunchSled.hasChanged = true
-    }
-  
-    static addNewVirtualObjects(refFrames) {
-      virtualLaunchSled.hasChanged = true
-      // Add new virtual launch sleds onto the launch system
-      const n1 = virtualLaunchSled.numObjects
-      const tStart = 0
-      const tInc = virtualLaunchSled.tInc
-
-      console.assert(refFrames.length==1)
-      refFrames.forEach(refFrame => {
-        const adjustedTimeSinceStart = tram.adjustedTimeSinceStart(
-          this.slowDownPassageOfTime, refFrame.timeSinceStart,
-          virtualLaunchSled.launcherStartDelayInSeconds)
-        // Going backwards in time since we want to add vehicles that were launched in the past.
-        const durationOfSledTrajectory = refFrame.curve.getDuration()
-        for (let t = tStart, i = 0; (t > -(tStart+durationOfSledTrajectory)) && (i<n1); t -= tInc, i++) {
-          // Calculate where along the launcher to place the vehicle. 
-          const deltaT = adjustedTimeSinceStart - t
-          const zoneIndex = refFrame.curve.getZoneIndex(deltaT)
-          if ((zoneIndex>=0) && (zoneIndex<refFrame.numZones)) {
-            refFrame.wedges[zoneIndex][virtualLaunchSled.className].push(new virtualLaunchSled(t))
-          }
-          else {
-            console.log('Error')
-          }
-        }
-        refFrame.prevStartWedgeIndex = -1
-      })
-    }
-
-    placeAndOrientModel(om, refFrame) {
-      if (virtualLaunchSled.isVisible) {
-        const adjustedTimeSinceStart = tram.adjustedTimeSinceStart(
-          virtualLaunchSled.slowDownPassageOfTime, refFrame.timeSinceStart,
-          virtualLaunchSled.launcherStartDelayInSeconds)
-        const deltaT = adjustedTimeSinceStart - this.timeLaunched
-        const res = refFrame.curve.findRelevantCurve(deltaT)
-        const relevantCurve = res.relevantCurve
-        const distanceToSledAft = relevantCurve.tTod(deltaT - res.relevantCurveStartTime)
-        const d = distanceToSledAft / res.relevantCurveLength
-
-        const modelForward = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
-        const modelUpward = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
-
-        const pointOnRelevantCurve = relevantCurve.getPointAt(d)
-        const orientation = relevantCurve.getQuaternionAt(d, modelForward, modelUpward)
-        
-        om.position.copy(pointOnRelevantCurve)
-        om.setRotationFromQuaternion(orientation)
-        const internalPosition = new THREE.Vector3(0, 0, 0)
-        const internalRightward = new THREE.Vector3(1, 0, 0)
-        const internalUpward = new THREE.Vector3(0, 0, 1)
-        const internalForward = new THREE.Vector3(0, 1, 0)
-        const internalOrientation = new THREE.Quaternion().identity()
-
-        om.children.forEach(child => {
-          if ((child.name==='launchSled_body') || (child.name==='launchSled_bodyFromModel')) {
-            child.position.copy(internalPosition)
-              .add(internalRightward.clone().multiplyScalar(virtualLaunchSled.sidewaysOffset))
-              .add(internalUpward.clone().multiplyScalar(virtualLaunchSled.upwardsOffset))
-              .add(internalForward.clone().multiplyScalar(virtualLaunchSled.forwardsOffset))
-            child.setRotationFromQuaternion(internalOrientation)
-          }
-          child.visible = true
-        })
-
-        om.matrixValid = false
-      }
-      om.visible = virtualLaunchSled.isVisible
-    }
+  static signatureOf(dParamWithUnits) {
+    return parameterSignature(dParamWithUnits, ['launchSled', 'launchSystem'], ['Offset', 'CameraRange'])
   }
 
+  static isTeardownRequired(dParamWithUnits) {
+    const newNumObjects = dParamWithUnits['showLaunchSleds'].value ? dParamWithUnits['numVirtualLaunchSleds'].value : 0
+    return newNumObjects!==virtualLaunchSled.numObjects
+  }
+
+  static update(dParamWithUnits) {
+    const v = virtualLaunchSled
+    v.numObjects = dParamWithUnits['showLaunchSleds'].value ? dParamWithUnits['numVirtualLaunchSleds'].value : 0
+    v.tInc = dParamWithUnits['launchVehicleSpacingInSeconds'].value
+    v.sidewaysOffset = dParamWithUnits['launchSledSidewaysOffset'].value
+    v.upwardsOffset = dParamWithUnits['launchSledUpwardsOffset'].value
+    v.forwardsOffset = dParamWithUnits['launchSledForwardsOffset'].value
+    v.bodyLength = dParamWithUnits['launchSledBodyLength'].value
+    v.rightwardScale = dParamWithUnits['launchSystemRightwardScaleFactor'].value
+    v.forwardScale = dParamWithUnits['launchSystemForwardScaleFactor'].value * 1.75  // matches the model's scale
+    v.upwardScale = dParamWithUnits['launchSystemUpwardScaleFactor'].value
+    v.isVisible = dParamWithUnits['showLaunchSleds'].value
+    v.slowDownPassageOfTime = dParamWithUnits['launcherSlowDownPassageOfTime'].value
+    v.launcherStartDelayInSeconds = dParamWithUnits['launcherStartDelayInSeconds'].value
+    v.isDynamic = true
+    v.hasChanged = true
+  }
+
+  frameAt(refFrame, deltaT) {
+    const v = virtualLaunchSled
+    const f = curveFrameAtTime(refFrame.curve, deltaT, false)
+    const forward = f.forward
+    const upward = f.upward
+    const rightward = new THREE.Vector3().crossVectors(forward, upward)
+    const orientation = quaternionFromFrame(forward, upward, MODEL_FORWARD, MODEL_UPWARD)
+    const position = f.point.clone()
+    // The body is offset inside the (scaled) model; its centre is half a body length further forward.
+    const centre = position.clone()
+      .addScaledVector(rightward, v.sidewaysOffset * v.rightwardScale)
+      .addScaledVector(upward, v.upwardsOffset * v.upwardScale)
+      .addScaledVector(forward, (v.forwardsOffset + v.bodyLength / 2) * v.forwardScale)
+    return { f, position, centre, forward, upward, rightward, orientation }
+  }
+
+  placeAndOrientModel(om, refFrame) {
+    const v = virtualLaunchSled
+    om.visible = v.isVisible
+    if (!v.isVisible) return
+    const deltaT = Math.max(0, v.adjustedTime(refFrame.timeSinceStart) - this.timeLaunched)
+    const frame = this.frameAt(refFrame, deltaT)
+    om.position.copy(frame.position)
+    om.quaternion.copy(frame.orientation)
+    om.children.forEach(child => {
+      if ((child.name==='launchSled_body') || (child.name==='launchSled_bodyFromModel')) {
+        // Model axes: x = rightward, y = forward, z = upward
+        child.position.set(v.sidewaysOffset, v.forwardsOffset, v.upwardsOffset)
+        child.quaternion.identity()
+      }
+      child.visible = true
+    })
+  }
+}

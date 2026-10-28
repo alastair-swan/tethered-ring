@@ -53,7 +53,6 @@ export function getPlanetSpec(planet) {
         displacementScale: 6400,
         displacementBias: -900
       }
-      break
     case 'mars':
       return {
         name: 'Mars',
@@ -83,7 +82,6 @@ export function getPlanetSpec(planet) {
         specificGasConstantForAir: atmosphere.MARS_SPECIFIC_GAS_CONSTANT, // J/(kg·K)
         texturePath: "mars",
       }
-      break
     case 'moon':
       return {
         name: 'Moon',
@@ -106,7 +104,6 @@ export function getPlanetSpec(planet) {
         displacementScale: 1000,  // 2000??
         displacementBias: 0
       }
-      break
     case 'mercury':
       return {
         name: 'Mercury',
@@ -121,7 +118,6 @@ export function getPlanetSpec(planet) {
         airPressureAtAltitude: function(a) {return 0},
         airTemperatureInKelvinAtAltitude: function(a) {return 250},
       }
-      break
     case 'venus':
       return {
         name: 'Venus',
@@ -136,7 +132,6 @@ export function getPlanetSpec(planet) {
           f: 0, // Flattening
         },
       }
-      break
     case 'jupiter':
       return {
         name: 'Jupiter',
@@ -148,7 +143,6 @@ export function getPlanetSpec(planet) {
         gravitationalParameter: 1.266865349E17,     // m^3/kg/s^2
         ellipsoid: { a: 71492000, f: 0.06487 },
       }
-      break
     case 'saturn':
       return {
         name: 'Saturn',
@@ -160,7 +154,6 @@ export function getPlanetSpec(planet) {
         gravitationalParameter: 3.79311879E16,     // m^3/kg/s^2
         ellipsoid: { a: 60268000, f: 0.09796 },
       }
-      break
     case 'uranus':
       return {
         name: 'Uranus',
@@ -172,7 +165,6 @@ export function getPlanetSpec(planet) {
         gravitationalParameter: 5.7939399E15,     // m^3/kg/s^2
         ellipsoid: { a: 25559000, f: 0.0229 },
       }
-      break
     case 'neptune':
       return {
         name: 'Neptune',
@@ -184,7 +176,6 @@ export function getPlanetSpec(planet) {
         gravitationalParameter: 6.8365299E15,     // m^3/kg/s^2
         ellipsoid: { a: 24764000, f: 0.0171 },
       }
-      break
     case 'pluto':
       return {
         name: 'Pluto',
@@ -196,7 +187,6 @@ export function getPlanetSpec(planet) {
         gravitationalParameter: 8.719E11,     // m^3/kg/s^2
         ellipsoid: { a: 1188300, f: 0 },
       }
-      break
     default:
       console.error('Planet not found')
   };

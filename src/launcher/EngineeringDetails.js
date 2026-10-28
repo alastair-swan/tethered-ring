@@ -410,9 +410,9 @@ export function define_genLauncherSpecs() {
     // Fusion360 stress simulations determined that the screw flight tips can travel at 530 m/s with an engineering factor of 1.5
     const launcherMassDriverScrewAngularVelocity = dParamWithUnits['launcherMassDriverScrewMaxTipSpeed'].value / tr
 
-    // dτ=dD⋅r=0.5 ρ C_d ​l ω^2 r^3 dr
+    // dτ=dD⋅r=0.5 ρ C_d l ω^2 r^3 dr
     // Integrating from r=fri to r=fro:
-    // τ=0.5 ρ C_d ​l ω^2 (fro^4 - fri^4)/4
+    // τ=0.5 ρ C_d l ω^2 (fro^4 - fri^4)/4
     const torqueToOvercomeScrewFlightAirFriction = 0.5 / 4 * airDensityInTube * Cd * totalFlightSpan * launcherMassDriverScrewAngularVelocity**2 * (fro**4 - fri**4)
     const powerToOvercomeScrewFlightAirFriction = torqueToOvercomeScrewFlightAirFriction * launcherMassDriverScrewAngularVelocity
     specs['powerToOvercomeScrewFlightAirFriction'] = {value: powerToOvercomeScrewFlightAirFriction, units: "W"}

@@ -2,6 +2,11 @@ import * as THREE from 'three'
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
 import { SledGrapplerPlacementInfo, SledGrapplerGeometry } from './SledGrapplerGeometry.js'
 import * as tram from '../utils/tram.js'
+import { quaternionFromFrame } from '../curves/SuperCurves.js'
+import { MovingVirtualObject, curveFrameAtTime, parameterSignature } from './VirtualObject.js'
+
+const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
+const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
 
 export class adaptiveNutModel {
   constructor(dParamWithUnits, myScene, unallocatedModelsList, perfOptimizedThreeJS, massDriverScrewTexture) {
@@ -243,13 +248,14 @@ export class adaptiveNutModel {
       object.name = objName
       object.traverse(child => {
         if (child.isMesh) child.castShadow = true
+        // Template geometry is shared by every clone; per-model regenerated pad geometry is not.
+        if (child.geometry) child.geometry.userData.shared = true
         if (child!==object) {
           child.name = objName+'_'+child.name
         }
       })
       object.updateMatrixWorld()
-      if (perfOptimizedThreeJS) object.children.forEach(child => child.freeze())
-      for (let i=0; i<n; i++) {
+      for (let i=0; i<Math.max(1, n); i++) {  // at least one model: the pool's template
           const tempModel = object.clone()
           unallocatedModelsList.push(tempModel)
       }
@@ -259,450 +265,304 @@ export class adaptiveNutModel {
   
 }
 
-export class virtualAdaptiveNut {
-    constructor(timeLaunched) {
-        // The virtual vehicle has a position along the launch trajectory curve.
-        // 0 represents the begginning of the mass driver, 1 represents 't==durationOfLaunchTrajectory'
-        this.timeLaunched = timeLaunched
-        this.model = null
+// Shared grappler materials (they used to be re-created, and leaked, on every update()).
+const grapplerEngagedMaterial = new THREE.MeshPhongMaterial({color: 0x00ff00})
+const grapplerDisengagedMaterial = new THREE.MeshPhongMaterial({color: 0xff0000})
+grapplerEngagedMaterial.userData.keep = true      // module-level: never disposed
+grapplerDisengagedMaterial.userData.keep = true
+
+// Grappler pad geometry is regenerated when the nut's speed has changed by this fraction since the
+// geometry was built (the pads follow the thread pitch, which is proportional to speed).
+const GRAPPLER_REGEN_RELATIVE_SPEED_STEP = 0.01
+
+export class virtualAdaptiveNut extends MovingVirtualObject {
+
+  static unallocatedModels = []
+  static activeObjects = new Map()
+  static className = 'virtualAdaptiveNuts'
+  static modelsAreRecyleable = true
+  static isDynamic = true
+  static minMaxArray = [0, 0]
+
+  static signatureOf(dParamWithUnits) {
+    return parameterSignature(dParamWithUnits,
+      ['adaptiveNut', 'launcherMassDriverScrew', 'launchSystem', 'launcherMassDriverForwardAcceleration', 'launcherMassDriver1InitialVelocity'],
+      ['Offset', 'CameraRange', 'RoughLength', 'NumBrackets', 'Bracket', 'Material', 'Density', 'Cost'])
+  }
+
+  static isTeardownRequired(dParamWithUnits) {
+    const newNumObjects = dParamWithUnits['showAdaptiveNuts'].value ? dParamWithUnits['numVirtualAdaptiveNuts'].value : 0
+    return newNumObjects!==virtualAdaptiveNut.numObjects
+  }
+
+  static update(dParamWithUnits, launcherMassDriverLength) {
+    const v = virtualAdaptiveNut
+    const p = (name) => dParamWithUnits[name].value
+    v.numObjects = p('showAdaptiveNuts') ? p('numVirtualAdaptiveNuts') : 0
+    v.tInc = p('launchVehicleSpacingInSeconds')
+    v.launcherMassDriverLength = launcherMassDriverLength
+    v.adaptiveNutBodyLength = p('adaptiveNutBodyLength')
+    v.adaptiveNutGrapplerLength = p('adaptiveNutGrapplerLength')
+    v.sidewaysOffset = p('adaptiveNutSidewaysOffset')
+    v.upwardsOffset = p('adaptiveNutUpwardsOffset')
+    v.forwardsOffset = p('adaptiveNutForwardsOffset')
+    v.forwardScaleFactor = p('launchSystemForwardScaleFactor')
+    v.upwardScaleFactor = p('launchSystemUpwardScaleFactor')
+    v.rightwardScaleFactor = p('launchSystemRightwardScaleFactor')
+    v.isVisible = p('showAdaptiveNuts')
+    v.slowDownPassageOfTime = p('launcherSlowDownPassageOfTime')
+    v.launcherStartDelayInSeconds = p('launcherStartDelayInSeconds')
+    v.adaptiveNutNumGrapplers = Math.max(0, Math.round(p('adaptiveNutNumGrapplers')))
+    v.magnetThickness = p('adaptiveNutGrapplerMagnetThickness')
+    v.betweenGrapplerFactor = p('adaptiveNutBetweenGrapplerFactor')
+    v.shaftToGrapplerPad = p('adaptiveNutShaftToGrapplerPad')
+    v.ballJointClearance = p('adaptiveNutGrapplerBallJointClearance')
+    v.ballJointRadius = p('adaptiveNutGrapplerBallJointRadius')
+    v.launcherMassDriverForwardAcceleration = p('launcherMassDriverForwardAcceleration')
+    v.launcherMassDriver1InitialVelocity = p('launcherMassDriver1InitialVelocity')
+    v.initialDistance = p('adaptiveNutBodyLength') / 2
+    v.adaptiveNutGrapplerRangeFactor = p('adaptiveNutGrapplerRangeFactor')
+
+    // Because the nut inferfaces with the screw, we need to obtains some screw parameters as well...
+    v.screwRevolutionsPerSecond = p('launcherMassDriverScrewRevolutionsPerSecond')
+    v.launcherMassDriverScrewShaftOuterRadius = p('launcherMassDriverScrewShaftOuterRadius')
+    v.launcherMassDriverScrewShaftInnerRadius = p('launcherMassDriverScrewShaftInnerRadius')
+    v.intraAnchorUpwardsSeparation = p('adaptiveNutIntraAnchorUpwardsSeparation')
+    v.interAnchorUpwardsSeparation = p('adaptiveNutInterAnchorUpwardsSeparation')
+    v.launcherMassDriverScrewThreadRadius = p('launcherMassDriverScrewThreadRadius')
+    v.launcherMassDriverScrewThreadThickness = p('launcherMassDriverScrewThreadThickness')
+    v.launcherMassDriverScrewThreadStarts = p('launcherMassDriverScrewThreadStarts')
+    v.launcherMassDriverScrewSidewaysOffset = p('launcherMassDriverScrewSidewaysOffset')
+    v.launcherMassDriverScrewUpwardsOffset = p('launcherMassDriverScrewUpwardsOffset')
+    v.padLiftActuation = p('adaptiveNutGrapplerPadLiftAwayDistance')
+    v.padLiftPortion = Math.max(1e-9, p('adaptiveNutGrapplerPadLiftAwayPortion'))
+    const r1 = v.launcherMassDriverScrewThreadRadius
+    const r2 = v.launcherMassDriverScrewShaftOuterRadius
+    v.padRadialActuation = (r1 - r2) * (1 + p('adaptiveNutGrapplerClearanceFactor'))
+    v.padTwistPortion = Math.max(1e-9, p('adaptiveNutGrapplerPadTwistPortion'))
+    v.adaptiveNutWidth = p('adaptiveNutWidth')
+    v.adaptiveNutGrapplerMaxRangeOfMotion = p('adaptiveNutGrapplerMaxRangeOfMotion')
+    v.adaptiveNutGrapplerTopDeadCenterRotation = p('adaptiveNutGrapplerTopDeadCenterRotation')
+    v.minMaxArray = [0, 0]
+
+    v.isDynamic = true
+    v.hasChanged = true
+  }
+
+  // Distance from the start of mass driver 1 to the back of the nut, `deltaT` after launch.
+  static distanceAlongScrews(path, frame) {
+    let massDriver1StartDistance = 0
+    for (const superCurve of path.superCurves) {
+      if (superCurve.name === 'massDriver1Curve') break
+      massDriver1StartDistance += superCurve.getLength()
+    }
+    return frame.res.relevantCurveStartDistance + frame.distance - massDriver1StartDistance
+  }
+
+  frameAt(refFrame, deltaT) {
+    const v = virtualAdaptiveNut
+    const f = curveFrameAtTime(refFrame.curve, deltaT, false)
+    const forward = f.forward
+    const upward = f.upward
+    const rightward = new THREE.Vector3().crossVectors(forward, upward)
+    const orientation = quaternionFromFrame(forward, upward, MODEL_FORWARD, MODEL_UPWARD)
+    const position = f.point.clone()
+    // The body geometry spans y in [-forwardsOffset, bodyLength - forwardsOffset] and is then offset by
+    // (sideways, forwards, upwards) inside the scaled model, so its centre is at y = bodyLength/2.
+    const centre = position.clone()
+      .addScaledVector(rightward, v.sidewaysOffset * v.rightwardScaleFactor)
+      .addScaledVector(upward, v.upwardsOffset * v.upwardScaleFactor)
+      .addScaledVector(forward, v.adaptiveNutBodyLength / 2 * v.forwardScaleFactor)
+    return { f, position, centre, forward, upward, rightward, orientation }
+  }
+
+  placeAndOrientModel(om, refFrame) {
+    const v = virtualAdaptiveNut
+    om.visible = v.isVisible
+    if (!v.isVisible) return
+    const adjustedTimeSinceStart = v.adjustedTime(refFrame.timeSinceStart)
+    const deltaT = Math.max(0, adjustedTimeSinceStart - this.timeLaunched)
+    const frame = this.frameAt(refFrame, deltaT)
+    const relevantCurve = frame.f.curve
+    const distanceToSledAft = v.distanceAlongScrews(refFrame.curve, frame.f)
+
+    om.position.copy(frame.position)
+    om.quaternion.copy(frame.orientation)
+
+    const acceleration = v.launcherMassDriverForwardAcceleration
+    const initialVelocity = v.launcherMassDriver1InitialVelocity
+    const initialDistance = v.initialDistance
+    const adaptiveNutWidthDiv2 = v.adaptiveNutWidth / 2
+    const screwRevolutionsPerSecond = v.screwRevolutionsPerSecond
+    const threadRadius = v.launcherMassDriverScrewThreadRadius
+    const threadStarts = tram.calculateThreadStarts(distanceToSledAft, v.launcherMassDriverScrewThreadStarts)
+    const threadThickness = v.launcherMassDriverScrewThreadThickness
+    const shaftOuterRadius = v.launcherMassDriverScrewShaftOuterRadius
+    const upwardsOffsetToAnchors = v.launcherMassDriverScrewUpwardsOffset // Anchors' upward position will track the screws'
+    const intraAnchorUpwardsSeparation = v.intraAnchorUpwardsSeparation
+    const interAnchorUpwardsSeparation = v.interAnchorUpwardsSeparation
+    const numGrapplers = v.adaptiveNutNumGrapplers
+    const ballJointClearance = v.ballJointClearance
+    const ballJointRadius = v.ballJointRadius
+    const grapplersSidewaysOffset = v.launcherMassDriverScrewSidewaysOffset
+    const grapplerUpwardsOffset = v.launcherMassDriverScrewUpwardsOffset
+    const padCenterToEdge = (threadRadius - (shaftOuterRadius + v.shaftToGrapplerPad))/2
+
+    // The screws turn with the launcher's global (adjusted) clock (see MassDriverScrew.js), so the
+    // grapplers must use the same time origin. (They used the time since this nut was launched, which
+    // only lined up with the thread when rps * spacing * threadStarts was a whole number.)
+    const additionalRotation = (adjustedTimeSinceStart * screwRevolutionsPerSecond) % 1
+
+    const bodyLength = v.adaptiveNutBodyLength
+    const grapplerLength = v.adaptiveNutGrapplerLength
+    const firstGrapplerDistance = (bodyLength-grapplerLength) / 2
+    const grapplerSpacing = (numGrapplers > 0) ? grapplerLength / numGrapplers : 0
+
+    const makeInfo = (distance, rotation) => new SledGrapplerPlacementInfo(
+      shaftOuterRadius, threadRadius, threadThickness, threadStarts, screwRevolutionsPerSecond,
+      acceleration, initialVelocity, initialDistance, distance, grapplerLength, numGrapplers,
+      v.magnetThickness, v.betweenGrapplerFactor, v.shaftToGrapplerPad, rotation,
+      v.adaptiveNutGrapplerMaxRangeOfMotion, v.adaptiveNutGrapplerTopDeadCenterRotation, v.minMaxArray)
+
+    const info = makeInfo(distanceToSledAft, additionalRotation)
+    const grapplerOffset = []
+    const grapplerSwitchoverSignal = []
+    const grapplerThreadPitch = []
+    for (let i = 0, grapplerDistance = firstGrapplerDistance; i<numGrapplers; i++, grapplerDistance += grapplerSpacing) {
+      info.generatePlacementInfo(grapplerDistance, v.adaptiveNutGrapplerRangeFactor)
+      grapplerOffset[i] = info.offset
+      grapplerSwitchoverSignal[i] = info.switchoverSignal
+      grapplerThreadPitch[i] = info.threadPitch
     }
 
-    // These parameters are required for all objects
-    static updateParameters = []
-    static unallocatedModels = []
-    static numObjects = 0
-    static refFrames = []
-    static prevRefFrames = []
-    static className = 'virtualAdaptiveNuts'
-    static modelsAreRecyleable = true
-
-    static isTeardownRequired(dParamWithUnits) {
-      const newNumObjects = dParamWithUnits['showAdaptiveNuts'].value ? dParamWithUnits['numVirtualAdaptiveNuts'].value : 0
-      return newNumObjects!==virtualAdaptiveNut.numObjects
-    }
-
-    static update(dParamWithUnits, launcherMassDriverLength, scene, clock) {
-      virtualAdaptiveNut.numObjects = dParamWithUnits['showAdaptiveNuts'].value ? dParamWithUnits['numVirtualAdaptiveNuts'].value : 0
-      virtualAdaptiveNut.clock = clock
-      virtualAdaptiveNut.updatePeriod = 1  // seconds (really we need to vary this depending on how far along the mass driver we are...)
-      virtualAdaptiveNut.tInc = dParamWithUnits['launchVehicleSpacingInSeconds'].value
-  
-      virtualAdaptiveNut.timeOfLastUpdate = clock.getElapsedTime() - virtualAdaptiveNut.updatePeriod
-      virtualAdaptiveNut.launcherMassDriverLength = launcherMassDriverLength
-      virtualAdaptiveNut.adaptiveNutBodyLength = dParamWithUnits['adaptiveNutBodyLength'].value
-      virtualAdaptiveNut.adaptiveNutGrapplerLength = dParamWithUnits['adaptiveNutGrapplerLength'].value
-      virtualAdaptiveNut.sidewaysOffset = dParamWithUnits['adaptiveNutSidewaysOffset'].value
-      virtualAdaptiveNut.upwardsOffset = dParamWithUnits['adaptiveNutUpwardsOffset'].value
-      virtualAdaptiveNut.forwardsOffset = dParamWithUnits['adaptiveNutForwardsOffset'].value
-      virtualAdaptiveNut.forwardScaleFactor = dParamWithUnits['launchSystemForwardScaleFactor'].value
-      virtualAdaptiveNut.upwardScaleFactor = dParamWithUnits['launchSystemUpwardScaleFactor'].value
-      virtualAdaptiveNut.rightwardScaleFactor = dParamWithUnits['launchSystemRightwardScaleFactor'].value
-      virtualAdaptiveNut.isVisible = dParamWithUnits['showAdaptiveNuts'].value
-      virtualAdaptiveNut.slowDownPassageOfTime = dParamWithUnits['launcherSlowDownPassageOfTime'].value
-      virtualAdaptiveNut.launcherStartDelayInSeconds = dParamWithUnits['launcherStartDelayInSeconds'].value
-      virtualAdaptiveNut.adaptiveNutNumGrapplers = dParamWithUnits['adaptiveNutNumGrapplers'].value
-      virtualAdaptiveNut.magnetThickness = dParamWithUnits['adaptiveNutGrapplerMagnetThickness'].value
-      virtualAdaptiveNut.betweenGrapplerFactor = dParamWithUnits['adaptiveNutBetweenGrapplerFactor'].value
-      virtualAdaptiveNut.shaftToGrapplerPad = dParamWithUnits['adaptiveNutShaftToGrapplerPad'].value
-      virtualAdaptiveNut.ballJointClearance = dParamWithUnits['adaptiveNutGrapplerBallJointClearance'].value
-      virtualAdaptiveNut.ballJointRadius = dParamWithUnits['adaptiveNutGrapplerBallJointRadius'].value
-      virtualAdaptiveNut.launcherMassDriverForwardAcceleration = dParamWithUnits['launcherMassDriverForwardAcceleration'].value
-      virtualAdaptiveNut.launcherMassDriver1InitialVelocity = dParamWithUnits['launcherMassDriver1InitialVelocity'].value
-      virtualAdaptiveNut.initialDistance = dParamWithUnits['adaptiveNutBodyLength'].value / 2
-      virtualAdaptiveNut.adaptiveNutGrapplerRangeFactor = dParamWithUnits['adaptiveNutGrapplerRangeFactor'].value
-
-      // Because the sled inferfaces with the screw, we need to obtains some screw parameters as well...
-      virtualAdaptiveNut.screwRevolutionsPerSecond = dParamWithUnits['launcherMassDriverScrewRevolutionsPerSecond'].value
-      virtualAdaptiveNut.launcherMassDriverScrewShaftOuterRadius = dParamWithUnits['launcherMassDriverScrewShaftOuterRadius'].value
-      virtualAdaptiveNut.launcherMassDriverScrewShaftInnerRadius = dParamWithUnits['launcherMassDriverScrewShaftInnerRadius'].value
-      virtualAdaptiveNut.intraAnchorUpwardsSeparation = dParamWithUnits['adaptiveNutIntraAnchorUpwardsSeparation'].value // We could make this the function of launcherMassDriverScrewThreadRadius and the adaptiveNutGrapplerClearanceFactor
-      virtualAdaptiveNut.interAnchorUpwardsSeparation = dParamWithUnits['adaptiveNutInterAnchorUpwardsSeparation'].value
-      virtualAdaptiveNut.launcherMassDriverScrewThreadRadius =  dParamWithUnits['launcherMassDriverScrewThreadRadius'].value
-      virtualAdaptiveNut.launcherMassDriverScrewThreadThickness = dParamWithUnits['launcherMassDriverScrewThreadThickness'].value
-      virtualAdaptiveNut.launcherMassDriverScrewThreadStarts = dParamWithUnits['launcherMassDriverScrewThreadStarts'].value
-      virtualAdaptiveNut.launcherMassDriverScrewSidewaysOffset = dParamWithUnits['launcherMassDriverScrewSidewaysOffset'].value
-      virtualAdaptiveNut.launcherMassDriverScrewUpwardsOffset = dParamWithUnits['launcherMassDriverScrewUpwardsOffset'].value
-      virtualAdaptiveNut.padLiftActuation = dParamWithUnits['adaptiveNutGrapplerPadLiftAwayDistance'].value
-      virtualAdaptiveNut.padLiftPortion = dParamWithUnits['adaptiveNutGrapplerPadLiftAwayPortion'].value
-      const r1 = virtualAdaptiveNut.launcherMassDriverScrewThreadRadius
-      const r2 = virtualAdaptiveNut.launcherMassDriverScrewShaftOuterRadius
-      virtualAdaptiveNut.padRadialActuation = (r1 - r2) * (1 + dParamWithUnits['adaptiveNutGrapplerClearanceFactor'].value)
-      virtualAdaptiveNut.padTwistPortion = dParamWithUnits['adaptiveNutGrapplerPadTwistPortion'].value
-      virtualAdaptiveNut.adaptiveNutWidth = dParamWithUnits['adaptiveNutWidth'].value
-      virtualAdaptiveNut.adaptiveNutGrapplerMaxRangeOfMotion = dParamWithUnits['adaptiveNutGrapplerMaxRangeOfMotion'].value
-      virtualAdaptiveNut.adaptiveNutGrapplerTopDeadCenterRotation = dParamWithUnits['adaptiveNutGrapplerTopDeadCenterRotation'].value
-      virtualAdaptiveNut.minMaxArray = [0, 0]
-
-      virtualAdaptiveNut.isDynamic =  true
-      virtualAdaptiveNut.hasChanged = true
-      virtualAdaptiveNut.scene = scene
-      virtualAdaptiveNut.greenMaterial = new THREE.MeshPhongMaterial({color: 0x00ff00})
-      virtualAdaptiveNut.redMaterial = new THREE.MeshPhongMaterial({color: 0xff0000})
-    }
-  
-    static addNewVirtualObjects(refFrames) {
-      virtualAdaptiveNut.hasChanged = true
-      const n1 = virtualAdaptiveNut.numObjects
-      const tStart = 0
-      const tInc = virtualAdaptiveNut.tInc
-      
-      console.assert(refFrames.length==1)
-      refFrames.forEach(refFrame => {
-        const adjustedTimeSinceStart = tram.adjustedTimeSinceStart(
-          this.slowDownPassageOfTime, refFrame.timeSinceStart,
-          virtualAdaptiveNut.launcherStartDelayInSeconds)
-        // Going backwards in time since we want to add vehicles that were launched in the past.
-        const durationOfSledTrajectory = refFrame.curve.getDuration()
-        for (let t = tStart, i = 0; (t > -(tStart+durationOfSledTrajectory)) && (i<n1); t -= tInc, i++) {
-          // Calculate where along the launcher to place the vehicle. 
-          const deltaT = adjustedTimeSinceStart - t
-          const zoneIndex = refFrame.curve.getZoneIndex(deltaT)
-          if ((zoneIndex>=0) && (zoneIndex<refFrame.numZones)) {
-            refFrame.wedges[zoneIndex][virtualAdaptiveNut.className].push(new virtualAdaptiveNut(t))
-          }
-          else {
-            console.log('Error')
-          }
-        }
-        refFrame.prevStartWedgeIndex = -1
-      })
-    }
-
-    placeAndOrientModel(om, refFrame) {
-      if (virtualAdaptiveNut.isVisible) {
-        const adjustedTimeSinceStart = tram.adjustedTimeSinceStart(
-          virtualAdaptiveNut.slowDownPassageOfTime, refFrame.timeSinceStart,
-          virtualAdaptiveNut.launcherStartDelayInSeconds)
-        const deltaT = adjustedTimeSinceStart - this.timeLaunched
-        const res = refFrame.curve.findRelevantCurve(deltaT)
-        const relevantCurve = res.relevantCurve
-        const distanceDownRelevantCurve = relevantCurve.tTod(deltaT - res.relevantCurveStartTime)
-        const d = distanceDownRelevantCurve / res.relevantCurveLength
-        // This next line assumes that there is only one other supercurve before the start of the screw
-        let massDriver1StartDistance = 0;
-        for (const superCurve of refFrame.curve.superCurves) {
-          if (superCurve.name !== 'massDriver1Curve') {
-            massDriver1StartDistance += superCurve.length;
-          } else {
-            break;
-          }
-        }
-        const distanceToSledAft = res.relevantCurveStartDistance + distanceDownRelevantCurve - massDriver1StartDistance
-
-        const modelForward = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
-        const modelUpward = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
-
-        const pointOnRelevantCurve = relevantCurve.getPointAt(d)
-        const forward = relevantCurve.getTangentAt(d).multiplyScalar(virtualAdaptiveNut.forwardScaleFactor)
-        const upward = relevantCurve.getNormalAt(d).multiplyScalar(virtualAdaptiveNut.upwardScaleFactor)
-        const rightward = relevantCurve.getBinormalAt(d).multiplyScalar(virtualAdaptiveNut.rightwardScaleFactor)
-        const orientation = relevantCurve.getQuaternionAt(d, modelForward, modelUpward)
-
-        const acceleration = virtualAdaptiveNut.launcherMassDriverForwardAcceleration
-        const initialVelocity = virtualAdaptiveNut.launcherMassDriver1InitialVelocity
-        const initialDistance = virtualAdaptiveNut.initialDistance
-        const adaptiveNutWidthDiv2 = virtualAdaptiveNut.adaptiveNutWidth / 2
-  
-        // Next we need to position the launch sled's legs so that they interface with the screws
-        // First, working from the back of the launch sled towards the front, we need to virtually recreate the back face of the screw thread, but only the 
-        // parts of the that back face that are within the reach of the launch sled's legs.
-  
-        const screwRevolutionsPerSecond = virtualAdaptiveNut.screwRevolutionsPerSecond
-        const threadRadius = virtualAdaptiveNut.launcherMassDriverScrewThreadRadius
-        const threadStarts = tram.calculateThreadStarts(distanceToSledAft, virtualAdaptiveNut.launcherMassDriverScrewThreadStarts)
-        const threadThickness = virtualAdaptiveNut.launcherMassDriverScrewThreadThickness
-        const shaftOuterRadius = virtualAdaptiveNut.launcherMassDriverScrewShaftOuterRadius
-        const shaftInnerRadius = virtualAdaptiveNut.launcherMassDriverScrewShaftInnerRadius
-        const upwardsOffsetToAnchors = virtualAdaptiveNut.launcherMassDriverScrewUpwardsOffset // Anchors' upward position will track the screws'
-        const intraAnchorUpwardsSeparation = virtualAdaptiveNut.intraAnchorUpwardsSeparation
-        const interAnchorUpwardsSeparation = virtualAdaptiveNut.interAnchorUpwardsSeparation
-        const screwSidewaysOffset = virtualAdaptiveNut.launcherMassDriverScrewSidewaysOffset
-        const screwUpwardsOffset = virtualAdaptiveNut.launcherMassDriverScrewUpwardsOffset
-        const numGrapplers = virtualAdaptiveNut.adaptiveNutNumGrapplers
-        const magnetThickness = virtualAdaptiveNut.magnetThickness
-        const betweenGrapplerFactor = virtualAdaptiveNut.betweenGrapplerFactor
-        const shaftToGrapplerPad = virtualAdaptiveNut.shaftToGrapplerPad
-        const ballJointClearance = virtualAdaptiveNut.ballJointClearance
-        const ballJointRadius = virtualAdaptiveNut.ballJointRadius
-        const adaptiveNutGrapplerMaxRangeOfMotion = virtualAdaptiveNut.adaptiveNutGrapplerMaxRangeOfMotion
-        const adaptiveNutGrapplerTopDeadCenterRotation = virtualAdaptiveNut.adaptiveNutGrapplerTopDeadCenterRotation 
-        const grapplersSidewaysOffset = screwSidewaysOffset
-        const grapplerUpwardsOffset = screwUpwardsOffset
-        const padCenterToEdge = (threadRadius - (shaftOuterRadius + shaftToGrapplerPad))/2
-
-        // Create a new screw geometry to represent the adaptive nut
-        const additionalRotation = (deltaT * screwRevolutionsPerSecond) % 1
-        const timeNow = virtualAdaptiveNut.clock.getElapsedTime()
-        const updateNow = (timeNow>virtualAdaptiveNut.timeOfLastUpdate+virtualAdaptiveNut.updatePeriod)
-        if (updateNow) {
-          virtualAdaptiveNut.timeOfLastUpdate += virtualAdaptiveNut.updatePeriod
-        }
-  
-        let grapplerGeometry = []
-        let grapplerOffset = []
-        let grapplerSwitchoverSignal = []
-        let grapplerThreadPitch = []
-  
-        const bodyLength = virtualAdaptiveNut.adaptiveNutBodyLength
-        const grapplerLength = virtualAdaptiveNut.adaptiveNutGrapplerLength
-        const firstGrapplerDistance = (bodyLength-grapplerLength) / 2
-        const grapplerSpacing = 1.0 / numGrapplers * grapplerLength
-
-        // ToDo: Probably a bit wasteful to recreate this object every time update the model
-        const info = new SledGrapplerPlacementInfo(
-          shaftOuterRadius,
-          threadRadius,
-          threadThickness,
-          threadStarts,
-          screwRevolutionsPerSecond,
-          acceleration,
-          initialVelocity,
-          initialDistance,
-          distanceToSledAft,
-          grapplerLength,
-          numGrapplers,
-          magnetThickness,
-          betweenGrapplerFactor,
-          shaftToGrapplerPad,
-          additionalRotation,
-          adaptiveNutGrapplerMaxRangeOfMotion,
-          adaptiveNutGrapplerTopDeadCenterRotation,
-          virtualAdaptiveNut.minMaxArray
-        )
-  
-        for (let i = 0, grapplerDistance = firstGrapplerDistance; i<numGrapplers; i++, grapplerDistance += grapplerSpacing) {
-          info.generatePlacementInfo(grapplerDistance, virtualAdaptiveNut.adaptiveNutGrapplerRangeFactor)
-          grapplerOffset[i] = info.offset
-          grapplerSwitchoverSignal[i] = info.switchoverSignal
-          grapplerThreadPitch[i] = info.threadPitch
-          if (updateNow) {
-            grapplerGeometry[i] = new SledGrapplerGeometry(
-              shaftOuterRadius,
-              threadRadius,
-              threadThickness,
-              threadStarts,
-              screwRevolutionsPerSecond,
-              acceleration,
-              initialVelocity,
-              initialDistance,
-              distanceToSledAft,
-              grapplerLength,
-              numGrapplers,
-              magnetThickness,
-              betweenGrapplerFactor,
-              shaftToGrapplerPad,
-              additionalRotation,
-              grapplerDistance,
-              info.offset
-            )
-          }
-        }
-  
-        om.position.copy(pointOnRelevantCurve)
-        om.setRotationFromQuaternion(orientation)
-        const internalPosition = new THREE.Vector3(0, 0, 0)
-        const internalRightward = new THREE.Vector3(1, 0, 0)
-        const internalUpward = new THREE.Vector3(0, 0, 1)
-        const internalForward = new THREE.Vector3(0, 1, 0)
-        const internalOrientation = new THREE.Quaternion().identity()
-
-        // Now we need to position the grappler components
-        om.children.forEach(child => {
-          if (child.name==='adaptiveNut_grappler') {
-
-            // ToDo: Now that we're using unit vectors internally, we should be able to improve the performance of this code
-    
-            const grapplerIndex = child.userData.index
-            const midwayRotation = child.userData.midwayRotation
-            const offset = grapplerOffset[grapplerIndex]
-            // Engage the grapplers only if we're on the part of the curve path that has the twin-screws
-            const switchoverSignal = ((res.relevantCurve.name=='massDriver1Curve') || (res.relevantCurve.name=='massDriver2Curve')) ? grapplerSwitchoverSignal[grapplerIndex]: 1
-            const threadPitch = grapplerThreadPitch[grapplerIndex]
-            
-            // The switchover signal pushed the grappler back towards the top dead center position
-            // It's range is divided into three parts:
-            // The first, padLiftPortion, causes the pad to move away from the screw face,
-            // The second, padTwistPortion, causes the pad to move radially outwards,
-            // The third (the remainder) causes the pad to move circumferentially back towards top dead center
-            virtualAdaptiveNut.adaptiveNutGrapplerLiftAwayPortion
-
-            // Forwards motion of the grappler's magnetic pad
-            const padLiftActuation = Math.min(1, switchoverSignal/virtualAdaptiveNut.padLiftPortion) * virtualAdaptiveNut.padLiftActuation
-            // Radial (outwards) motion of the grappler's magnetic pad also occurs during the liftPortion
-            const padRadialActuation = Math.max(0, Math.min(1, (switchoverSignal)/virtualAdaptiveNut.padLiftPortion)) * virtualAdaptiveNut.padRadialActuation
-
-            const padTwistActuation = Math.max(0, Math.min(1, (switchoverSignal-virtualAdaptiveNut.padLiftPortion)/virtualAdaptiveNut.padTwistPortion)) * Math.atan(threadPitch)
-            // Angular (circumferencial) motion of the grappler's magnetic pad
-            const alreadyUsedPortion = virtualAdaptiveNut.padLiftPortion + virtualAdaptiveNut.padTwistPortion
-            const remainingPortion = 1 - alreadyUsedPortion
-            const padThetaFactor = 1 - Math.max(0, Math.min(1, (switchoverSignal-alreadyUsedPortion)/remainingPortion))
-
-            const grapplerScrewAngle = Math.atan(threadPitch)
-            const padLiftActuationThetaComponent = padLiftActuation * Math.sin(grapplerScrewAngle)
-            const padLiftActuationYComponent = padLiftActuation * Math.cos(grapplerScrewAngle)
-            const rOffset = offset.r + padRadialActuation
-
-            const rawTheta = offset.θ
-            const midTheta = 2*Math.PI * midwayRotation
-            const thetaOffset = ((rawTheta + 3*Math.PI) % (2*Math.PI) - Math.PI) * padThetaFactor + padLiftActuationThetaComponent
-            const sinThetaOffset = Math.sin(thetaOffset + midTheta)
-            const cosThetaOffset = Math.cos(thetaOffset + midTheta)
-
-            // Precalculated values for all pivot points...
-            const rOffsetPlus = rOffset + padCenterToEdge + ballJointClearance + ballJointRadius * 3
-            const pivotPointYComponent = 0//0.8 * magnetThickness * Math.cos(grapplerScrewAngle)
-
-            child.children.forEach(grapplerComponent => {
-              if (grapplerComponent.name==='adaptiveNut_grappler') {
-                const leftRightSign = grapplerComponent.userData.leftRightSign
-                if (updateNow) {
-                  grapplerComponent.geometry.dispose()
-                  grapplerComponent.geometry = grapplerGeometry[grapplerIndex]
-                }
-                const xOffset = rOffset * -sinThetaOffset
-                const zOffset = rOffset * cosThetaOffset
-                const yOffset = offset.y - padLiftActuationYComponent
-                grapplerComponent.position.copy(internalPosition)
-                  .add(internalRightward.clone().multiplyScalar(leftRightSign*(grapplersSidewaysOffset - xOffset))) // ToDo: This should be a parameter
-                  .add(internalUpward.clone().multiplyScalar(grapplerUpwardsOffset + zOffset))
-                  .add(internalForward.clone().multiplyScalar(yOffset))
-                grapplerComponent.setRotationFromQuaternion(internalOrientation)
-                grapplerComponent.rotateY(leftRightSign*thetaOffset + midTheta)
-                grapplerComponent.rotateZ(-leftRightSign*padTwistActuation)
-                grapplerComponent.material = (switchoverSignal==0) ? virtualAdaptiveNut.redMaterial : virtualAdaptiveNut.greenMaterial
-              }
-              else if (grapplerComponent.name==='adaptiveNut_pivot') {
-                // Update the positions of the ends of the struts that are attached to the grapplers
-                const leftRightSign = grapplerComponent.userData.leftRightSign
-                const innerMiddleOuterSign1 = grapplerComponent.userData.innerMiddleOuterSign1
-                const rOffsetPlusMinus = rOffsetPlus + innerMiddleOuterSign1*ballJointRadius
-                const xOffset = rOffsetPlusMinus * -sinThetaOffset
-                const zOffset = rOffsetPlusMinus * cosThetaOffset
-                const yOffset = offset.y - padLiftActuationYComponent + pivotPointYComponent
-
-                grapplerComponent.position.copy(internalPosition)
-                  .add(internalRightward.clone().multiplyScalar(leftRightSign*(grapplersSidewaysOffset - xOffset))) // ToDo: This should be a parameter
-                  .add(internalUpward.clone().multiplyScalar(grapplerUpwardsOffset + zOffset))
-                  .add(internalForward.clone().multiplyScalar(yOffset))
-              }
-              else if (grapplerComponent.name==='adaptiveNut_post') {
-                // Update the positions of the ends of the post that connects the pads to the pivots
-                const leftRightSign = grapplerComponent.userData.leftRightSign
-                const rOffsetPlusMinus0 = rOffset + padCenterToEdge
-                const xOffset0 = rOffsetPlusMinus0 * -sinThetaOffset
-                const zOffset0 = rOffsetPlusMinus0 * cosThetaOffset
-                const yOffset0 = offset.y - padLiftActuationYComponent + pivotPointYComponent
-                grapplerComponent.position.copy(internalPosition)
-                  .add(internalRightward.clone().multiplyScalar(leftRightSign*(grapplersSidewaysOffset - xOffset0))) // ToDo: This should be a parameter
-                  .add(internalUpward.clone().multiplyScalar(grapplerUpwardsOffset + zOffset0))
-                  .add(internalForward.clone().multiplyScalar(yOffset0))
-
-                const rOffsetPlusMinus1 = rOffset + padCenterToEdge + ballJointClearance + ballJointRadius * 5
-                const xOffset1 = rOffsetPlusMinus1 * -sinThetaOffset
-                const zOffset1 = rOffsetPlusMinus1 * cosThetaOffset
-                const yOffset1 = offset.y - padLiftActuationYComponent + pivotPointYComponent
-                const outerPivotPoint = internalPosition.clone()
-                  .add(internalRightward.clone().multiplyScalar(leftRightSign*(grapplersSidewaysOffset - xOffset1))) // ToDo: This should be a parameter
-                  .add(internalUpward.clone().multiplyScalar(grapplerUpwardsOffset + zOffset1))
-                  .add(internalForward.clone().multiplyScalar(yOffset1))
-
-                // Create a unit vector towards the outerPivotPoint
-                const q0 = new THREE.Quaternion
-                const tangent = outerPivotPoint.clone().sub(grapplerComponent.position).normalize()
-                q0.setFromUnitVectors(grapplerComponent.up, tangent)
-                grapplerComponent.setRotationFromQuaternion(q0)
-              }
-              else if (grapplerComponent.name==='adaptiveNut_strut') {  // Strut means the piston part
-                // Update the positions of the ends of the struts that are attached to the grapplers
-                const topBottomOffset = grapplerComponent.userData.topBottomOffset
-                const leftRightSign = grapplerComponent.userData.leftRightSign
-                const innerMiddleOuterSign1 = grapplerComponent.userData.innerMiddleOuterSign1
-                const innerMiddleOuterSign2 = grapplerComponent.userData.innerMiddleOuterSign2
-                const rOffsetPlusMinus = rOffsetPlus + innerMiddleOuterSign1*ballJointRadius
-                const xOffset = rOffsetPlusMinus * -sinThetaOffset
-                const zOffset = rOffsetPlusMinus * cosThetaOffset
-                const yOffset = offset.y - padLiftActuationYComponent + pivotPointYComponent
-
-                grapplerComponent.position.copy(internalPosition)
-                  .add(internalRightward.clone().multiplyScalar(leftRightSign*(grapplersSidewaysOffset - xOffset))) // ToDo: This should be a parameter
-                  .add(internalUpward.clone().multiplyScalar(grapplerUpwardsOffset + zOffset))
-                  .add(internalForward.clone().multiplyScalar(yOffset))
-
-                const anchorPoint = internalPosition.clone()
-                  .add(internalRightward.clone().multiplyScalar(leftRightSign*adaptiveNutWidthDiv2))
-                  .add(internalUpward.clone().multiplyScalar(upwardsOffsetToAnchors + topBottomOffset*intraAnchorUpwardsSeparation + topBottomOffset*innerMiddleOuterSign2*interAnchorUpwardsSeparation ))
-                  .add(internalForward.clone().multiplyScalar(offset.y))
-                // Create a unit vector towards the anchorPoint
-                const q1 = new THREE.Quaternion
-                const tangent = anchorPoint.clone().sub(grapplerComponent.position).normalize()
-                q1.setFromUnitVectors(grapplerComponent.up, tangent)
-                grapplerComponent.setRotationFromQuaternion(q1)
-              }
-              else if (grapplerComponent.name==='adaptiveNut_cylinder') {  // cylinder means the piston cylinder part
-                // Update the positions of the ends of the cylinders that are attached to the grapplers
-                const topBottomOffset = grapplerComponent.userData.topBottomOffset
-                const leftRightSign = grapplerComponent.userData.leftRightSign
-                const innerMiddleOuterSign1 = grapplerComponent.userData.innerMiddleOuterSign1
-                const innerMiddleOuterSign2 = grapplerComponent.userData.innerMiddleOuterSign2
-                const rOffsetPlusMinus = rOffsetPlus + innerMiddleOuterSign1*ballJointRadius
-                const xOffset = rOffsetPlusMinus * -sinThetaOffset
-                const zOffset = rOffsetPlusMinus * cosThetaOffset
-                const yOffset = offset.y - padLiftActuationYComponent + pivotPointYComponent
-
-                const anchorPoint = internalPosition.clone()
-                  .add(internalRightward.clone().multiplyScalar(leftRightSign*(grapplersSidewaysOffset - xOffset))) // ToDo: This should be a parameter
-                  .add(internalUpward.clone().multiplyScalar(grapplerUpwardsOffset + zOffset))
-                  .add(internalForward.clone().multiplyScalar(yOffset))
-
-                grapplerComponent.position.copy(internalPosition)
-                  .add(internalRightward.clone().multiplyScalar(leftRightSign*adaptiveNutWidthDiv2))
-                  .add(internalUpward.clone().multiplyScalar(upwardsOffsetToAnchors + topBottomOffset*intraAnchorUpwardsSeparation + topBottomOffset*innerMiddleOuterSign2*interAnchorUpwardsSeparation))
-                  .add(internalForward.clone().multiplyScalar(offset.y))
-
-                // Create a unit vector towards the anchorPoint
-                const q1 = new THREE.Quaternion
-                const tangent = anchorPoint.clone().sub(grapplerComponent.position).normalize()
-                q1.setFromUnitVectors(grapplerComponent.up, tangent)
-                grapplerComponent.setRotationFromQuaternion(q1)
-              }
-            })
-          }
-          else if ((child.name==='adaptiveNut_body') || (child.name==='adaptiveNut_bodyFromModel')) {
-            child.position.copy(internalPosition)
-              .add(internalRightward.clone().multiplyScalar(virtualAdaptiveNut.sidewaysOffset))
-              .add(internalUpward.clone().multiplyScalar(virtualAdaptiveNut.upwardsOffset))
-              .add(internalForward.clone().multiplyScalar(virtualAdaptiveNut.forwardsOffset))
-            child.setRotationFromQuaternion(internalOrientation)
-          }
-          child.visible = true
-        })
-        om.matrixValid = false
+    // Regenerate the pad geometry deterministically: the key depends only on the nut's speed (a pure
+    // function of time), and the geometry is built for the key's speed with zero phase (the phase is
+    // applied by the per-frame rotations below). This replaces a wall-clock throttle that starved all
+    // but one nut per frame and made renders depend on frame timing.
+    const speed = Math.sqrt(Math.max(1, initialVelocity**2 + 2 * acceleration * Math.max(0, distanceToSledAft)))
+    const regenKey = Math.floor(Math.log(speed) / GRAPPLER_REGEN_RELATIVE_SPEED_STEP) + ':' + threadStarts
+    let grapplerGeometry = null
+    if (om._grapplerKey !== regenKey) {
+      const keySpeed = Math.exp(Math.floor(Math.log(speed) / GRAPPLER_REGEN_RELATIVE_SPEED_STEP) * GRAPPLER_REGEN_RELATIVE_SPEED_STEP)
+      const keyDistance = (Math.abs(acceleration) > 1e-9) ? Math.max(0, (keySpeed**2 - initialVelocity**2) / (2 * acceleration)) : distanceToSledAft
+      const geometryInfo = makeInfo(keyDistance, 0)
+      grapplerGeometry = []
+      for (let i = 0, grapplerDistance = firstGrapplerDistance; i<numGrapplers; i++, grapplerDistance += grapplerSpacing) {
+        geometryInfo.generatePlacementInfo(grapplerDistance, v.adaptiveNutGrapplerRangeFactor)
+        grapplerGeometry[i] = new SledGrapplerGeometry(
+          shaftOuterRadius, threadRadius, threadThickness, threadStarts, screwRevolutionsPerSecond,
+          acceleration, initialVelocity, initialDistance, keyDistance, grapplerLength, numGrapplers,
+          v.magnetThickness, v.betweenGrapplerFactor, v.shaftToGrapplerPad, 0, grapplerDistance, geometryInfo.offset)
       }
-      om.visible = virtualAdaptiveNut.isVisible
+      om._grapplerKey = regenKey
     }
 
-    getFuturePosition(refFrame, timeDeltaInSeconds) {
+    // Engage the grapplers only if we're on the part of the curve path that has the twin-screws
+    const onScrews = (relevantCurve.name=='massDriver1Curve') || (relevantCurve.name=='massDriver2Curve')
+    const replacedGeometries = new Set()
 
-      const adjustedTimeSinceStart = tram.adjustedTimeSinceStart(
-        virtualAdaptiveNut.slowDownPassageOfTime,
-        refFrame.timeSinceStart + timeDeltaInSeconds,
-        virtualAdaptiveNut.launcherStartDelayInSeconds)
-      const deltaT = adjustedTimeSinceStart - this.timeLaunched
-      if (deltaT<=refFrame.curve.getDuration()) {
-        const res = refFrame.curve.findRelevantCurve(deltaT)
-        const relevantCurve = res.relevantCurve
-        const d = relevantCurve.tTod(deltaT - res.relevantCurveStartTime) / res.relevantCurveLength
-        //const i = Math.max(0, relevantCurve.tToi(deltaT - res.relevantCurveStartTime))
-        const pointOnRelevantCurve = relevantCurve.getPointAt(Math.max(0, d))
-        const forwardToCenter = relevantCurve.getTangentAt(d).multiplyScalar(virtualAdaptiveNut.adaptiveNutBodyLength/2)
-        pointOnRelevantCurve.add(forwardToCenter)
-        return pointOnRelevantCurve
+    // Model axes: x = rightward, y = forward, z = upward
+    om.children.forEach(child => {
+      if (child.name==='adaptiveNut_grappler') {
+        const grapplerIndex = child.userData.index
+        if (grapplerIndex >= numGrapplers) {
+          child.visible = false
+          return
+        }
+        const midwayRotation = child.userData.midwayRotation
+        const offset = grapplerOffset[grapplerIndex]
+        const switchoverSignal = onScrews ? grapplerSwitchoverSignal[grapplerIndex] : 1
+        const threadPitch = grapplerThreadPitch[grapplerIndex]
+
+        // The switchover signal pushes the grappler back towards the top dead center position. Its range is
+        // divided into three parts: padLiftPortion moves the pad away from the screw face, padTwistPortion
+        // moves it radially outwards, and the remainder moves it circumferentially back to top dead center.
+        const padLiftActuation = Math.min(1, switchoverSignal/v.padLiftPortion) * v.padLiftActuation
+        const padRadialActuation = Math.max(0, Math.min(1, switchoverSignal/v.padLiftPortion)) * v.padRadialActuation
+        const padTwistActuation = Math.max(0, Math.min(1, (switchoverSignal-v.padLiftPortion)/v.padTwistPortion)) * Math.atan(threadPitch)
+        const alreadyUsedPortion = v.padLiftPortion + v.padTwistPortion
+        const remainingPortion = Math.max(1e-9, 1 - alreadyUsedPortion)
+        const padThetaFactor = 1 - Math.max(0, Math.min(1, (switchoverSignal-alreadyUsedPortion)/remainingPortion))
+
+        const grapplerScrewAngle = Math.atan(threadPitch)
+        const padLiftActuationThetaComponent = padLiftActuation * Math.sin(grapplerScrewAngle)
+        const padLiftActuationYComponent = padLiftActuation * Math.cos(grapplerScrewAngle)
+        const rOffset = offset.r + padRadialActuation
+
+        const rawTheta = offset.θ
+        const midTheta = 2*Math.PI * midwayRotation
+        const thetaOffset = ((rawTheta + 3*Math.PI) % (2*Math.PI) - Math.PI) * padThetaFactor + padLiftActuationThetaComponent
+        const sinThetaOffset = Math.sin(thetaOffset + midTheta)
+        const cosThetaOffset = Math.cos(thetaOffset + midTheta)
+        const rOffsetPlus = rOffset + padCenterToEdge + ballJointClearance + ballJointRadius * 3
+        const yOffset = offset.y - padLiftActuationYComponent
+
+        // Point on the grappler at radius r from the screw axis, on the given side
+        const padPoint = (target, leftRightSign, r) => target.set(
+          leftRightSign*(grapplersSidewaysOffset + r * sinThetaOffset),
+          yOffset,
+          grapplerUpwardsOffset + r * cosThetaOffset)
+        const anchorPoint = (target, leftRightSign, topBottomOffset, innerMiddleOuterSign2) => target.set(
+          leftRightSign*adaptiveNutWidthDiv2,
+          offset.y,
+          upwardsOffsetToAnchors + topBottomOffset*intraAnchorUpwardsSeparation + topBottomOffset*innerMiddleOuterSign2*interAnchorUpwardsSeparation)
+        const pointAlong = (component, from, to) => {
+          component.position.copy(from)
+          _dir.copy(to).sub(from).normalize()
+          component.quaternion.setFromUnitVectors(_up, _dir)
+        }
+
+        child.visible = true
+        child.children.forEach(grapplerComponent => {
+          const ud = grapplerComponent.userData
+          if (grapplerComponent.name==='adaptiveNut_grappler') {
+            if (grapplerGeometry) {
+              const old = grapplerComponent.geometry
+              if (!old.userData?.shared && !replacedGeometries.has(old)) {
+                replacedGeometries.add(old)
+                old.dispose()
+              }
+              grapplerComponent.geometry = grapplerGeometry[grapplerIndex]
+            }
+            padPoint(grapplerComponent.position, ud.leftRightSign, rOffset)
+            grapplerComponent.quaternion.identity()
+            grapplerComponent.rotateY(ud.leftRightSign*thetaOffset + midTheta)
+            grapplerComponent.rotateZ(-ud.leftRightSign*padTwistActuation)
+            grapplerComponent.material = (switchoverSignal==0) ? grapplerDisengagedMaterial : grapplerEngagedMaterial
+          }
+          else if (grapplerComponent.name==='adaptiveNut_pivot') {
+            padPoint(grapplerComponent.position, ud.leftRightSign, rOffsetPlus + ud.innerMiddleOuterSign1*ballJointRadius)
+          }
+          else if (grapplerComponent.name==='adaptiveNut_post') {
+            // Post from the pad to the outer pivot
+            padPoint(_p0, ud.leftRightSign, rOffset + padCenterToEdge)
+            padPoint(_p1, ud.leftRightSign, rOffset + padCenterToEdge + ballJointClearance + ballJointRadius * 5)
+            pointAlong(grapplerComponent, _p0, _p1)
+          }
+          else if (grapplerComponent.name==='adaptiveNut_strut') {  // Strut means the piston rod
+            padPoint(_p0, ud.leftRightSign, rOffsetPlus + ud.innerMiddleOuterSign1*ballJointRadius)
+            anchorPoint(_p1, ud.leftRightSign, ud.topBottomOffset, ud.innerMiddleOuterSign2)
+            pointAlong(grapplerComponent, _p0, _p1)
+          }
+          else if (grapplerComponent.name==='adaptiveNut_cylinder') {  // The piston's cylinder
+            anchorPoint(_p0, ud.leftRightSign, ud.topBottomOffset, ud.innerMiddleOuterSign2)
+            padPoint(_p1, ud.leftRightSign, rOffsetPlus + ud.innerMiddleOuterSign1*ballJointRadius)
+            pointAlong(grapplerComponent, _p0, _p1)
+          }
+        })
       }
       else {
-        return null
+        if ((child.name==='adaptiveNut_body') || (child.name==='adaptiveNut_bodyFromModel')) {
+          child.position.set(v.sidewaysOffset, v.forwardsOffset, v.upwardsOffset)
+          child.quaternion.identity()
+        }
+        child.visible = true
       }
-  
-    }
-  
+    })
   }
-  
+}
+
+const _p0 = new THREE.Vector3()
+const _p1 = new THREE.Vector3()
+const _dir = new THREE.Vector3()
+const _up = new THREE.Vector3(0, 1, 0)

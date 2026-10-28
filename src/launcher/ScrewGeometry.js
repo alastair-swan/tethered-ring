@@ -253,7 +253,7 @@ class ScrewGeometry extends BufferGeometry {
           vertices.push( P.x, P.y, P.z );
           //verticesTag.push( 'end' + i, 'end' + i, 'end' + i);
           const T = new Vector3(0, 1, 0);
-          if (i==0) {
+          if (screwSegmentLengthOffset==0) {  // (was `i==0`, an undefined variable)
             normals.push( -T.x, -T.y, -T.z );
             //normalsTag.push( 'end' + i, 'end' + i, 'end' + i);
           }
@@ -704,7 +704,8 @@ class ScrewGeometry extends BufferGeometry {
     function generateIndices() {
 
       let verticesPerFlight
-      if (false && renderInnerSurface) {
+      const innerSurfaceIndexingImplemented = false
+      if (innerSurfaceIndexingImplemented && renderInnerSurface) {
         verticesPerFlight = 2*(radialSegments + 1) + 6  // Part of shaft (outer and inner) plus each thread comprises 3 faces with 2 verticies per face 
       }
       else {
