@@ -863,4 +863,4 @@ class TetherGeometry extends BufferGeometry {
   }
 }
 
-export {TetherGeometry}
+export {TetherGeometry}
