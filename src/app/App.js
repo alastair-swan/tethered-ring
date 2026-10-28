@@ -246,6 +246,14 @@ export class App {
     const r = this.ring
     this.ecv = new tram.elevatorCarVariables(this.planetSpec, this.d, r.crv)
     this.transitSystem = new transitSystem(r.refCoordSys, this.d, this.specs, false, r.crv, this.ecv, this.planetRadius, r.mainRingCurve)
+    // Elevator cables only come down where there is land nearby (on planets with seas).
+    if (this.planetSpec.hasOcean) {
+      this.transitSystem.setTerrain({
+        sampleHeight: (lat, lon) => this.planet.sampleTerrainHeight(lat, lon),
+        planetFrame: this.planetCoordSys,
+        ellipsoid: this.planetSpec.ellipsoid,
+      })
+    }
   }
 
   buildLauncher() {

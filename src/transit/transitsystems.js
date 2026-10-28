@@ -336,8 +336,15 @@ export class transitSystem {
     ].filter(layer => layer.mesh)
     if (!this.movingRingLayer.mesh) this.movingRingLayer = null
     this.cableLayer = new ElevatorCableLayer(dParamWithUnits, crv, layout.terminusPositions, RANGE.longRange)
+    if (this.terrain) this.cableLayer.setTerrain(this.terrain)
     this.layers.forEach(layer => layer.setParent(this.scene))
     this.cableLayer.setParent(this.scene)
+  }
+
+  // Keeps the elevator cables to land (see ElevatorCableLayer.setTerrain).
+  setTerrain(terrain) {
+    this.terrain = terrain
+    this.cableLayer?.setTerrain(terrain)
   }
 
   disposeLayers() {

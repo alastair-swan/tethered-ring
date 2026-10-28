@@ -2,6 +2,15 @@ import * as THREE from 'three'
 import { offset_r, offset_y } from '../ring/ringGeometry.js'
 import { ringPoint, forEachInWindow } from './VirtualRingObject.js'
 import { StructureLines } from '../scene/structureLines.js'
+import { ecefToGeodetic } from '../physics/geodesy.js'
+
+// Elevator cables only reach the ground where there is land within LAND_RADIUS of where they meet the
+// surface. The terrain streams in after start-up, so each frame LAND_CHECKS_PER_FRAME cables re-check
+// (round robin); a cable is hidden until its ground has loaded.
+const LAND_RADIUS = 5000 // m
+const LAND_CHECKS_PER_FRAME = 24
+const LAND_UNKNOWN = 0, LAND_YES = 1, LAND_NO = 2
+const _ground = new THREE.Vector3()
 
 const GRAVITY = 9.81 // m/s^2
 
@@ -59,6 +68,47 @@ export class ElevatorCableLayer {
     this.mesh.renderOrder = 1
     this.mesh.frustumCulled = false
     this.maxCables = maxCables
+    this.land = new Uint8Array(this.positions.length) // LAND_* per cable
+    this.nextLandCheck = 0
+    this.terrain = null
+  }
+
+  // terrain: { sampleHeight(latDeg, lonDeg) -> { heightMeters } | null, planetFrame: Object3D,
+  // ellipsoid } so cables can be kept to land (see LAND_RADIUS).
+  setTerrain(terrain) {
+    this.terrain = terrain
+    this.land?.fill(LAND_UNKNOWN)
+  }
+
+  // Re-checks a few cables' ground: is there land (height >= 0) at the point where the cable meets the
+  // surface, or on circles of half and the full LAND_RADIUS around it?
+  checkLand(curve) {
+    if (!this.terrain || !this.mesh?.parent) return
+    const { sampleHeight, planetFrame, ellipsoid } = this.terrain
+    this.mesh.parent.updateWorldMatrix(true, false)
+    planetFrame.updateWorldMatrix(true, false)
+    const n = this.positions.length
+    for (let k = 0; k < Math.min(LAND_CHECKS_PER_FRAME, n); k++) {
+      const i = this.nextLandCheck
+      this.nextLandCheck = (i + 1) % n
+      ringPoint(curve, this.positions[i], this.lower[0], this.lower[1], this.forward, _ground)
+      planetFrame.worldToLocal(this.mesh.parent.localToWorld(_ground))
+      const g = ecefToGeodetic(_ground.x, _ground.y, _ground.z, ellipsoid)
+      const metresPerDegreeLat = 111320
+      const metresPerDegreeLon = Math.max(1, 111320 * Math.cos(g.lat * Math.PI / 180))
+      let known = false, land = false
+      const sample = (dNorth, dEast) => {
+        const h = sampleHeight(g.lat + dNorth / metresPerDegreeLat, g.lon + dEast / metresPerDegreeLon)
+        if (!h) return
+        known = true
+        if (h.heightMeters >= 0) land = true
+      }
+      sample(0, 0)
+      for (const radius of [LAND_RADIUS / 2, LAND_RADIUS]) {
+        for (let a = 0; a < 8 && !land; a++) sample(radius * Math.cos(a * Math.PI / 4), radius * Math.sin(a * Math.PI / 4))
+      }
+      this.land[i] = land ? LAND_YES : (known ? LAND_NO : LAND_UNKNOWN)
+    }
   }
 
   setCameraRange(range) {
@@ -83,8 +133,10 @@ export class ElevatorCableLayer {
     this.mesh.position.copy(_origin)
     const buf = this.buffer
     let k = 0
+    this.checkLand(curve)
     forEachInWindow(this.positions, nearestTrackPosition, this.cameraRange / this.ringCircumference, (i) => {
       if (k >= this.maxCables) return
+      if (this.terrain && this.land[i] !== LAND_YES) return
       const p = this.positions[i]
       ringPoint(curve, p, this.lower[0], this.lower[1], this.forward, _a).sub(_origin)
       buf[k*6] = _a.x; buf[k*6+1] = _a.y; buf[k*6+2] = _a.z
