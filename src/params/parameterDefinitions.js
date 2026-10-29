@@ -428,6 +428,11 @@ export function createParameterDefinitions() {
   adaptiveNutGrapplerPadLiftAwayDistance: {value: 0.01, units: 'm', autoMap: true, min: 0, max: 1, step: 1, onChange: 'updateLauncher', folder: 'Grapplers'},
   // How long a grappler takes to hop from one flight of the screw to the next (see grapplerSwitchover.js).
   adaptiveNutGrapplerSwitchoverTime: {value: 0.6, units: 's', autoMap: true, min: 0.001, max: 10, onChange: 'updateLauncher', folder: 'Grapplers'},
+  // How far ahead of or behind its ideal position the vehicle (with its sled and nut) may run, and how much
+  // its acceleration may differ from the forward acceleration to get there (a fraction of it), to bring the
+  // grapplers' flights to the middle of their travel (see grapplerSchedule.js). 0 leaves it on time.
+  adaptiveNutMaxLead: {value: 2, units: 'm', autoMap: true, min: 0, max: 100, onChange: 'updateLauncher', folder: 'Grapplers'},
+  adaptiveNutMaxLeadAcceleration: {value: 0.02, units: '', autoMap: true, min: 0, max: 0.5, onChange: 'updateLauncher', folder: 'Grapplers'},
   adaptiveNutGrapplerClearanceFactor: {value: 0.1, units: '', autoMap: true, min: 0, max: 1, step: 1, onChange: 'updateLauncher', folder: 'Grapplers'},
   adaptiveNutGrapplerBallJointClearance: {value: 0.1, units: 'm', autoMap: true, min: 0, max: 1, step: 1, onChange: 'updateLauncher', folder: 'Grapplers'},
   adaptiveNutGrapplerBallJointRadius: {value: 0.06, units: 'm', autoMap: true, min: 0, max: 1, step: 1, onChange: 'updateLauncher', folder: 'Grapplers'},

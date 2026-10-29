@@ -6,6 +6,7 @@ import { FacesGeometry } from './FacesGeometry.js'
 import * as tram from '../utils/tram.js'
 import { quaternionFromFrame } from '../curves/SuperCurves.js'
 import { MovingVirtualObject, curveFrameAtTime, hash01, parameterSignature } from './VirtualObject.js'
+import { virtualAdaptiveNut } from './AdaptiveNut.js'
 
 const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
 const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
@@ -458,7 +459,8 @@ export class virtualLaunchVehicle extends MovingVirtualObject {
   // position: model origin (tail) including offsets; centre: middle of the hull (what trackers aim at).
   frameAt(refFrame, deltaT) {
     const v = virtualLaunchVehicle
-    const f = curveFrameAtTime(refFrame.curve, deltaT, v.useT)
+    // (It runs with its nut, ahead of or behind its ideal position: see virtualAdaptiveNut.leadTime.)
+    const f = curveFrameAtTime(refFrame.curve, deltaT + virtualAdaptiveNut.leadTime(this.timeLaunched, deltaT), v.useT)
     const forward = f.forward
     const upward = f.upward
     if (upward.dot(f.point) < 0) {

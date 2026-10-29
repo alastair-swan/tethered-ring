@@ -1,86 +1,123 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { grapplerPose } from '../../src/launcher/grapplerSwitchover.js'
+import { scheduledGrapplerPose } from '../../src/launcher/grapplerSwitchover.js'
+import { GrapplerSchedule } from '../../src/launcher/grapplerSchedule.js'
 
-// A grappler whose thread phase drifts at a steady `rate` (cycles per second), sampled at time `time`.
-// engagedFrom: before this time it cannot grip (parked).
-function grappler(time, rate, { n = 8, limit = 0.04, phase0 = 0.3, engagedFrom = -Infinity } = {}) {
-  const u = (t) => phase0 + rate * (time + t)
-  const wrapped = ((u(0) % n) + n) % n
-  const frac = wrapped - Math.floor(wrapped)
-  return {
-    engageable: time >= engagedFrom,
-    engageableAt: (t) => time + t >= engagedFrom,
-    threadStarts: n,
-    rotationAwayLimit: limit,
-    phase: () => wrapped,
-    phaseAt: (t) => wrapped + rate * t,
-    alpha: 2 * Math.PI * (frac - 0.5) / n,   // following the nearest flight
+const switchoverTime = 0.6
+const holdLimit = 0.125
+
+// Grapplers whose thread phases (cycles, n flights) drift steadily: grappler i starts at phases[i] and
+// drifts at rates[i] (cycles/s); the nut's lead moves every phase by perMetre cycles/m. engagedFrom: before
+// this time none may grip.
+function schedule({ phases, rates, n = 8, perMetre = 0, end = 20, engagedFrom = 0, maxLead = 0, maxLeadAcceleration = 0, gapCost }) {
+  const phaseAt = (i, t, lead) => phases[i] + rates[i] * t + perMetre * lead
+  const sampleAt = (t, lead) => phases.map((_, i) => ({
+    phase: ((phaseAt(i, t, lead) % n) + n) % n, rate: rates[i] / n, n, engageable: t >= engagedFrom,
+  }))
+  const s = new GrapplerSchedule(sampleAt, end, { holdLimit, switchoverTime, maxLead, maxLeadAcceleration, gapCost })
+  // Grappler i as the nut sees it at `time`: its phase, and its angle following the nearest flight
+  // (with the middle of its travel at 0).
+  s.grappler = (i, time) => {
+    const u = ((phaseAt(i, time, s.leadAt(time)) % n) + n) % n
+    return { threadStarts: n, phase: () => u, alpha: 2 * Math.PI * ((u - Math.floor(u)) - 0.5) / n }
   }
+  return s
 }
 
 const dt = 1 / 60
-const sample = (rate, seconds, options, duration = 0.6) => {
+const poses = (s, i, seconds) => {
   const out = []
-  for (let t = 0; t < seconds; t += dt / 4) out.push({ t, ...grapplerPose(grappler(t, rate, options), duration) })
+  for (let t = 0; t < seconds; t += dt) out.push({ t, ...scheduledGrapplerPose(s, i, t, s.grappler(i, t), switchoverTime) })
+  return out
+}
+// Free spells between grips (s).
+const hops = (list) => {
+  const out = []
+  let from = null
+  list.forEach((p, k) => {
+    if (k > 0 && list[k - 1].attached && !p.attached) from = p.t
+    if (from !== null && p.attached) { out.push(p.t - from); from = null }
+  })
   return out
 }
 
-test('the pad moves smoothly at 60 fps: no channel jumps between frames', () => {
-  for (const rate of [0.3, 1, 2]) {
-    const poses = sample(rate, 2 / rate)
-    for (let i = 4; i < poses.length; i += 4) {
-      const a = poses[i - 4], b = poses[i]
-      for (const key of ['lift', 'raise', 'neutral']) assert.ok(Math.abs(b[key] - a[key]) < 0.25, `rate ${rate}, t ${b.t.toFixed(3)}: ${key} ${a[key]} -> ${b[key]}`)
-      // Following a flight, or moving one flight spacing (pi / 4) within the hop.
-      assert.ok(Math.abs(b.alpha - a.alpha) < 0.1, `rate ${rate}, t ${b.t.toFixed(3)}: alpha ${a.alpha} -> ${b.alpha}`)
+test('the pad moves smoothly at 60 fps, and never beyond its range of motion', () => {
+  for (const rate of [0.3, 1, 1.3]) {
+    const s = schedule({ phases: [0.3], rates: [rate], engagedFrom: 1 })
+    const list = poses(s, 0, 12)
+    assert.deepEqual(list[0], { t: 0, lift: 1, raise: 1, neutral: 1, alpha: 0, attached: false })
+    for (let k = 1; k < list.length; k++) {
+      const a = list[k - 1], b = list[k]
+      for (const key of ['lift', 'raise', 'neutral']) assert.ok(Math.abs(b[key] - a[key]) < 0.2, `rate ${rate}, t ${b.t.toFixed(3)}: ${key} ${a[key]} -> ${b[key]}`)
+      // (A hop may move the pad across its whole travel, 2 * holdLimit, in the switchover time.)
+      assert.ok(Math.abs(b.alpha - a.alpha) < 0.15, `rate ${rate}, t ${b.t.toFixed(3)}: alpha ${a.alpha} -> ${b.alpha}`)
+      assert.ok(Math.abs(b.alpha) <= 0.95 * 2 * Math.PI * holdLimit, `rate ${rate}, t ${b.t.toFixed(3)}: alpha ${b.alpha}`)
     }
+    assert.ok(list.some(p => p.attached))
   }
 })
 
-test('the movements start in order (lift, raise, untwist, move) and return in reverse, without pausing', () => {
-  const poses = sample(1, 2)
-  const firstAbove = (key, level, from = 0) => poses.findIndex((p, i) => i >= from && p[key] > level)
-  // A whole hop: the first detachment after the pad has been attached.
-  const start = poses.findIndex((p, i) => i > 0 && !p.attached && poses[i - 1].attached)
+test('the movements start in order (lift, raise, untwist) and return in reverse, without pausing', () => {
+  const list = poses(schedule({ phases: [0.3], rates: [1] }), 0, 6)
+  const start = list.findIndex((p, k) => k > 0 && !p.attached && list[k - 1].attached)
   assert.ok(start >= 0)
-  const lift = firstAbove('lift', 0.01, start), raise = firstAbove('raise', 0.01, start), untwist = firstAbove('neutral', 0.01, start)
-  assert.ok(lift <= raise && raise < untwist, `starts: lift ${lift}, raise ${raise}, untwist ${untwist}`)
-  const end = poses.findIndex((p, i) => i > start && p.attached)
-  // Twisting back finishes before lowering finishes, which finishes before the pad lands.
-  const lastAbove = (key, level) => { for (let i = end; i > start; i--) if (poses[i][key] > level) return i; return -1 }
-  assert.ok(lastAbove('neutral', 0.01) < lastAbove('raise', 0.01) && lastAbove('raise', 0.01) <= lastAbove('lift', 0.01))
-  // Something is always moving.
-  for (let i = start + 4; i < end; i += 4) {
-    const a = poses[i - 4], b = poses[i]
-    const moved = ['lift', 'raise', 'neutral', 'alpha'].some(key => Math.abs(b[key] - a[key]) > 1e-4)
-    assert.ok(moved, `still at t ${b.t.toFixed(3)}`)
+  const firstAbove = (key) => list.findIndex((p, k) => k >= start && p[key] > 0.01)
+  assert.ok(firstAbove('lift') <= firstAbove('raise') && firstAbove('raise') < firstAbove('neutral'))
+  const end = list.findIndex((p, k) => k > start && p.attached)
+  const lastAbove = (key) => { for (let k = end; k > start; k--) if (list[k][key] > 0.01) return k; return -1 }
+  assert.ok(lastAbove('neutral') < lastAbove('raise') && lastAbove('raise') <= lastAbove('lift'))
+  for (let k = start + 1; k < end; k++) {
+    assert.ok(['lift', 'raise', 'neutral', 'alpha'].some(key => Math.abs(list[k][key] - list[k - 1][key]) > 1e-4), `still at t ${list[k].t.toFixed(3)}`)
   }
 })
 
-test('a hop takes the switchover time, and stretches (without stopping) when there is more time', () => {
-  // The length of the first whole hop.
-  const detached = (rate, options) => {
-    const poses = sample(rate, 3 / rate, options)
-    const start = poses.findIndex((p, i) => i > 0 && !p.attached && poses[i - 1].attached)
-    const end = poses.findIndex((p, i) => i > start && p.attached)
-    return (end - start) * dt / 4
-  }
-  // With full range (n L = 0.5) the grappler is out of range only at the boundary: the hop is 0.6 s.
-  assert.ok(Math.abs(detached(0.5, { limit: 0.0625 }) - 0.6) < 0.03)
-  // With less range the free time is longer, and the hop fills it.
-  assert.ok(detached(0.5, { limit: 0.03 }) > 0.6)
+test('a grappler keeps its flight across its whole range, and every hop takes the switchover time', () => {
+  const rate = 0.5
+  const s = schedule({ phases: [0.5], rates: [rate] })
+  s.extendTo(20)
+  // Full range: n * holdLimit = 1 cycle either side, less the margins.
+  const grips = s.grips[0].filter(g => g.end !== Infinity).slice(1)
+  for (const g of grips) assert.ok(g.end - g.start > 1.5 / rate, `grip ${g.start}..${g.end}`)
+  for (const h of hops(poses(s, 0, 20))) assert.ok(h >= switchoverTime - 1e-6, `hop of ${h} s`)
 })
 
-test('parking and unparking are smooth too', () => {
-  const poses = sample(0.2, 3, { engagedFrom: 1 })
-  assert.deepEqual(poses[0], { t: 0, lift: 1, raise: 1, neutral: 1, alpha: 0, attached: false })
-  for (let i = 4; i < poses.length; i += 4) {
-    const a = poses[i - 4], b = poses[i]
-    for (const key of ['lift', 'raise', 'neutral']) assert.ok(Math.abs(b[key] - a[key]) < 0.25, `t ${b.t.toFixed(3)}: ${key}`)
-    assert.ok(Math.abs(b.alpha - a.alpha) < 0.1, `t ${b.t.toFixed(3)}: alpha ${a.alpha} -> ${b.alpha}`)
+test('neighbours near the end of their travel let go together', () => {
+  // Two grapplers a little apart on the same flight: the second joins the first's hop.
+  const s = schedule({ phases: [0.5, 0.35], rates: [-0.5, -0.5] })
+  s.extendTo(10)
+  const [a, b] = s.grips
+  assert.ok(Math.abs(a[0].end - b[0].end) < 1e-9, `${a[0].end} vs ${b[0].end}`)
+})
+
+test('the lead stays within its limits, is back to none at the end, and does not cost grip time', () => {
+  // Every grappler drifting the same way: the lead can follow them for a while.
+  const options = { phases: [0.4, 0.5, 0.6, 0.5], rates: [0.25, 0.25, 0.25, 0.25], perMetre: 0.5, end: 30 }
+  const without = schedule(options)
+  const withLead = schedule({ ...options, maxLead: 2, maxLeadAcceleration: 0.2 })
+  without.extendTo(30)
+  withLead.extendTo(30)
+  const gripping = (s) => s.grips.flat().reduce((sum, g) => sum + Math.min(g.end, 30) - g.start, 0)
+  assert.ok(gripping(withLead) >= gripping(without), `${gripping(withLead)} s gripping with the lead, ${gripping(without)} without`)
+  let previous = 0, previousRate = 0
+  for (let t = 0; t <= 30; t += 0.01) {
+    const lead = withLead.leadAt(t)
+    // (It may overshoot by a hair as it settles.)
+    assert.ok(Math.abs(lead) <= 2 + 1e-3, `lead ${lead} at ${t}`)
+    const rate = (lead - previous) / 0.01
+    if (t > 0.02) assert.ok(Math.abs(rate - previousRate) / 0.01 < 0.2 * 1.5, `acceleration at ${t}`)
+    previous = lead
+    previousRate = rate
   }
-  // It lands on a flight as soon as it may grip (and is in range).
-  const landed = poses.find(p => p.attached)
-  assert.ok(landed && landed.t >= 1 && landed.t < 1.4, `landed at ${landed?.t}`)
+  assert.equal(withLead.leadAt(30), 0)
+  assert.ok(Math.abs(withLead.leadAt(29.9)) < 0.01)
+})
+
+test('flights keep their angles when the screw adds flights', () => {
+  const grip = { flight: 5, n: 4, renumbered: [{ time: 2, flight: 2, n: 2 }] }
+  assert.equal(GrapplerSchedule.flightAt(grip, 1), 2)
+  assert.equal(GrapplerSchedule.flightAt(grip, 3), 5)
+  // Flight m of n is at phase m + 0.5: flight 2 of 2 is at 2.5 / 2 of a turn, as flight 5 of 4 (5.5 / 4)...
+  assert.equal(GrapplerSchedule.flightAt(grip, 1, 4), 5)
+  // ...and flight 5 of 4 is where flight 2 of 2 is.
+  assert.equal(GrapplerSchedule.flightAt(grip, 3, 2), 2)
 })
