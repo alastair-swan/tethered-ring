@@ -1,14 +1,11 @@
 # Changes on the 2026-claude-refactor branch
 
-Changes since the branch left `main`, in its final state (later work that replaced earlier work is described once). Features first, then bug fixes.
+Changes since the branch left `2025changes`, in its final state (later work that replaced earlier work is described once). Features first, then bug fixes.
 
 ## Features
 
 ### Planet and terrain
-- New cubed-sphere planet renderer streaming KTX2 terrain/imagery tiles from `assets/<body>/manifest.json`, baked by the Python pipeline in `tools/`; it is now the only planet renderer.
-- High-resolution enhancement layers for Hawaii (Big Island) and Chimborazo, plus Moon terrain assets; lunar launch shots set up.
-- Planet assets are tracked in Git LFS, pulled from Cloudflare R2 with read-only credentials in `.lfsconfig`.
-- CDLOD edge morphing between terrain detail levels.
+- `planet2.js` is now `CubedSpherePlanetRenderer.js`, the only planet renderer; the legacy `planet.js` and `EllipsoidGeometry` are removed.
 - Planet API (`Planet.js`): visibility, opacity, double-siding, displacement scale, `sampleTerrainHeight`, raycast; flat colour for bodies without assets.
 - Terrain LOD refines by on-screen texel size (was half a tile), cutting a full-globe view from ~3,000 tiles to a few hundred.
 - Tile skirts hide cracks between tiles at different detail levels (hidden while the camera is underground).
@@ -47,7 +44,6 @@ Changes since the branch left `main`, in its final state (later work that replac
 - Adaptive-nut grapplers batched into two `BatchedMesh`es; mass-driver brackets and distant screw cylinders drawn instanced.
 - Distant tube segments drawn as 1 px lines, so Big Island uses its real tube size.
 - Launches, grapplers and shockwaves are derived from simulated time (deterministic) on a shared virtual-object pooling base.
-- Crew capsules on the transit system; new presets (underwater launcher, A-to-B launcher architecture, variable-speed screw, Moon launches).
 
 ### Transit system
 - Ring segments drawn instanced; vehicles, cars and terminuses from model pools with deterministic, physically based motion.
@@ -97,4 +93,3 @@ Changes since the branch left `main`, in its final state (later work that replac
 - Presets with missing background images no longer abort start-up.
 - Simulated time now advances during live takes (vehicles stood still).
 - The app starts in current Chrome (JSON import assertion) and builds on case-sensitive file systems (`./Tram.js`).
-- Navigation bug fixed; capture no longer starts automatically.
