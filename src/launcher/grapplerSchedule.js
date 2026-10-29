@@ -18,6 +18,16 @@
 //   would leave few gripping. Instead every STEP the schedule finds the fewest hops at a time that meets
 //   every deadline, plans each hop as late as that allows (so a run moves over one after another, a few at
 //   a time, from the end nearest its deadline, a little early where need be), and starts those due now.
+// - Which half of its travel each uses. A hop moves a grappler one flight spacing whenever it happens
+//   (unless it waits to skip a flight, which only pays where the flights drift fast: at low speed), so a
+//   grappler hopping at the end of its travel uses the half of it behind the middle (as it drifts), and one
+//   hopping as soon as it can (just past the middle, landing at the far end) uses the half ahead. The
+//   front and back of the nut drift opposite ways (the screw's pitch matches the nut's speed at one point
+//   along it), so hopping at the end of their travel they would use opposite halves of it, and where they
+// meet a short run of grapplers would be left on a flight of its own: two gaps more. So where gaps cost
+//   more (gapCost at least ARRANGED_GAP_COST), those drifting to lower phases hop early (a few at a time,
+//   besides the hops planned by their deadlines), and all use the same half: the one towards higher
+//   phases.
 // - Landing. Once a hop has had its full time, the grappler takes (or waits a moment for) the flight
 //   that keeps it gripping for the most of the time, then the one the most of its gripping neighbours
 //   grip. (How many gaps there are is mostly
@@ -45,6 +55,8 @@ const MARGIN = 0.05
 const OVERSHOOT = 0.2
 const HYSTERESIS = 0.1
 const MIN_GRIP = 0.1
+const ARRANGED_GAP_COST = 2
+const REARRANGING_AT_ONCE = 2
 const HORIZON = 0.6
 const CANDIDATES = 15
 const SENSITIVITY_STEP = 1e-3   // (m)
@@ -101,6 +113,8 @@ export class GrapplerSchedule {
     this._lead = 0
     this._leadRate = 0
     this._sensitivity = null   // per grappler: how its phase changes with the lead (cycles/m)
+    this._now = 0
+    this._rearranging = []     // when each hop moving a grappler to its target sooner (see dueHops) is done
     this.extend()
   }
 
@@ -195,33 +209,50 @@ export class GrapplerSchedule {
     return best !== null && bestWait === 0 ? best : null
   }
 
-  // Which of the gripping grapplers (jobs: { deadline, earliest } s from now: when it must let go, and
-  // when it may first hop) to let go now: with the fewest hopping at a time (counting those hopping now,
-  // free again `busy` s from now) that lets every hop that can meet its deadline do so, each as late as
-  // that allows. Returns the jobs to start.
+  // Which of the gripping grapplers (jobs: { deadline, earliest, target } s from now: when it must let
+  // go, when it may first hop, and when it would best hop) to let go now: with the fewest hopping at a
+  // time (counting those hopping now, free again `busy` s from now) that lets every hop that can meet its
+  // deadline do so, each as late as that allows; and besides, a few at a time, those that have reached
+  // their targets sooner. Returns the jobs to start.
   dueHops(jobs, busy) {
     const S = this.switchoverTime
     const possible = jobs.filter(j => j.earliest <= j.deadline)
-    const byDeadline = [...possible].sort((a, b) => b.deadline - a.deadline)
-    const plan = (k) => {
-      // As late as possible, latest deadlines first, each in the slot free latest.
+    const from = (k) => {
+      const free = new Array(k).fill(0)                   // when each slot is first free
+      busy.slice(0, k).forEach((t, slot) => { free[slot] = t })
+      return free
+    }
+    // As late as possible by the deadlines: latest first, each in the slot free latest.
+    const latest = (k) => {
+      const order = [...possible].sort((a, b) => b.deadline - a.deadline)
       const until = new Array(k).fill(Infinity)          // when each slot is next taken
-      const from = new Array(k).fill(0)                   // when each slot is first free
-      busy.slice(0, k).forEach((t, slot) => { from[slot] = t })
-      for (const job of byDeadline) {
+      const free = from(k)
+      for (const job of order) {
         let slot = 0
         for (let j = 1; j < k; j++) if (until[j] > until[slot]) slot = j
         const start = Math.min(job.deadline, until[slot] - S)
         // (Up to a step late is fine: it starts now.)
-        if (start < Math.max(job.earliest, from[slot]) - STEP) return false
+        if (start < Math.max(job.earliest, free[slot]) - STEP) return false
         job.start = start
         until[slot] = start
       }
       return true
     }
     let k = Math.max(1, busy.length)
-    while (k < busy.length + possible.length && !plan(k)) k++
-    if (k >= busy.length + possible.length) plan(k)
+    while (k < busy.length + possible.length && !latest(k)) k++
+    if (k >= busy.length + possible.length) latest(k)
+    // Hops that have reached their targets (to rearrange) may also go sooner than planned: in slots with
+    // nothing planned for a hop's time, or in one more slot. (Taking a hop out of the plan only leaves the
+    // rest more room.)
+    const ready = possible.filter(j => j.target < j.start - STEP && Math.max(j.earliest, j.target) < STEP)
+      .sort((a, b) => a.deadline - b.deadline)
+    // (No more than REARRANGING_AT_ONCE such hops at a time.)
+    this._rearranging = this._rearranging.filter(until => until > this._now + 1e-9)
+    const idle = Math.max(0, k - busy.filter(t => t > STEP).length - possible.filter(j => j.start < S).length) + 1
+    for (const job of ready.slice(0, Math.min(idle, REARRANGING_AT_ONCE - this._rearranging.length))) {
+      job.start = 0
+      this._rearranging.push(this._now + S)
+    }
     // Due now: planned to start before the next step (or it would be late then), and those that can no
     // longer make it.
     return jobs.filter(j => j.earliest > j.deadline ? j.deadline <= STEP : j.start < STEP)
@@ -255,6 +286,7 @@ export class GrapplerSchedule {
       return scaled + wrap(s.phase - scaled, n)
     })
     const S = this.switchoverTime
+    this._now = time
     const state = samples.map((s, i) => {
       this.phase[i].push(phases[i])
       this.starts[i].push(s.n)
@@ -265,7 +297,7 @@ export class GrapplerSchedule {
       // How far along its travel it is, the way it drifts (cycles; it must let go beyond reach).
       const ahead = current ? (drift >= 0 ? 1 : -1) * (phases[i] - current.flight - 0.5) : 0
       const can = this.canGrip(i, s, time)
-      return { s, can, reach, current, ahead, speed, letGo: Boolean(current) && (!can || ahead > reach) }
+      return { s, can, reach, current, ahead, speed, drift, letGo: Boolean(current) && (!can || ahead > reach) }
     })
     // Hops: those that must let go now, and those due now in the plan for the rest.
     const busy = []
@@ -274,11 +306,17 @@ export class GrapplerSchedule {
       else if (!g.current && this.freeUntil[i] > time + 1e-9) busy.push(this.freeUntil[i] - time)
     })
     const jobs = []
+    const arranged = this.gapCost(time) >= ARRANGED_GAP_COST
     state.forEach((g, i) => {
       if (!g.current || g.letGo) return
       const take = g.reach - HYSTERESIS
       // It may land on the next flight (one cycle on) once that is within `take` a hop later.
-      jobs.push({ i, deadline: (g.reach - g.ahead) / g.speed, earliest: Math.max(0, (1 - take - g.speed * S - g.ahead) / g.speed) })
+      const earliest = Math.max(0, (1 - take - g.speed * S - g.ahead) / g.speed)
+      // Hopping early puts it in the half of its travel ahead (as it drifts), late, the half behind: so
+      // that all use the same half (the one towards higher phases), those drifting to lower phases hop
+      // early.
+      const early = arranged && g.drift < 0
+      jobs.push({ i, deadline: (g.reach - g.ahead) / g.speed, earliest, target: early ? earliest : Infinity })
     })
     busy.sort((a, b) => a - b)
     for (const job of this.dueHops(jobs, busy)) state[job.i].letGo = true

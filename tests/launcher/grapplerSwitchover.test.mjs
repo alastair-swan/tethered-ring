@@ -98,6 +98,31 @@ test('a run of neighbours reaching the end of their travel together moves over a
   }
 })
 
+test('where gaps cost more, grapplers drifting opposite ways use the same half of their travel', () => {
+  // A nut whose phases fall 0.12 cycles per grappler along it, drifting one way at its front and the other
+  // at its back (changing over a third of the way along, not in the middle).
+  const count = 24
+  const phases = Array.from({ length: count }, (_, i) => 3 - 0.12 * i)
+  const rates = Array.from({ length: count }, (_, i) => 0.03 * (i - count / 3) / (count / 2))
+  // Where the gripping grapplers drifting to lower phases are in their travel (cycles from the middle).
+  const offsets = (s, t) => {
+    const out = []
+    for (let i = 0; i < count; i++) {
+      const g = s.grips[i][s.gripIndexAt(i, t)]
+      if (rates[i] < 0 && g && t < g.end) out.push(s.phaseAt(i, t) - g.flight - 0.5)
+    }
+    return out
+  }
+  const lowest = (s) => Math.min(...[60, 70, 80, 90].flatMap(t => offsets(s, t)))
+  // By default they use the half of their travel behind the middle, as they drift (towards lower phases):
+  // the other half from those drifting the other way.
+  assert.ok(lowest(schedule({ phases, rates, end: 100 })) < -0.5)
+  // Where gaps cost more, they hop early (as soon as the next flight is within reach) and use the half
+  // towards higher phases, as those drifting the other way do.
+  const arranged = schedule({ phases, rates, end: 100, gapCost: () => 10 })
+  assert.ok(lowest(arranged) > -0.3, `as low as ${lowest(arranged)}`)
+})
+
 test('the lead stays within its limits, is back to none at the end, and does not cost grip time', () => {
   // Every grappler drifting the same way: the lead can follow them for a while.
   const options = { phases: [0.4, 0.5, 0.6, 0.5], rates: [0.25, 0.25, 0.25, 0.25], perMetre: 0.5, end: 30 }
