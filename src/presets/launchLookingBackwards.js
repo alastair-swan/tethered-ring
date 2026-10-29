@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { actualSizeDollyShot } from './actualSizeDollyShot.js'
 import { toMarsFromEarthLauncherArchitecture } from './toAFromBLauncherArchitecture.js'
+import { planetSetup } from './planetSetup.js'
 
 export function launchLookingBackwards(guidParamWithUnits, nonGUIParams) {
 
@@ -26,11 +27,8 @@ export function launchLookingBackwards(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['adaptiveNutGrapplerMagnetThickness'].value = 0.06  // m
 
   // Hawaii
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==1) && (j==4)) ||
-    ((i==2) && (j==4)) ||
-    ((i==3) && (j==4))
-  )} 
+  // The Big Island's high-resolution bake (see planetSetup.js).
+  planetSetup(nonGUIParams, { assets: ['earth', 'hawaii'] })
 
   actualSizeDollyShot(guidParamWithUnits, nonGUIParams)
   guidParamWithUnits['showStars'].value = true

@@ -3,6 +3,7 @@ import { actualSizeDollyShot } from './actualSizeDollyShot.js'
 import { showMassDriver } from "./cameraShotHelperFunctions.js"
 import * as tram from '../utils/tram.js'
 import { toMarsFromEarthLauncherArchitecture } from './toMarsFromEarthLauncherArchitecture.js'
+import { planetSetup } from './planetSetup.js'
 
 export function toLowOrbitFromEarth(guidParamWithUnits, nonGUIParams) {
 
@@ -100,11 +101,8 @@ export function toLowOrbitFromEarth(guidParamWithUnits, nonGUIParams) {
   // nonGUIParams['cameraUp'] = new THREE.Vector3(0.8819834230776509, 0.46865418712915813, 0.04968394411213295)  
 
   // Hawaii Big Island
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==1) && (j==4)) ||
-    ((i==2) && (j==4)) ||
-    ((i==3) && (j==4))
-  )} 
+  // The Big Island's high-resolution bake (see planetSetup.js).
+  planetSetup(nonGUIParams, { assets: ['earth', 'hawaii'] })
 
   // nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(0, 0, 0)
   // nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(0, 1, 0)

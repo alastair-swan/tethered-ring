@@ -40,7 +40,7 @@ tests/                node --test unit tests and standalone test pages
 
 1. **Parameters.** `ParameterStore` is created from `createParameterDefinitions()`, then the preset (`?preset=` or the default) runs. A preset edits parameter values and fills `nonGUIParams`, which hold construction-time options such as camera placement, terrain asset sets, lighting and shadows.
 2. **Renderer and base scene.** The renderer uses a logarithmic depth buffer. The scene contains `planetCoordSys`, which holds everything fixed to the planet, plus the camera group, lighting, the sky pass and the overlays.
-3. **Planet.** `Planet` streams `assets/<name>/` tile sets. The defaults come from the planet's name; a preset can override them.
+3. **Planet.** `Planet` streams `assets/<name>/` tile sets. The defaults come from the planet's name: the global set (`earth`, `moon`). A preset adds regional high-resolution bakes as overlays with `planetSetup` (`src/presets/planetSetup.js`), which also sets the larger streaming budgets they need, the areas to load first, and the imagery attribution. The regional bakes are `hawaii` and `chimborazo` on Earth, and `moon_tranquillitatis` and `moon_korolev` on the Moon.
 4. **Ring.** `RingAssembly` builds one `tetheredRingSystem` per ring spec, plus its tethers and markers.
 5. **Transit system and launcher.** Both are built against the primary ring's curve.
 6. **Camera.** `CameraController` places the camera from the preset options.

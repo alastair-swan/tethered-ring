@@ -208,116 +208,74 @@ export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
   // nonGUIParams['cameraUp'] = new THREE.Vector3(0.8819834230776509, 0.46865418712915813, 0.04968394411213295)  
 
   // Hawaii Big Island
-  const useNewPlanetCode = true
-  if (!useNewPlanetCode) {
-    nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-      ((i==1) && (j==4)) ||
-      ((i==2) && (j==4)) ||
-      ((i==3) && (j==4))
-    )}
-    
-    nonGUIParams['useXHREarthTexture'] = true
-    nonGUIParams['getCapturePresetRegionsXHRTexture'] = (i, j) => { return (
-      ((i==1) && (j==4))
-    )}
-    nonGUIParams['getXHREarthTextureFilename'] = (i, j, w, h, colorFormat) => {
-      if ((i==1) && (j==4)) return './textures/24x12/XHR/earth_XHR_24x12_1x4.jpg'
-      return null
+
+  // Ordered asset stack: base globe first, then overlay assets in order.
+  // nonGUIParams['planet2Assets'] = ['earth_lodvis']
+  // nonGUIParams['planet2Assets'] = ['earth']
+  // nonGUIParams['planet2Assets'] = ['hawaii_lodvis']
+  // nonGUIParams['planet2Assets'] = ['earth_lodvis', 'hawaii_lodvis']
+  nonGUIParams['planet2Assets'] = ['hawaii']
+  // nonGUIParams['planet2Assets'] = ['earth', 'hawaii']
+  // nonGUIParams['planet2Assets'] = ['chimborazo_lodvis']
+  // nonGUIParams['planet2Assets'] = ['earth_lodvis', 'chimborazo_lodvis']
+  //nonGUIParams['planet2Assets'] = ['earth', 'chimborazo']
+  nonGUIParams['planet2RequireKtx2'] = false
+  nonGUIParams['planet2StartupChart'] = true
+  nonGUIParams['imageryAttribution'] =
+    'EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH ' +
+    '(Contains modified Copernicus Sentinel data 2024)'
+
+  // Bright reference marker centered 200 m above Chimborazo's 6,263 m summit.
+  nonGUIParams['debugGeodeticMarkers'] = [
+    {
+      name: 'Chimborazo peak',
+      lat: -1.4693,
+      lon: -78.8171,
+      altitude: 6263,
+      radius: 100,
+      color: 0xff00ff
+    },
+    {
+      name: 'Mauna Kea peak',
+      lat: 19.8207,
+      lon: -155.4680,
+      altitude: 10405,
+      radius: 5000,
+      color: 0x00ffff
     }
+  ]
 
-    nonGUIParams['useXHREarthDisplacement'] = true
-    nonGUIParams['getCapturePresetRegionsXHRDisplacement'] = (i, j) => { return (
-      ((i==1) && (j==4))
-    )}
-    nonGUIParams['getXHREarthDisplacementFilename'] = (i, j, w, h, displacementFormat) => {
-      if ((i==1) && (j==4)) {
-        return './textures/DisplacementMaps/XHREarthDisplacement/earth_XHR_24x12_1x4.png'
-      }
-      return null
+  // Keep base LOD responsive while still allowing detail refinement.
+  nonGUIParams['tileSegments'] = 24
+  nonGUIParams['maxConcurrentTileLoads'] = 16
+  // The full-island high-res bake keeps ~450-550 tiles resident when the whole
+  // Big Island is in view (300 at LOD10 + 85 at LOD9 + ancestors + other faces).
+  // A 320-tile budget forced the LRU to evict island tiles that were needed again
+  // the next frame, so the island appeared to keep erasing and regenerating.
+  // Tiles are small (LOD10 = 256px ~= 0.35 MB), so a larger resident budget
+  // helps the enhancement layer fill in faster without immediately churning.
+  nonGUIParams['maxCachedTiles'] = 2200
+  nonGUIParams['maxTileGpuBytes'] = 1536 * 1024 * 1024
+  nonGUIParams['maxAvailableTileLod'] = 11
+
+  // Prioritize the selected launch region and its surrounding enhancement cone.
+  // This must follow launcherRampEndLatitude/Longitude: leaving the old Hawaii
+  // coordinates here starved Chimborazo's newly-added western LOD descendants.
+  nonGUIParams['locationInterests'] = [
+    {
+      name: 'Selected launch region',
+      lat: launcherRampEndLatitude,
+      lon: launcherRampEndLongitude,
+      radiusKm: 260,
+      lodBoost: 2
     }
-    nonGUIParams['getCapturePresetXHRDisplacementGeometryMultiplier'] = (i, j) => {
-      if ((i==1) && (j==4)) {
-        return 8
-      }
-      return 1
-    }
-  }
-  else {
-    // New Planet2 code
-    nonGUIParams['usePlanet2'] = true
+  ]
 
-    // Disable legacy per-patch XHR toggles when Planet2 quadtree tiling is active.
-    nonGUIParams['useXHREarthTexture'] = false
-    nonGUIParams['useXHREarthDisplacement'] = false
+  nonGUIParams['planet2ForceHighResDebug'] = true
+  nonGUIParams['planet2DisplacementScaleMultiplier'] = 1
 
-    // Ordered asset stack: base globe first, then overlay assets in order.
-    // nonGUIParams['planet2Assets'] = ['earth_lodvis']
-    // nonGUIParams['planet2Assets'] = ['earth']
-    // nonGUIParams['planet2Assets'] = ['hawaii_lodvis']
-    // nonGUIParams['planet2Assets'] = ['earth_lodvis', 'hawaii_lodvis']
-    nonGUIParams['planet2Assets'] = ['hawaii']
-    // nonGUIParams['planet2Assets'] = ['earth', 'hawaii']
-    // nonGUIParams['planet2Assets'] = ['chimborazo_lodvis']
-    // nonGUIParams['planet2Assets'] = ['earth_lodvis', 'chimborazo_lodvis']
-    //nonGUIParams['planet2Assets'] = ['earth', 'chimborazo']
-    nonGUIParams['planet2RequireKtx2'] = false
-    nonGUIParams['planet2StartupChart'] = true
-    nonGUIParams['imageryAttribution'] =
-      'EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH ' +
-      '(Contains modified Copernicus Sentinel data 2024)'
-
-    // Bright reference marker centered 200 m above Chimborazo's 6,263 m summit.
-    nonGUIParams['debugGeodeticMarkers'] = [
-      {
-        name: 'Chimborazo peak',
-        lat: -1.4693,
-        lon: -78.8171,
-        altitude: 6263,
-        radius: 100,
-        color: 0xff00ff
-      },
-      {
-        name: 'Mauna Kea peak',
-        lat: 19.8207,
-        lon: -155.4680,
-        altitude: 10405,
-        radius: 5000,
-        color: 0x00ffff
-      }
-    ]
-
-    // Keep base LOD responsive while still allowing detail refinement.
-    nonGUIParams['tileSegments'] = 24
-    nonGUIParams['maxConcurrentTileLoads'] = 16
-    // The full-island high-res bake keeps ~450-550 tiles resident when the whole
-    // Big Island is in view (300 at LOD10 + 85 at LOD9 + ancestors + other faces).
-    // A 320-tile budget forced the LRU to evict island tiles that were needed again
-    // the next frame, so the island appeared to keep erasing and regenerating.
-    // Tiles are small (LOD10 = 256px ~= 0.35 MB), so a larger resident budget
-    // helps the enhancement layer fill in faster without immediately churning.
-    nonGUIParams['maxCachedTiles'] = 2200
-    nonGUIParams['maxTileGpuBytes'] = 1536 * 1024 * 1024
-    nonGUIParams['maxAvailableTileLod'] = 11
-
-    // Prioritize the selected launch region and its surrounding enhancement cone.
-    // This must follow launcherRampEndLatitude/Longitude: leaving the old Hawaii
-    // coordinates here starved Chimborazo's newly-added western LOD descendants.
-    nonGUIParams['locationInterests'] = [
-      {
-        name: 'Selected launch region',
-        lat: launcherRampEndLatitude,
-        lon: launcherRampEndLongitude,
-        radiusKm: 260,
-        lodBoost: 2
-      }
-    ]
-
-    nonGUIParams['planet2ForceHighResDebug'] = true
-    nonGUIParams['planet2DisplacementScaleMultiplier'] = 1
-
-    // Optional: set to 'none', 'tileBorders', 'lodLevel', 'tilePriority', 'terrainRoughness', 'landWaterFraction', or 'loadingState'.
-    nonGUIParams['planet2DebugMode'] = 'none'
-  }
+  // Optional: set to 'none', 'tileBorders', 'lodLevel', 'tilePriority', 'terrainRoughness', 'landWaterFraction', or 'loadingState'.
+  nonGUIParams['planet2DebugMode'] = 'none'
 
   // nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(0, 0, 0)
   // nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(0, 1, 0)

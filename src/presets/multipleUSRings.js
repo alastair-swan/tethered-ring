@@ -69,18 +69,6 @@ export function multipleUSRings(guidParamWithUnits, nonGUIParams) {
     nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-7095472.177860912, 6454902.16853429, -537481.9822720655)
     nonGUIParams['cameraUp'] = new THREE.Vector3(0, 1, 0)
 
-    // nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    //   ((i==3) && (j==2)) ||  // Seattle??
-    //   ((i==4) && (j==2)) ||  // Seattle??
-    //   ((i==1) && (j==4)))} // Hawaii??
-
-    // nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    //   ((i==3) && (j==3)) ||  // California
-    //   ((i==4) && (j==3)) ||  // 
-    //   ((i==5) && (j==3)) ||  // 
-    //   ((i==6) && (j==3)) ||  // East Coast
-    //   ((i==1) && (j==4)))} // Hawaii??
-      
     nonGUIParams['overrideOrbitControlsUpDirection'] = true
     const coordinates = [{lat: -36.9, lon: 269.64, eqLat: 10},
                         {lat: -9, lon: 275, eqLat: 37},

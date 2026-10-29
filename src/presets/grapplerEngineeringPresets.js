@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { planetSetup } from './planetSetup.js'
 
 export function grapplerEngineeringPresets(guidParamWithUnits, nonGUIParams) {
   // Uses Monna Kea launch location
@@ -158,10 +159,8 @@ export function grapplerEngineeringPresets(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-2152518.030219181, 2118889.906518018, -5617699.491232116)
   nonGUIParams['cameraUp'] = new THREE.Vector3(-0.3374807371345877, 0.3322092361166716, -0.880763177875797)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    true
-    //((i==1) && (j==4)) // Hawaii??
-  )} 
+  // The Big Island's high-resolution bake (see planetSetup.js).
+  planetSetup(nonGUIParams, { assets: ['earth', 'hawaii'] })
 
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 1

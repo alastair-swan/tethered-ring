@@ -92,8 +92,4 @@ export function edwardsAirforceBasePresets(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-2091.077505604364, 1532.219485245645, -514.2026279103011)
   nonGUIParams['cameraUp'] = new THREE.Vector3(-0.7247731808452249, 0.5728030388844629, -0.3828844668724749)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==4) && (j==3))
-  )} 
-
 }

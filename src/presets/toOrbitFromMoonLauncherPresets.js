@@ -80,7 +80,6 @@ export function toOrbitFromMoonLauncherPresets(guidParamWithUnits, nonGUIParams)
   guidParamWithUnits['showMarkers'].value = false
   guidParamWithUnits['showLogo'].value = false
 
-  nonGUIParams['usePlanet2'] = true
   nonGUIParams['planet2Assets'] = ['moon', 'moon_tranquillitatis']
   nonGUIParams['planet2RequireKtx2'] = false
   nonGUIParams['planet2TextureAnisotropy'] = 16
@@ -108,8 +107,6 @@ export function toOrbitFromMoonLauncherPresets(guidParamWithUnits, nonGUIParams)
   nonGUIParams['ambientLightIntensity'] = 0.2
   nonGUIParams['imageryAttribution'] =
     'NASA Scientific Visualization Studio; LRO LROC/LOLA'
-  nonGUIParams['useXHREarthTexture'] = false
-  nonGUIParams['useXHREarthDisplacement'] = false
   nonGUIParams['locationInterests'] = [
     { name: 'Mare Tranquillitatis mass driver', lat: launcherRampEndLatitude,
       lon: launcherRampEndLongitude, radiusKm: 120, lodBoost: 2 }

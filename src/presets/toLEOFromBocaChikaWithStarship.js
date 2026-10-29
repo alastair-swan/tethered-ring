@@ -99,10 +99,6 @@ export function toLEOFromBocaChikaWithStarship(guidParamWithUnits, nonGUIParams)
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-5692774.255240464, 2776212.1597679034, -721284.2381164293)
   nonGUIParams['cameraUp'] = new THREE.Vector3(-0.8930025235698165, 0.43586569390757035, -0.11210526201928114)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==5) && (j==4)) // Boca Chica
-  )} 
-
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 100
   nonGUIParams['farClip'] = 1000000000

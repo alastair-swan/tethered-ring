@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { myFormat } from '../utils/tram.js'
+import { planetSetup } from './planetSetup.js'
 
 export function variableSpeedScrew(guidParamWithUnits, nonGUIParams) {
   
@@ -161,11 +162,8 @@ export function variableSpeedScrew(guidParamWithUnits, nonGUIParams) {
   }
 
   // Hawaii Big Island
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==1) && (j==4)) ||
-    ((i==2) && (j==4)) ||
-    ((i==3) && (j==4))
-  )} 
+  // The Big Island's high-resolution bake (see planetSetup.js).
+  planetSetup(nonGUIParams, { assets: ['earth', 'hawaii'] })
 
   nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(-2485252.833291091, 2139838.026337634, -5469810.453140184)
   nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(-0.3896218876085459, 0.33561868621277463, -0.8576449627679072)

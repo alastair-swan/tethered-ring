@@ -291,11 +291,6 @@ export function demonstratorLauncher(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(3135518.9083639537, -337778.6054954792, 5545028.673918708)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0.49152977615811055, -0.052951541850092265, 0.8692494540496736)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==13) && (j==6)) || // Mount Kilimanjaro
-    ((i==14) && (j==6)) // Mount Kilimanjaro
-  )} 
-
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 1
   nonGUIParams['farClip'] = 10000000

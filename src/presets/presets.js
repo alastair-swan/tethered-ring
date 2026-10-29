@@ -21,6 +21,7 @@ import { multipleUSRings } from './multipleUSRings.js'
 import { toOrbitFromMoonLauncherPresets } from './toOrbitFromMoonLauncherPresets.js'
 import { variableSpeedScrew } from './variableSpeedScrew.js'
 import { launcherSystemUnderwater } from './launcherSystemUnderwater.js'
+import { planetSetup } from './planetSetup.js'
 
 
 export const DEFAULT_PRESET_ID = 'default'
@@ -88,13 +89,6 @@ function defaultBehaviour(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(0, 1, 0)
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(2.92909490611565e-9, 1.464547453057825e-9, -23917875)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0, 1, 0)
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => {return (
-    ((i==3) && (j==2)) ||
-    ((i==1) && (j==4)) ||
-    ((i==18) && (j==3)) ||
-    ((i==18) && (j==4)) ||
-    ((i==23) && (j==8))  // New Zealand North Island
-  )}
   nonGUIParams['overrideClipPlanes'] = false
   nonGUIParams['nearClip'] = 0.1
   nonGUIParams['farClip'] = 600000000
@@ -196,13 +190,6 @@ function launchVehicleOrbit(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(98.94242870318703, -63.433976754080504, -84.42750348616391)
   nonGUIParams['cameraUp'] = new THREE.Vector3(-0.2672085688689862, 0.33374015320741873, -0.9040006033516111)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => {return (
-    // ((i==1) && (j==4))
-    ((i==23) && (j==8)) ||
-    ((i==0) && (j==8)) ||
-    ((i==1) && (j==4))
-  )} // New Zealand North Island and ocean to the east and west
-  //nonGUIParams['getCapturePresetRegions'] = (i, j) => {return true}
   // nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 100
   nonGUIParams['farClip'] = 1000000000
@@ -299,11 +286,6 @@ function launchVehiclePanShot(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(3647968.337570933, -2167679.903115839, -4762759.525260652)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0.5720072159420826, -0.33968735795396227, -0.7466058155120708)
   
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==21) && (j==7)) ||
-    ((i==22) && (j==7)) ||
-    ((i==23) && (j==8)) ||
-    ((i==0) && (j==8)))} // New Zealand North Island and ocean to the east
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 1
   nonGUIParams['farClip'] = 10000000
@@ -387,10 +369,6 @@ function transitVehicleDollyShotWashington(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-3725506.7143735993, 4709667.556950768, -2242269.015923921)
   nonGUIParams['cameraUp'] = new THREE.Vector3(-0.5810279609523532, 0.7347880213825453, -0.3499901030376074)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    (i==3) && (j==2) // Washington
-  )}
-
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 10
   nonGUIParams['farClip'] = 100000000
@@ -460,12 +438,6 @@ function transitVehicleDollyShotAustralia(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(0.6012689149188755, -0.2916173650948143, -0.7439321234678846)
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(3854225.933371469, -1869011.7999721793, -4768741.209966059)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0.6012689149188755, -0.2916173650948143, -0.7439321234678846)
-
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==21) && (j==7)) ||
-    ((i==22) && (j==7)) ||
-    ((i==23) && (j==8)) ||
-    ((i==0) && (j==8)))} // New Zealand North Island and ocean to the east
 
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 1
@@ -561,12 +533,6 @@ function launchVehiclePanShotInSpace(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(3647968.337570933, -2167679.903115839, -4762759.525260652)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0.5720072159420826, -0.33968735795396227, -0.7466058155120708)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==21) && (j==7)) ||
-    ((i==22) && (j==7)) ||
-    ((i==23) && (j==8)) ||
-    ((i==0) && (j==8)))} // New Zealand North Island and ocean to the east
-  
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 10
   nonGUIParams['farClip'] = 10000000000
@@ -641,11 +607,6 @@ function launchVehicleFountain(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(640.438746019383, -1545.674466157332, 680.3350654970855)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0.06307189289785171, -0.6324554954458451, -0.7720245997418945)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => {return (
-    ((i==23) && (j==8)) ||
-    ((i==0) && (j==8))
-  )} // New Zealand North Island and ocean to the east and west
-
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 0.1
   nonGUIParams['farClip'] = 100000000
@@ -716,11 +677,6 @@ function LaunchVehicleAndTubeBugs(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(393066.7034365224, -4084241.1876733834, -4890071.8842349565)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0.06029407718038538, -0.6328686129320207, -0.7719079887023231)
       
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => {return (
-    ((i==23) && (j==8)) ||
-    ((i==0) && (j==8))
-  )} // New Zealand North Island and ocean to the east and west
-
 
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 0.1
@@ -805,11 +761,6 @@ function launchSystemOverview(guidParamWithUnits, nonGUIParams) {
   // nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(1080897.152044865, -3904846.893077751, -4926381.953724792)
   // nonGUIParams['cameraUp'] = new THREE.Vector3(0.16945592951181573, -0.612186850506278, -0.772341859554751)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => {return (
-    ((i==23) && (j==8)) ||
-    ((i==0) && (j==8))
-  )} // New Zealand North Island and ocean to the east and west
-
 
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 1
@@ -890,12 +841,6 @@ function solarPanelsCalifornia(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(-0.6437762083188713, 0.6764789334721483, -0.3576708629047093)
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-4127217.359602618, 4335764.529077124, -2292992.795739126)
   nonGUIParams['cameraUp'] = new THREE.Vector3(-0.6437762083188713, 0.6764789334721483, -0.3576708629047093)
-
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==3) && (j==4)) ||  // Mexico
-    ((i==4) && (j==4)) ||  // Mexico
-    ((i==3) && (j==3)) ||  // California
-    ((i==4) && (j==3)))}  // California
 
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 10
@@ -1158,11 +1103,6 @@ function twoStageMassDriver(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(382481.65103939606, -4038404.374358447, -4922505.895094078)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0.059654109070758805, -0.6338627678877135, -0.7711416074604592)    
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => {return (
-    ((i==23) && (j==8)) ||
-    ((i==0) && (j==8))
-  )} // New Zealand North Island and ocean to the east and west
-
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 10
   nonGUIParams['farClip'] = 40000000
@@ -1340,53 +1280,14 @@ function bigIslandLauncher(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-2470937.952519685, 2048799.9499429713, -5527483.037906753)
   nonGUIParams['cameraUp'] = new THREE.Vector3(-0.3901202681575166, 0.3354310762809081, -0.8574917897203093)
 
-  const useNewPlanetCode = false
-  if (!useNewPlanetCode) {
-    // Use original Planet code
-    nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-      ((i==1) && (j==4)) // Hawaii??
-    )}
-    nonGUIParams['useXHREarthDisplacement'] = false
-    nonGUIParams['getCapturePresetRegionsXHRDisplacement'] = (i, j) => { return (
-      ((i==1) && (j==4))
-    )}
-    nonGUIParams['getXHREarthDisplacementFilename'] = (i, j, w, h, displacementFormat) => {
-      if ((i==1) && (j==4)) {
-        return './textures/DisplacementMaps/XHREarthDisplacement/earth_XHR_24x12_1x4.png'
-      }
-      return null
-    }
-  } else {
-    // New Planet2 code
-    nonGUIParams['usePlanet2'] = true
-
-    // Disable legacy per-patch XHR toggles when Planet2 quadtree tiling is active.
-    nonGUIParams['useXHREarthTexture'] = false
-    nonGUIParams['useXHREarthDisplacement'] = false
-
-    // Planet2 local asset roots generated by tools/generate_planet2_lod0_assets.py
-    nonGUIParams['planet2ManifestUrl'] = '/assets/earth/manifest.json'
-    nonGUIParams['planet2ColorBasePath'] = '/assets/earth/color'
-    nonGUIParams['planet2HeightBasePath'] = '/assets/earth/height'
-
-    // Keep base LOD responsive while still allowing detail refinement.
-    nonGUIParams['tileSegments'] = 24
-    nonGUIParams['maxConcurrentTileLoads'] = 8
-    // The full-island high-res bake keeps ~450-550 tiles resident when the whole
-    // Big Island is in view
-    nonGUIParams['maxCachedTiles'] = 1500
-    nonGUIParams['maxTileGpuBytes'] = 1536 * 1024 * 1024
-    nonGUIParams['maxAvailableTileLod'] = 11
-
-    // Prioritize Hawaii launch region and immediate surroundings.
-    nonGUIParams['locationInterests'] = [
+  // The Big Island's high-resolution bake, loading the launcher's surroundings first.
+  planetSetup(nonGUIParams, {
+    assets: ['earth', 'hawaii'],
+    interests: [
       { name: 'Mauna Kea', lat: 19.8207, lon: -155.4681, radiusKm: 80, lodBoost: 2 },
-      { name: 'Hawaii Launch Corridor', lat: 19.6, lon: -156.0, radiusKm: 140, lodBoost: 1.5 }
-    ]
-
-    // Optional: set to 'none', 'tileBorders', 'lodLevel', 'tilePriority', 'terrainRoughness', 'landWaterFraction', or 'loadingState'.
-    nonGUIParams['planet2DebugMode'] = 'none'
-  }
+      { name: 'Hawaii Launch Corridor', lat: 19.6, lon: -156.0, radiusKm: 140, lodBoost: 1.5 },
+    ],
+  })
 
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 1
@@ -1545,11 +1446,6 @@ function equatorialLauncher(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(4329547.928026106, 1741.0135460491783, 4683657.233782173)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0.6788274853914157, 0.0003603690842848706, 0.734297702033168)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-//      ((i==1) && (j==4)) // Hawaii??
-    ((i==14) && (j==5)) // Hawaii??
-  )} 
-
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 10
   nonGUIParams['farClip'] = 40000000
@@ -1625,13 +1521,6 @@ function smallRing(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['numMainRings'].value = 1
 
  
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    // ((i==3) && (j==2)) ||  // Seattle??
-    // ((i==4) && (j==2)) ||  // Seattle??
-    // ((i==3) && (j==3)) ||
-    ((i==4) && (j==3))
-  )} // Hawaii??
-
   // nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(-3954814.892863949, 4671082.911289911, -2284901.3465206292)
   // nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(-0.6437762083188713, 0.6764789334721483, -0.3576708629047093)
   // nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-4275669.140229426, 5008235.366238964, -2463162.4610441993)
@@ -1709,14 +1598,6 @@ function movingRingsOrbit(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['numForkLevels'].value = 8
   guidParamWithUnits['movingRingsSpeedForRendering'].value = 100
   //guidParamWithUnits['transitTubeTubeRadius'].value = 5000
-
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    // ((i==3) && (j==2)) ||  // Washington State
-    // ((i==4) && (j==2)) ||
-    // ((i==3) && (j==3)) ||
-    // ((i==4) && (j==3))
-    true
-  )}
 
   nonGUIParams['cameraAtRingHeight'] = true // placed against the ring on the sphere; lowered with it
   nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(-3586160.308932927, 4822570.089538445, -2229721.126416423)
@@ -1869,11 +1750,6 @@ function christmasIslandLauncher(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(6130406.766382722, -1186149.4229390235, -1730293.0171118996)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0.946942914984838, -0.18178520654778604, -0.2650533049037438)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==19) && (j==5)) ||
-    ((i==19) && (j==6)) // Christmas Island
-  )} 
-
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 10
   nonGUIParams['farClip'] = 40000000
@@ -1894,13 +1770,6 @@ function flightPaths(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(448508.6471684609, -4007299.454096686, -4996083.6711664805)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0.06409308160535271, -0.6302146235738024, -0.7737710288735681)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => {return (
-    ((i==3) && (j==2)) ||
-    ((i==1) && (j==4)) ||
-    ((i==18) && (j==3)) ||
-    ((i==18) && (j==4)) ||
-    ((i==23) && (j==8))  // New Zealand North Island
-  )}
   nonGUIParams['overrideClipPlanes'] = false
   nonGUIParams['nearClip'] = 0.1
   nonGUIParams['farClip'] = 600000000

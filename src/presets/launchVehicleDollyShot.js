@@ -63,12 +63,6 @@ export function launchVehicleDollyShot(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(74.57012815354392, -26.514206442050636, 44.626589365303516)
   nonGUIParams['cameraUp'] = new THREE.Vector3(0.5721871155350564, -0.34004243034160064, -0.7463062711669048)
 
-  nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    ((i==21) && (j==7)) ||
-    ((i==22) && (j==7)) ||
-    ((i==23) && (j==8)) ||
-    ((i==0) && (j==8)))} // New Zealand North Island and ocean to the east
-
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 1
   nonGUIParams['farClip'] = 10000000

@@ -69,16 +69,6 @@ export function multipleRings(guidParamWithUnits, nonGUIParams) {
     nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-21029602, 4606144, -3608743)
     nonGUIParams['cameraUp'] = new THREE.Vector3(0, 1, 0)
 
-    // nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-    //   ((i==3) && (j==2)) ||  // Seattle??
-    //   ((i==4) && (j==2)) ||  // Seattle??
-    //   ((i==1) && (j==4)))} // Hawaii??
-
-    nonGUIParams['getCapturePresetRegions'] = (i, j) => { return ( 
-      ((i==3) && (j==2)) ||  // Seattle??
-      ((i==4) && (j==2)) ||  // Seattle??
-      ((i==1) && (j==4)))} // Hawaii??
-      
     nonGUIParams['getRingSpecs'] = () => {
       const tetheredRingSpecs = []
       const coordinates = tram.getDodecahedronFaceCoordinates();
