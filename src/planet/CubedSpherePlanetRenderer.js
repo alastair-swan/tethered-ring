@@ -1,6 +1,12 @@
 import * as THREE from 'three';
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { fbmGlsl, noiseOffsets, SEA_SURFACE_FREQUENCIES, seaSurfaceLookGlsl } from './seaNoise.js';
+import { PixelLOD } from '../scene/PixelLOD.js';
+
+// Milliseconds per frame for uploading newly loaded tiles to the GPU (at least one tile per frame;
+// everything while recording, which sets PixelLOD.buildBudget to Infinity). Without a budget, the
+// many tiles that finish loading together at start-up were all uploaded in one frame's render.
+const TILE_UPLOAD_BUDGET_MS = 4;
 
 // =============================================================================
 // CubedSpherePlanetRenderer - cubed-sphere quadtree LOD planet renderer that
@@ -313,6 +319,7 @@ class Tile {
     this.wantedFrame = -1;
     this.colorReady = false;
     this.heightReady = false;
+    this.uploaded = true;   // false from when a load starts until its data is on the GPU
     this.loading = false;
 
     this.loadGeneration = 0;
@@ -365,9 +372,14 @@ class Tile {
     this.detailOffsets = null;
   }
 
-  // A tile is "ready" once both its color and height streams have resolved.
-  get ready() {
+  // A tile is "loaded" once both its color and height streams have resolved, and "ready" (drawn) once
+  // it has also been uploaded to the GPU (CubedSpherePlanetRenderer._uploadTiles).
+  get loaded() {
     return this.colorReady && this.heightReady;
+  }
+
+  get ready() {
+    return this.colorReady && this.heightReady && this.uploaded;
   }
 }
 
@@ -477,6 +489,7 @@ export class CubedSpherePlanetRenderer {
     // Rebuilt every update, so stale priorities and no-longer-wanted tiles
     // never get loaded ahead of what the camera currently needs.
     this.wantedTiles = [];
+    this._uploadQueue = [];   // loaded tiles waiting for their GPU upload (_uploadTiles)
     this.inflightLoads = 0;
 
     this.tiles = new Map(); // numKey -> Tile
@@ -636,7 +649,13 @@ export class CubedSpherePlanetRenderer {
       CubedSpherePlanetRenderer._sharedLoader = new KTX2Loader().setTranscoderPath(`${base}basis/`);
     }
     if (renderer && !CubedSpherePlanetRenderer._supportDetected) {
-      CubedSpherePlanetRenderer._sharedLoader.detectSupport(renderer);
+      const loader = CubedSpherePlanetRenderer._sharedLoader;
+      loader.detectSupport(renderer);
+      // Prefer BC7 to ASTC where both are offered: desktop GPUs that report ASTC may not have it in
+      // hardware (Intel from Gen12/Xe on), and the driver then decompresses each ASTC texture on
+      // upload (40-150 ms for a 2048 px enhancement tile). BC7 is native wherever it is reported;
+      // phones and tablets, which lack it, keep ASTC.
+      if (loader.workerConfig?.bptcSupported) loader.workerConfig.astcSupported = false;
       CubedSpherePlanetRenderer._supportDetected = true;
     } else if (!renderer && !CubedSpherePlanetRenderer._supportDetected) {
       console.warn('[planet] renderer missing; KTX2 detectSupport(renderer) deferred.');
@@ -1281,6 +1300,7 @@ export class CubedSpherePlanetRenderer {
     }
 
     this.frame += 1;
+    this._uploadTiles();
 
     // The camera may live inside a moved parent (e.g. the VR camera group), so
     // always work from its world transform.
@@ -2308,7 +2328,7 @@ varying vec3 vDaylightUp;`)
     if (tile.wantedFrame === this.frame) return;
     tile.wantedFrame = this.frame;
     tile.priority = this._computePriority(tile);
-    if (tile.loading || tile.ready || tile.retryScheduled || !this.hasAssets) return;
+    if (tile.loading || tile.loaded || tile.retryScheduled || !this.hasAssets) return;
     if (tile.queuedAtMs === 0) {
       tile.queuedAtMs = performance.now();
       this._traceFirst('firstEnqueueMs', tile, 'firstEnqueueTileId');
@@ -2327,7 +2347,7 @@ varying vec3 vDaylightUp;`)
     let started = 0;
     for (let i = 0; i < wanted.length && started < free; i++) {
       const tile = wanted[i];
-      if (tile.disposed || tile.ready || tile.loading || tile.retryScheduled) continue;
+      if (tile.disposed || tile.loaded || tile.loading || tile.retryScheduled) continue;
       // Loads can be wanted before the manifest arrives. Skip any that the
       // resolved sparse manifest says do not exist instead of issuing 404s.
       if (this.manifest?.tiles && !this.manifestTileMap.has(tile.id)) continue;
@@ -2343,6 +2363,7 @@ varying vec3 vDaylightUp;`)
 
   async _loadTile(tile) {
     tile.loading = true;
+    tile.uploaded = false;
     tile.loadGeneration += 1;
     const generation = tile.loadGeneration;
     tile.abortController = new AbortController();
@@ -2421,10 +2442,10 @@ varying vec3 vDaylightUp;`)
         this._recordStartupTileEvent(tile, 'heightDone');
       }
 
-      if (tile.ready) {
+      if (tile.loaded) {
         this._recordLoadMetrics(sourceStats, lodStats, metrics('success'));
         this._traceFirst('firstLoadFinishedMs', tile, 'firstFinishedTileId');
-        this._applyTileData(tile);
+        this._uploadQueue.push(tile);
         this._recordStartupTileEvent(tile, 'apply');
         return;
       }
@@ -2465,7 +2486,7 @@ varying vec3 vDaylightUp;`)
         tile.heightReady = true;
       }
       tile.colorReady = true;
-      this._applyTileData(tile);
+      this._uploadQueue.push(tile);
     } finally {
       if (tile.loadGeneration === generation) {
         tile.loading = false;
@@ -2570,6 +2591,24 @@ varying vec3 vDaylightUp;`)
   }
 
   // Rebuilds geometry (with height) and swaps the streamed color map into place.
+  // Uploads newly loaded tiles' textures and applies their data, within TILE_UPLOAD_BUDGET_MS per
+  // frame; a tile is drawn (ready) only once uploaded, and until then its parent stays in view.
+  _uploadTiles() {
+    const queue = this._uploadQueue;
+    if (queue.length === 0) return;
+    const budget = PixelLOD.buildBudget === Infinity ? Infinity : TILE_UPLOAD_BUDGET_MS;
+    const start = performance.now();
+    let done = 0;
+    while (done < queue.length && (done === 0 || performance.now() - start < budget)) {
+      const tile = queue[done++];
+      if (tile.disposed || !tile.loaded) continue;
+      if (tile.texture && this.renderer) this.renderer.initTexture(tile.texture);
+      this._applyTileData(tile);
+      tile.uploaded = true;
+    }
+    queue.splice(0, done);
+  }
+
   _applyTileData(tile) {
     if (!tile.mesh || tile.disposed) return;
 
