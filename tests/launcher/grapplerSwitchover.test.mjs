@@ -81,12 +81,21 @@ test('a grappler keeps its flight across its whole range, and every hop takes th
   for (const h of hops(poses(s, 0, 20))) assert.ok(h >= switchoverTime - 1e-6, `hop of ${h} s`)
 })
 
-test('neighbours near the end of their travel let go together', () => {
-  // Two grapplers a little apart on the same flight: the second joins the first's hop.
-  const s = schedule({ phases: [0.5, 0.35], rates: [-0.5, -0.5] })
-  s.extendTo(10)
-  const [a, b] = s.grips
-  assert.ok(Math.abs(a[0].end - b[0].end) < 1e-9, `${a[0].end} vs ${b[0].end}`)
+test('a run of neighbours reaching the end of their travel together moves over a few at a time', () => {
+  // Twelve grapplers on one flight, all drifting together: left to their deadlines they would all let go
+  // at once.
+  const count = 12
+  const s = schedule({ phases: Array.from({ length: count }, (_, i) => 0.5 + 0.01 * i), rates: new Array(count).fill(0.5) })
+  let fewest = Infinity
+  for (let t = 1; t < 15; t += 1 / 30) {
+    const gripping = s.grips.filter((grips, i) => { const g = grips[s.gripIndexAt(i, t)]; return g && t < g.end }).length
+    fewest = Math.min(fewest, gripping)
+  }
+  assert.ok(fewest >= count - 5, `as few as ${fewest} gripping`)
+  // And none was carried beyond its reach: every grip ended at or before the end of its travel.
+  for (let i = 0; i < count; i++) {
+    for (const g of s.grips[i].filter(g => g.end < 15)) assert.ok(s.phaseAt(i, g.end) - g.flight - 0.5 <= 8 * holdLimit, `grappler ${i} at ${g.end}`)
+  }
 })
 
 test('the lead stays within its limits, is back to none at the end, and does not cost grip time', () => {
