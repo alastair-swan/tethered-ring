@@ -35,6 +35,7 @@ import { downloadText, specsCsv } from './exports.js'
 import * as kmlutils from '../export/kmlutils.js'
 import { ShotController } from '../shots/ShotController.js'
 import cameraPresets from '../data/cameraPresets.json' with { type: 'json' }
+import { placeAtHeightInRingPlane } from '../ring/ringGeometry.js'
 import mountainList from '../data/mountainList.json' with { type: 'json' }
 import googleEarthProjectFile from '../data/googleEarthStudioSampleProjectFile.json' with { type: 'json' }
 
@@ -307,22 +308,27 @@ export class App {
     }
   }
 
-  // For presets whose camera was placed against the ring when the ring was on the equatorial-radius
-  // sphere: lowers the camera and its target with the ring, by the depth of the ground below that
-  // sphere at the target (see mainRingCurve).
+  // For presets whose camera was placed against the ring when the ring was a circle on the
+  // equatorial-radius sphere: moves the camera and its target as the ring moved there (see
+  // mainRingCurve), from the old ring point to the new one at the target's azimuth about the ring axis.
   lowerCameraWithRing() {
     const controls = this.camera.controls
     const parent = this.camera3d.parent ?? this.scene
+    const ring = this.ring.refCoordSys
     parent.updateWorldMatrix(true, false)
-    this.planetCoordSys.updateWorldMatrix(true, false)
-    const toPlanet = (p) => this.planetCoordSys.worldToLocal(parent.localToWorld(p.clone()))
-    const fromPlanet = (p) => parent.worldToLocal(this.planetCoordSys.localToWorld(p))
-    const target = toPlanet(controls.target)
-    const ellipsoid = this.planetSpec.ellipsoid
-    const depth = ellipsoid.a - target.length() * tram.ellipsoidSurfaceScale(target.x, target.y, target.z, ellipsoid)
-    const shift = target.clone().normalize().multiplyScalar(-depth)
-    controls.target.copy(fromPlanet(target.add(shift)))
-    controls.object.position.copy(fromPlanet(toPlanet(controls.object.position).add(shift)))
+    ring.updateWorldMatrix(true, false)
+    const target = ring.worldToLocal(parent.localToWorld(controls.target.clone()))
+    const crv = this.ring.crv
+    // The old ring: a circle at the ring's height above the equatorial-radius sphere.
+    const r = this.planetRadius + crv.currentMainRingAltitude
+    const oldRadius = r * Math.cos(crv.currentEquivalentLatitude)
+    const across = Math.hypot(target.x, target.z)
+    const old = new THREE.Vector3(target.x / across * oldRadius, r * Math.sin(crv.currentEquivalentLatitude), target.z / across * oldRadius)
+    const moved = placeAtHeightInRingPlane(old.clone(), crv.currentMainRingAltitude, this.ring.ringToPlanetRotation, this.planetSpec.ellipsoid, this.ring.mainRingCurve.planeOffset)
+    const shift = ring.localToWorld(moved).sub(ring.localToWorld(old))
+    const move = (p) => p.copy(parent.worldToLocal(parent.localToWorld(p.clone()).add(shift)))
+    move(controls.target)
+    move(controls.object.position)
     controls.update()
   }
 

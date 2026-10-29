@@ -11,6 +11,39 @@ import * as kmlutils from '../export/kmlutils.js'
 // Roots (TetherGeometry's rootProfiles) are sampled at most this far apart along the catenary.
 const ROOT_PROFILE_STEP = 100 // m
 
+// The tetherPointBxAvePercent (keeping tetherPointBxDeltaPercent, the stagger between the two tether
+// types) at which the two types, between them, pull on the ring inwards with radialTension (N per
+// metre of ring, in the ring's cylindrical frame: negative is towards the axis) while carrying
+// axialTension along the axis: the forces at the ring then cancel where gravity and the moving ring's
+// centrifugal load there need that pull. The same design equations as TetherGeometry (Eqs 10-12, 20).
+export function balancedPointBxAvePercent(planetSpec, crv, dParamWithUnits, axialTension, radialTension) {
+  const radiusOfPlanet = planetSpec.ellipsoid.a
+  const g = planetSpec.gravitationalParameter / ((radiusOfPlanet + dParamWithUnits['ringFinalAltitude'].value / 2)**2)
+  const c = dParamWithUnits['tetherFiberTensileStrength'].value*1000000 / dParamWithUnits['tetherEngineeringFactor'].value / dParamWithUnits['tetherFiberDensity'].value / g
+  const height = crv.currentMainRingAltitude
+  const tempPointPx = c * Math.acos(Math.exp(-height/c))      // Eq 11
+  const ω_P = -(Math.PI/2 - crv.currentEquivalentLatitude)
+  const delta = dParamWithUnits['tetherPointBxDeltaPercent'].value
+  const radial = (ave) => {
+    let sum = 0
+    for (const sign of [-1, 1]) {
+      const Bx = tempPointPx * (ave + sign * delta/2)/100
+      const By = c * Math.log(1/Math.cos(Bx/c))               // Eq 10
+      const Px = c * Math.acos(Math.exp(-(By + height)/c))    // Eq 11
+      sum += axialTension / Math.tan(Px/c + ω_P)              // Eqs 12, 20
+    }
+    return sum / 2 - radialTension
+  }
+  let lo = delta/2 + 0.01, hi = 100 - delta/2 - 0.01
+  if (radial(lo) * radial(hi) > 0) return dParamWithUnits['tetherPointBxAvePercent'].value
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2
+    if (radial(lo) * radial(mid) <= 0) hi = mid
+    else lo = mid
+  }
+  return (lo + hi) / 2
+}
+
 // Removes the strips at `indices` from {strips, thicknesses, areas, strands}.
 function removeStrips(out, indices) {
   for (const k of [...indices].sort((a, b) => b - a)) {
@@ -48,8 +81,11 @@ class TetherGeometry extends BufferGeometry {
 
 	// separateRoots (fast mode): leave each tether's root (the trunk below its first fork) out of the
 	// geometry, and describe it in rootProfiles instead, so that each copy's root can be run down to the
-	// ground under it (see src/ring/TetherRoots.js).
-	constructor(planetSpec, crv, ctv, dParamWithUnits, specs, fastTetherRender, genKMLFile, kmlFile, genSpecs, planetCoordSys, tetheredRingRefCoordSys, {separateRoots = false} = {}) {
+	// ground under it (see src/ring/TetherRoots.js). seaWaterDensity (kg/m^3, 0 for none): below sea
+	// level the roots hang in water, buoyed up (see rootProfiles).
+	// pointBxAvePercent, axialTension (N per metre of ring): the design for one place on the ring, where
+	// the forces on it differ from the nominal ones (see balancedPointBxAvePercent).
+	constructor(planetSpec, crv, ctv, dParamWithUnits, specs, fastTetherRender, genKMLFile, kmlFile, genSpecs, planetCoordSys, tetheredRingRefCoordSys, {separateRoots = false, seaWaterDensity = 0, pointBxAvePercent, axialTension} = {}) {
 		super();
 
     const tetherPoints = []
@@ -85,7 +121,8 @@ class TetherGeometry extends BufferGeometry {
     fG.ρ = -forceExertedByGravityOnRing * Math.cos(dParamWithUnits['equivalentLatitude'].value)
     fG.φ = 0
     fG.z = -forceExertedByGravityOnRing * Math.sin(dParamWithUnits['equivalentLatitude'].value)
-    fT.z = -fG.z                     // Eq 6
+    fT.z = axialTension ?? -fG.z     // Eq 6
+    const bxAvePercent = pointBxAvePercent ?? dParamWithUnits['tetherPointBxAvePercent'].value
 
     // const factor = dParamWithUnits['tetherFiberTensileStrength'].prefixfactor
     const tetherStress = dParamWithUnits['tetherFiberTensileStrength'].value*1000000 / dParamWithUnits['tetherEngineeringFactor'].value
@@ -129,7 +166,7 @@ class TetherGeometry extends BufferGeometry {
       const pointP = new tram.cateneryVector()
       const pointA = new tram.cateneryVector()
       const minusplus = [-1, 1]
-      pointB.x = tempPointP.x * (dParamWithUnits['tetherPointBxAvePercent'].value + minusplus[j] * dParamWithUnits['tetherPointBxDeltaPercent'].value/2)/100
+      pointB.x = tempPointP.x * (bxAvePercent + minusplus[j] * dParamWithUnits['tetherPointBxDeltaPercent'].value/2)/100
       pointB.θ = pointB.x / c                              // Eq 12
       pointB.y = c * Math.log(1.0/Math.cos(pointB.x/c))    // Eq 10
       pointB.s = c * Math.acosh(Math.exp(pointB.y/c))      // Eq 13b
@@ -183,16 +220,19 @@ class TetherGeometry extends BufferGeometry {
     
     const pointB_s = []
     const catenaryAt = []   // per type: s -> CatenaryPolarVec3 (any s >= 0, also below the anchor)
+    const underwaterAt = [] // per type: slope angle -> CatenaryPolarVec3, below sea level (seaWaterDensity > 0)
+    const seaLevelPoints = []   // per type: pointB, which is at sea level
     const ω_P = -(Math.PI/2 - crv.currentEquivalentLatitude)   // negative rotation angle because the angle increases in clockwise direction
     
     currentCatenaryTypes.forEach((catenaryType, j) => {
       const pointB = new tram.cateneryVector()
       const pointP = new tram.cateneryVector()
       const minusplus = [-1, 1]
-      pointB.x = tempPointP.x * (dParamWithUnits['tetherPointBxAvePercent'].value + minusplus[j] * dParamWithUnits['tetherPointBxDeltaPercent'].value/2)/100
+      pointB.x = tempPointP.x * (bxAvePercent + minusplus[j] * dParamWithUnits['tetherPointBxDeltaPercent'].value/2)/100
       pointB.y = c * Math.log(1.0/Math.cos(pointB.x/c))    // Eq 10
       pointB.s = c * Math.acosh(Math.exp(pointB.y/c))      // Eq 13b
       pointB_s[j] = pointB.s  // We'll need to use this later
+      seaLevelPoints[j] = pointB
       pointP.y = pointB.y + crv.currentMainRingAltitude
       pointP.x = c * Math.acos(Math.exp(-pointP.y/c))      // Eq 11
       pointP.s = c * Math.acosh(Math.exp(pointP.y/c))      // Eq 13b
@@ -227,6 +267,25 @@ class TetherGeometry extends BufferGeometry {
         const tensileForcePerMeterAtX = Math.sqrt(fTz**2 + tensileForcePerMeterRhoComponentAtX**2)
         const crossSectionalArea = tensileForcePerMeterAtX * tetherSpacing / tetherStress
         return new tram.CatenaryPolarVec3(r, ω, s, crossSectionalArea)
+      }
+      // Below sea level the tether is buoyed up by the water: its weight per volume is (density - sea
+      // water density) g, so it hangs as a flatter catenary of constant stress (c is larger). The slope
+      // is continuous at the surface, and the horizontal tension is the same (the water only pushes up),
+      // so the area (tension / stress) goes as 1 / cos(slope).
+      if (seaWaterDensity > 0) {
+        const cWater = tetherStress / (dParamWithUnits['tetherFiberDensity'].value - seaWaterDensity) / (planetSpec.gravitationalParameter / radiusOfPlanet**2)
+        const surface = catenaryAt[j](pointB.s)
+        const θSurface = pointB.x / c
+        const ω_anchor = ω_P + (pointP.x-pointB.x) / radiusOfPlanet
+        underwaterAt[j] = (θ) => {
+          const x = pointB.x - cWater * (θSurface - θ)
+          const y = pointB.y - cWater * (Math.log(1/Math.cos(θSurface)) - Math.log(1/Math.cos(θ)))
+          const r = radiusOfPlanet + (y - pointB.y)
+          const ω = ω_anchor - (x-pointB.x) / radiusOfPlanet
+          return new tram.CatenaryPolarVec3(r, ω, NaN, surface.crossSectionalArea * Math.cos(θSurface) / Math.cos(θ))
+        }
+        underwaterAt[j].θSurface = θSurface
+        underwaterAt[j].c = cWater
       }
       for (let i = 0; i<=numTetherPoints-1; i++) {
         const sFraction = i / (numTetherPoints-1)
@@ -519,10 +578,11 @@ class TetherGeometry extends BufferGeometry {
     }
 
     // Roots (separateRoots): for each tether type, its trunk's catenary sampled from the first fork
-    // down to the catenary's lowest point (s = 0), below which a tether under tension cannot hang.
-    // points are relative to the reference point, as the geometry's are; heights are above the
-    // equatorial-radius sphere; areas are the trunk's cross-sections (m^2). null if the first fork is
-    // still on the spool (the ring is being raised).
+    // down to the catenary's lowest point, below which a tether under tension cannot hang (in water,
+    // when seaWaterDensity > 0, the buoyant catenary below sea level). points are relative to the
+    // reference point, as the geometry's are; heights are above the equatorial-radius sphere (on which
+    // sea level is r = a); areas are the trunk's cross-sections (m^2). null if the first fork is still
+    // on the spool (the ring is being raised).
     this.rootProfiles = []
     if (separateRoots && fastTetherRender) {
       const referencePoint = new Vector3().setFromSphericalCoords(radiusOfPlanet + crv.currentMainRingAltitude, -(Math.PI/2 - crv.currentEquivalentLatitude), 0)
@@ -534,13 +594,25 @@ class TetherGeometry extends BufferGeometry {
           this.rootProfiles.push(null)
           return
         }
-        const count = Math.max(2, Math.ceil(forkS / ROOT_PROFILE_STEP) + 1)
         const points = [], areas = [], heights = []
-        for (let k = 0; k < count; k++) {
-          const p = catenaryAt[jModNumTypes](forkS * (1 - k / (count - 1)))
+        const add = (p) => {
           points.push(new Vector3().setFromSphericalCoords(p.r, p.ω, θ).sub(referencePoint))
           areas.push(p.crossSectionalArea)
           heights.push(p.r - radiusOfPlanet)
+        }
+        // In air down to sea level (or, with no sea, to the lowest point).
+        const underwater = underwaterAt[jModNumTypes]
+        const lowestS = underwater ? seaLevelPoints[jModNumTypes].s : 0
+        const count = Math.max(2, Math.ceil((forkS - lowestS) / ROOT_PROFILE_STEP) + 1)
+        for (let k = 0; k < count; k++) add(catenaryAt[jModNumTypes](forkS - (forkS - lowestS) * k / (count - 1)))
+        if (underwater) {
+          // In water, by arc length s' = c ln(sec θ + tan θ) (θ = gd(s'/c)), down to the lowest point.
+          const sSurface = underwater.c * Math.log(1/Math.cos(underwater.θSurface) + Math.tan(underwater.θSurface))
+          const wetCount = Math.max(2, Math.ceil(sSurface / ROOT_PROFILE_STEP) + 1)
+          for (let k = 1; k < wetCount; k++) {
+            const s = sSurface * (1 - k / (wetCount - 1))
+            add(underwater(2 * Math.atan(Math.exp(s / underwater.c)) - Math.PI / 2))
+          }
         }
         this.rootProfiles.push({points, areas, heights})
       })

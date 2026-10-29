@@ -1,9 +1,61 @@
 // Shared tethered-ring dimensions and offset helpers.
 import * as THREE from 'three'
 import { lerp } from '../utils/math.js'
-import { ellipsoidSurfaceScale } from '../physics/geodesy.js'
+import { ellipsoidSurfaceScale, ecefToGeodetic } from '../physics/geodesy.js'
 
 const _planetPoint = new THREE.Vector3()
+
+function heightAboveEllipsoid(x, y, z, ringToPlanetQuaternion, ellipsoid) {
+  _planetPoint.set(x, y, z).applyQuaternion(ringToPlanetQuaternion)
+  return ecefToGeodetic(_planetPoint.x, _planetPoint.y, _planetPoint.z, ellipsoid).alt
+}
+
+// The ring is designed as a circle at its height above the equatorial-radius sphere. This is the
+// shift of its plane along its axis (ring frame y) that best brings that circle to that height above
+// the ellipsoid (sea level), by least squares. Small rings then need nothing more; large ones are also
+// moved in the plane (placeAtHeightInRingPlane).
+export function ringPlaneOffset(crv, ringToPlanetQuaternion, ellipsoid, samples = 64) {
+  const r = ellipsoid.a + crv.currentMainRingAltitude
+  const rho = r * Math.cos(crv.currentEquivalentLatitude)
+  let offset = 0
+  for (let iteration = 0; iteration < 3; iteration++) {
+    let num = 0, den = 0
+    const y = r * Math.sin(crv.currentEquivalentLatitude) + offset
+    for (let k = 0; k < samples; k++) {
+      const a = 2 * Math.PI * k / samples
+      const x = rho * Math.cos(a), z = rho * Math.sin(a)
+      const h = heightAboveEllipsoid(x, y, z, ringToPlanetQuaternion, ellipsoid)
+      const slope = heightAboveEllipsoid(x, y + 1, z, ringToPlanetQuaternion, ellipsoid) - h
+      num += (crv.currentMainRingAltitude - h) * slope
+      den += slope * slope
+    }
+    offset += num / den
+  }
+  return offset
+}
+
+// Moves `point` (ring frame) along the ring's axis by planeOffset (ringPlaneOffset), then towards or
+// away from the axis, in the ring's plane, until it is `height` above the ellipsoid (sea level), where
+// moving in the plane changes its height. A ring of such points lies in one plane at a constant
+// height: the plane's section of the (flattened) planet, an ellipse of low eccentricity.
+export function placeAtHeightInRingPlane(point, height, ringToPlanetQuaternion, ellipsoid, planeOffset = 0) {
+  point.y += planeOffset
+  const heightAt = (rho) => heightAboveEllipsoid(point.x * rho, point.y, point.z * rho, ringToPlanetQuaternion, ellipsoid)
+  // rho scales the point's distance from the axis; Newton's method on the height.
+  const across = Math.hypot(point.x, point.z)
+  let rho = 1
+  for (let i = 0; i < 6; i++) {
+    const h = heightAt(rho)
+    const slope = (heightAt(rho + 1 / across) - h) / (1 / across)   // per unit of rho
+    if (!(Math.abs(slope) > 0.2 * across)) break   // moving in the plane hardly changes the height
+    const step = (height - h) / slope
+    rho += step
+    if (Math.abs(step * across) < 1e-3) break
+  }
+  point.x *= rho
+  point.z *= rho
+  return point
+}
 
 // How far the ground (the ellipsoid, at sea level) is below the sphere of the equatorial radius on
 // which the ring is designed, in the direction of `point` (ring frame; ringToPlanetQuaternion turns it

@@ -17,11 +17,10 @@ const yAxis = new THREE.Vector3(0, 1, 0)
 const _p = new THREE.Vector3()
 
 export class TetherRoots {
-  // profiles: TetherGeometry.rootProfiles (per tether type; null entries have no root).
-  // copies: [{theta, position}], how each copy of the shared tether geometry is placed in the ring
-  // frame (rotated by theta about the ring axis, then moved to position).
-  constructor({ profiles, copies, refCoordSys, ringToPlanetQuaternion, ellipsoid, material }) {
-    this.profiles = profiles
+  // copies: [{theta, position, profiles}], how each copy of the tether geometry is placed in the ring
+  // frame (rotated by theta about the ring axis, then moved to position), and its geometry's
+  // rootProfiles (TetherGeometry; per tether type, null entries have no root).
+  constructor({ copies, refCoordSys, ringToPlanetQuaternion, ellipsoid, material }) {
     this.copies = copies
     this.quaternion = ringToPlanetQuaternion
     this.ellipsoid = ellipsoid
@@ -29,7 +28,8 @@ export class TetherRoots {
     this.roots = []    // {copy, type, chunk, slot}
     this.chunks = []
     this.meshes = []
-    const types = profiles.map((profile, type) => profile ? type : -1).filter(type => type >= 0)
+    if (copies.length === 0) return
+    const types = copies[0].profiles.map((profile, type) => profile ? type : -1).filter(type => type >= 0)
     if (types.length === 0) return
     for (let first = 0; first < copies.length; first += COPIES_PER_CHUNK) {
       const last = Math.min(copies.length, first + COPIES_PER_CHUNK)
@@ -60,7 +60,7 @@ export class TetherRoots {
     }
     this.unreachable = new Uint8Array(this.roots.length)
     // Bounds that hold for any ground: the roots down to their catenaries' lowest points.
-    for (let i = 0; i < this.roots.length; i++) this.write(i, this.profiles[this.roots[i].type].points.length - 1)
+    for (let i = 0; i < this.roots.length; i++) this.write(i, this.profileOf(this.roots[i]).points.length - 1)
     for (const chunk of this.chunks) chunk.geometry.computeBoundingSphere()
     for (let i = 0; i < this.roots.length; i++) this.check(i)
     this.next = 0
@@ -84,9 +84,13 @@ export class TetherRoots {
     }
   }
 
+  profileOf(root) {
+    return this.copies[root.copy].profiles[root.type]
+  }
+
   // Point `index` (fractional) of a root's profile, in the ring frame, into `target`.
   profilePoint(root, index, target) {
-    const points = this.profiles[root.type].points
+    const points = this.profileOf(root).points
     const k = Math.min(points.length - 2, Math.floor(index))
     target.lerpVectors(points[k], points[k + 1], index - k)
     const copy = this.copies[root.copy]
@@ -106,7 +110,7 @@ export class TetherRoots {
   // Finds where root i meets the ground and redraws it if that has moved.
   check(i) {
     const root = this.roots[i]
-    const { heights } = this.profiles[root.type]
+    const { heights } = this.profileOf(root)
     const last = heights.length - 1
     let gap = this.clearance(root, 0)
     let end = last
@@ -146,7 +150,7 @@ export class TetherRoots {
   write(i, end) {
     const root = this.roots[i]
     root.end = end
-    const { areas } = this.profiles[root.type]
+    const { areas } = this.profileOf(root)
     const { positions, diameters, origin } = root.chunk
     for (let v = 0; v < VERTICES_PER_ROOT; v++) {
       const index = end * v / (VERTICES_PER_ROOT - 1)
