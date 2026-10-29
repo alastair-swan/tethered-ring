@@ -131,7 +131,7 @@ Where it is used:
 
 | Object | Technique |
 |---|---|
-| Screws | PixelLOD per screw: three thread levels sampled per turn to a chord-error tolerance, then a cylinder; geometry shared by the left/right pair and built by Web Workers (`ScrewGeometryBuilder.js`); only segments large enough to draw get a model (`modelRange`) |
+| Screws | PixelLOD per screw: three thread levels sampled per turn to a chord-error tolerance, then a cylinder; geometry shared by the left/right pair and built by Web Workers (`ScrewGeometryBuilder.js`, most urgent first, dropping builds for screws that have gone past); fast segments (up to a turn of thread) share one geometry per 0.1% of thread speed, rotated onto each segment; models handed out early enough for the first thread level to be ready (`modelRange`); objects changing size by over 25% a frame (screws flashing past a tracking camera) skip their expensive levels (`PixelLOD.fleetingRatio`) |
 | Adaptive nut grapplers | Two BatchedMeshes per nut (pads, hardware) inside PixelLODs; placement skipped when not drawn |
 | Lift fans | Instanced per chunk of 32 fans with full and low-poly levels; below 1.5 px each fan fades out by its on-screen size (`src/scene/SubPixelFade.js`) instead of popping in, and stops drawing at 0.3 px |
 | Brackets | InstancedProxyPool with full and low-detail (4-segment arcs) shapes |

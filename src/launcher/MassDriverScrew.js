@@ -17,7 +17,9 @@ import { PixelLOD } from '../scene/PixelLOD.js'
 const SCREW_LEVELS = [
   { minPixels: 48, segmentsPerMeter: 16, chordError: 0.002, maxSegments: 8192, cost: 'expensive' },  // full detail (close-ups)
   { minPixels: 12, segmentsPerMeter: 4, chordError: 0.01, maxSegments: 2048, cost: 'expensive' },
-  { minPixels: 3, segmentsPerMeter: 1, chordError: 0.04, maxSegments: 512, cost: 'cheap' },
+  // (The first thread level is started early, from an eighth of its size: a screw flashing past a camera
+  // following the launch vehicle reaches it within a few frames of being given a model.)
+  { minPixels: 3, segmentsPerMeter: 1, chordError: 0.04, maxSegments: 512, cost: 'cheap', prefetch: 0.125 },
   { minPixels: 0.75, cylinder: true, cost: 'cheap' },
 ].map(level => level.cylinder ? level : {
   ...level,
@@ -115,6 +117,7 @@ export function createScrewModelPair(materials, threadRadius, cylinderPool = nul
   group.name = 'massDriverScrews'
   // Per-model state lives in plain properties: Object3D.clone() would JSON-copy userData.
   group.screwGeometries = new Map()
+  group.screwRotations = new Map()   // level -> rotation of a shared geometry onto this segment
   group.screwSegment = null
   for (let side = 0; side < 2; side++) {
     const lod = new PixelLOD(2 * threadRadius, { extent: 0 })
@@ -131,15 +134,87 @@ export function createScrewModelPair(materials, threadRadius, cylinderPool = nul
         const makeMesh = (geometry) => {
           const mesh = new THREE.Mesh(geometry, materials[0])
           mesh.name = 'massDriverScrew'
+          mesh.rotation.y = lod.parent.screwRotations.get(levelIndex) ?? 0
           return mesh
         }
         const geometry = screwGeometryFor(lod.parent, levelIndex)
         return (typeof geometry.then === 'function') ? geometry.then(makeMesh) : makeMesh(geometry)
-      }, { cost: level.cost, prefetch: !level.cylinder })
+      }, { cost: level.cost, prefetch: level.cylinder ? false : (level.prefetch ?? true) })
     })
     group.add(lod)
   }
   return group
+}
+
+// Fast screw segments hold under a turn of the thread, and neighbouring ones differ by little more
+// than where the thread starts round the shaft: at 10 km/s some 2000 segments a second pass a camera
+// following the launch vehicle, far more than can each be built. Segments of up to MAX_SHARED_TURNS
+// turns therefore share one geometry per SHARED_SPEED_STEP (relative) of thread speed, built at the
+// distance where the speed is exactly the bucket's, and rotated about the screw's axis onto each
+// segment's thread phase. The thread then runs off by at most about SHARED_SPEED_STEP / 2 *
+// MAX_SHARED_TURNS turns (~1 mm at the tips) at the far end of a segment. Kept for the most recently
+// used MAX_SHARED_GEOMETRIES (key -> geometry or Promise; Map order is age).
+const SHARED_SPEED_STEP = 0.001
+const MAX_SHARED_TURNS = 1
+const MAX_SHARED_GEOMETRIES = 400
+const sharedGeometries = new Map()
+
+// The shared geometry for a segment starting `distance` along the screw, `length` long: its bucket,
+// the distance it is built at, and the rotation (about the screw's axis) onto the segment; or null if
+// the segment is not shared. thread: {initialVelocity, initialDistance, acceleration,
+// revolutionsPerSecond, threadStartDistance}.
+export function sharedScrewBucket(distance, length, thread) {
+  const { initialVelocity: v0, initialDistance: x0, acceleration: a, revolutionsPerSecond: rps, threadStartDistance: start } = thread
+  if (!(a > 0) || distance < x0 || !(distance >= start)) return null
+  const speed = Math.abs(tram.threadSpeed(distance, v0, x0, a))
+  if (!(Math.abs(rps) * length / speed <= MAX_SHARED_TURNS)) return null
+  const bucket = Math.round(Math.log(speed) / SHARED_SPEED_STEP)
+  const bucketSpeed = Math.exp(bucket * SHARED_SPEED_STEP)
+  const bucketDistance = x0 + (bucketSpeed ** 2 - v0 ** 2) / (2 * a)
+  if (bucketDistance < x0 || bucketDistance < start) return null
+  const phase = 2 * Math.PI * rps * (tram.threadTime(distance, v0, x0, a) - tram.threadTime(bucketDistance, v0, x0, a))
+  return { bucket, bucketDistance, rotation: -phase }
+}
+
+function sharedScrewGeometry(segment, levelIndex, level, sync) {
+  const v = virtualMassDriverScrew
+  const a = v.launcherMassDriverForwardAcceleration, v0 = v.launcherMassDriver1InitialVelocity
+  const x0 = v.initialDistance, rps = v.launcherMassDriverScrewRevolutionsPerSecond
+  const start = v.threadLayout.threadStartDistance
+  const share = sharedScrewBucket(segment.baseDistanceAlongScrew, segment.screwLength,
+    { initialVelocity: v0, initialDistance: x0, acceleration: a, revolutionsPerSecond: rps, threadStartDistance: start })
+  if (!share) return null
+  const { bucket, bucketDistance } = share
+  const key = [levelIndex, segment.threadStarts, segment.screwLength.toFixed(4), segment.radialSegments, bucket].join(':')
+  let geometry = sharedGeometries.get(key)
+  if (geometry && sync && typeof geometry.then === 'function') geometry = undefined   // recording: build it now
+  if (geometry) {
+    sharedGeometries.delete(key)   // (most recently used last)
+    sharedGeometries.set(key, geometry)
+  }
+  else {
+    geometry = buildScrewGeometry([
+      segment.screwLength, v.shaftOuterRadius, v.shaftInnerRadius, v.threadRadius, v.threadThickness,
+      v.threadTaperRatio, segment.threadStarts, bucketDistance, v0, x0, rps, a,
+      segment.radialSegments, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments, start],
+      { async: !sync, priority: Infinity })   // (serves many segments)
+    sharedGeometries.set(key, geometry)
+    if (typeof geometry.then === 'function') {
+      const promise = geometry
+      promise.sharedScrew = true
+      promise.then((built) => {
+        built.userData.sharedScrew = true
+        if (sharedGeometries.get(key) === promise) sharedGeometries.set(key, built)
+      }, () => { if (sharedGeometries.get(key) === promise) sharedGeometries.delete(key) })
+    }
+    else geometry.userData.sharedScrew = true
+    for (const [oldKey, old] of sharedGeometries) {
+      if (sharedGeometries.size <= MAX_SHARED_GEOMETRIES) break
+      sharedGeometries.delete(oldKey)
+      if (typeof old.dispose === 'function') old.dispose()   // (re-uploaded if a model still draws it)
+    }
+  }
+  return { geometry, rotation: share.rotation }
 }
 
 // Geometry for one level of the segment this pooled model currently represents (cached per model).
@@ -153,7 +228,10 @@ function screwGeometryFor(group, levelIndex) {
   const v = virtualMassDriverScrew
   const segment = group.screwSegment
   const level = SCREW_LEVELS[levelIndex]
-  let geometry
+  const lod = group.children[0]
+  const screwIndex = group._screwIndex
+  let geometry, shared
+  group.screwRotations.delete(levelIndex)
   const threadsFit = !level.cylinder && screwLengthOffsets(segment.screwLength, segment.baseDistanceAlongScrew,
     v.launcherMassDriver1InitialVelocity, v.initialDistance, v.launcherMassDriverForwardAcceleration,
     v.launcherMassDriverScrewRevolutionsPerSecond, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments, v.threadLayout.threadStartDistance) !== null
@@ -161,22 +239,28 @@ function screwGeometryFor(group, levelIndex) {
     // Thread envelope, slightly thinner than the tips to account for the gaps between flights.
     geometry = new THREE.CylinderGeometry(v.threadRadius * 0.9, v.threadRadius * 0.9, segment.screwLength, 12, 1, false)
   }
+  else if ((shared = sharedScrewGeometry(segment, levelIndex, level, sync))) {
+    group.screwRotations.set(levelIndex, shared.rotation)
+    geometry = shared.geometry
+  }
   else {
     geometry = buildScrewGeometry([
       segment.screwLength, v.shaftOuterRadius, v.shaftInnerRadius, v.threadRadius, v.threadThickness,
       v.threadTaperRatio, segment.threadStarts, segment.baseDistanceAlongScrew, v.launcherMassDriver1InitialVelocity,
       v.initialDistance, v.launcherMassDriverScrewRevolutionsPerSecond, v.launcherMassDriverForwardAcceleration,
       segment.radialSegments, level.segmentsPerMeter, level.samplesPerTurn, level.maxSegments, v.threadLayout.threadStartDistance],
-      { async: !sync })
+      // The screws nearest to needing this level first; dropped once the screw is going away and smaller
+      // than the level, or the model has moved to another segment.
+      { async: !sync, priority: () => lod.onScreenPixels / level.minPixels, wanted: () => group._screwIndex === screwIndex && (lod.pixelGrowth >= 1 || lod.onScreenPixels >= level.minPixels) })
   }
   cache.set(levelIndex, geometry)
   if (typeof geometry.then === 'function') {
     const promise = geometry
     promise.then((built) => {
       // Keep it if this model still wants it; otherwise (moved to another segment, or replaced by a
-      // synchronous build) free it.
+      // synchronous build) free it, unless it is shared.
       if (cache.get(levelIndex) === promise) cache.set(levelIndex, built)
-      else built.dispose()
+      else if (!built.userData.sharedScrew) built.dispose()
     }, () => { if (cache.get(levelIndex) === promise) cache.delete(levelIndex) })
   }
   return geometry
@@ -237,11 +321,13 @@ export class virtualMassDriverScrew extends VirtualObject {
     v.versionNumber = versionNumber
   }
 
-  // Screws further away than this are under the smallest drawn size (see SCREW_LEVELS), so they get
-  // no model at all (with one segment of margin). pixelsPerRadian: drawing-buffer pixels per radian.
+  // Screws further away than this are under half the smallest drawn size (see SCREW_LEVELS), so they get
+  // no model at all (with one segment of margin). The models of nearer ones are given out early so that
+  // their first thread level (prefetched from an eighth of its size) is built by the time it is needed.
+  // pixelsPerRadian: drawing-buffer pixels per radian.
   static modelRange(pixelsPerRadian) {
     const v = virtualMassDriverScrew
-    const smallestPixels = SCREW_LEVELS[SCREW_LEVELS.length - 1].minPixels * PixelLOD.lodBias
+    const smallestPixels = SCREW_LEVELS[SCREW_LEVELS.length - 1].minPixels * PixelLOD.lodBias / 2
     return 2 * v.threadRadius * pixelsPerRadian / smallestPixels + v.launcherMassDriverLength / v.massDriverScrewSegments
   }
 
@@ -283,7 +369,14 @@ export class virtualMassDriverScrew extends VirtualObject {
         radialSegments: Math.max(3, Math.round(12 / Math.min(Math.max(1, threadStarts), 4))),
       }
       const cache = om.screwGeometries
-      cache.forEach(geometry => { if (typeof geometry.dispose === 'function') geometry.dispose() })  // (pending builds free themselves)
+      // Free built levels, and drop builds for the old segment that have not started (those that have
+      // free themselves when they finish).
+      cache.forEach(geometry => {
+        if (geometry.userData?.sharedScrew || geometry.sharedScrew) return   // shared with other segments
+        if (typeof geometry.dispose === 'function') geometry.dispose()
+        else geometry.cancel?.()
+      })
+      om.screwRotations.clear()
       cache.clear()
       om.children.forEach(lod => {
         lod.reset({ dispose: false })

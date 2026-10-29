@@ -30,12 +30,19 @@ export class PixelLOD extends THREE.LOD {
   // Prefetch levels (see addLevel) start building at this fraction of their threshold (4x the distance:
   // a slow machine following a launch vehicle moves tens of metres per frame).
   static prefetchFactor = 0.25
+  // An object whose on-screen size changes by more than this factor from one frame to the next (a
+  // screw flashing past a camera following a launch vehicle) is at any one size for only a frame or
+  // so: its expensive levels are not built or prefetched (they could not be ready in time, and would
+  // hold up the cheap levels it does show); the best built level is shown instead.
+  static fleetingRatio = 1.25
   static _buildMsThisFrame = 0
   static _frame = -1
+  static _frameCount = 0
 
   // Call once per rendered frame (before rendering) to reset the build budget.
   static beginFrame(frameNumber) {
     PixelLOD._frame = frameNumber
+    PixelLOD._frameCount++   // (renderer frame numbers advance once per render call, several per frame)
     PixelLOD._buildMsThisFrame = 0
   }
 
@@ -50,13 +57,16 @@ export class PixelLOD extends THREE.LOD {
     this.pixelLevels = [] // [{ minPixels, factory, object, cost }], sorted by minPixels descending
     this.currentPixelLevel = -1
     this.onScreenPixels = 0
+    this._previousPixels = 0
+    this._previousFrame = -2
+    this.pixelGrowth = 1
   }
 
   // factory() returns an Object3D (or null for "draw nothing"), or a Promise of one for levels built
   // in the background (e.g. by a worker); until it resolves the level counts as not built. `cost` is
   // 'expensive' for builds that should count against the per-frame budget. `prefetch` starts building
   // the level once the object is PixelLOD.prefetchFactor of the way to its threshold, so a background
-  // build is ready by the time it is needed.
+  // build is ready by the time it is needed. `prefetch` may instead be that fraction itself.
   addLevel(minPixels, factory, { cost = 'cheap', prefetch = false } = {}) {
     const level = { minPixels, factory: typeof factory === 'function' ? factory : () => factory, object: undefined, cost, prefetch, pending: null }
     if (typeof factory !== 'function') this._attach(level, factory)
@@ -76,6 +86,7 @@ export class PixelLOD extends THREE.LOD {
   _build(level) {
     if (level.object !== undefined) return true
     const recording = PixelLOD.buildBudget === Infinity
+    if (level.cost === 'expensive' && this._fleeting && !recording) return false
     // A background build still running: wait for it, except while recording, where every frame must
     // be complete (the factory then builds synchronously).
     if (level.pending && !recording) return false
@@ -109,6 +120,16 @@ export class PixelLOD extends THREE.LOD {
   update(camera) {
     if (!this.pixelLevels.length) return
     const pixels = this.pixelsFor(camera)
+    // Changing size fast (between consecutive frames)? Worked out once per frame (an LOD may be updated
+    // more than once in a frame).
+    if (this._previousFrame !== PixelLOD._frameCount) {
+      const ratio = Math.max(pixels, 1e-9) / Math.max(this._previousPixels, 1e-9)
+      // How much its on-screen size grew since the last frame (1 if unknown).
+      this.pixelGrowth = this._previousFrame === PixelLOD._frameCount - 1 ? ratio : 1
+      this._fleeting = this._previousFrame === PixelLOD._frameCount - 1 && (ratio > PixelLOD.fleetingRatio || ratio < 1 / PixelLOD.fleetingRatio)
+      this._previousPixels = pixels
+      this._previousFrame = PixelLOD._frameCount
+    }
     this.onScreenPixels = pixels
     let wanted = this.pixelLevels.findIndex(level => pixels >= level.minPixels)
     if (wanted === -1) wanted = this.pixelLevels.length // smaller than every threshold: nothing
@@ -121,10 +142,15 @@ export class PixelLOD extends THREE.LOD {
     if (shown === -1 && wanted < this.pixelLevels.length) {
       for (let i = wanted - 1; i >= 0; i--) if (this.pixelLevels[i].object !== undefined) { shown = i; break }
     }
-    // Start building the next finer level ahead of time if it asked for that.
-    const next = this.pixelLevels[Math.min(wanted, this.pixelLevels.length) - 1]
-    if (next?.prefetch && next.object === undefined && !next.pending && pixels >= next.minPixels * PixelLOD.prefetchFactor) {
-      this._build(next)
+    // Start building the next finer level that asked for it ahead of time (from `prefetch` of its
+    // threshold, or PixelLOD.prefetchFactor), skipping finer levels without prefetch (such as one
+    // drawn as soon as the object is drawn at all).
+    for (let i = Math.min(wanted, this.pixelLevels.length) - 1; i >= 0; i--) {
+      const next = this.pixelLevels[i]
+      if (!next.prefetch) continue
+      const factor = next.prefetch === true ? PixelLOD.prefetchFactor : next.prefetch
+      if (next.object === undefined && !next.pending && pixels >= next.minPixels * factor) this._build(next)
+      break
     }
     this.currentPixelLevel = shown
     this.pixelLevels.forEach((level, i) => { if (level.object) level.object.visible = (i === shown) })
