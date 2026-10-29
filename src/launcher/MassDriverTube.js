@@ -6,6 +6,7 @@ import { PixelLOD } from '../scene/PixelLOD.js'
 import { SubPixelFade, withSubPixelFade } from '../scene/SubPixelFade.js'
 import { MooringCables } from './MooringCables.js'
 import { ecefToGeodetic } from '../physics/geodesy.js'
+import { addTubeCoordinates, withTubeWallLook } from './tubeWallLook.js'
 
 // Lift fans per instanced chunk (each chunk picks its own level of detail).
 const LIFT_FAN_CHUNK = 32
@@ -31,7 +32,8 @@ export class massDriverTubeModel {
     //this.massDriverTubeMaterial1 = new THREE.MeshPhongMaterial( {map: this.tubeTexture, side: THREE.FrontSide, transparent: true, opacity: 1, shininess: 0.5} )
     //this.massDriverTubeMaterial1 = new THREE.MeshPhongMaterial( {side: THREE.FrontSide, color: 0x7fffff, transparent: true, opacity: 1, shininess: 0.5} )
     
-    this.massDriverTubeMaterial1 = new THREE.MeshPhongMaterial( { side: THREE.DoubleSide, transparent: true, opacity: 0.15, shininess: 0.5} )
+    // The wall: clear, with a faint surface (see tubeWallLook.js).
+    this.massDriverTubeMaterial1 = withTubeWallLook(new THREE.MeshPhongMaterial( { side: THREE.DoubleSide, transparent: true, opacity: 0.15, shininess: 0.5} ))
     //this.massDriverTubeMaterial1 = new THREE.MeshPhongMaterial( { side: THREE.DoubleSide, shininess: 0.5} )
 
     this.massDriverTubeMaterial2 = new THREE.MeshPhongMaterial( { side: THREE.DoubleSide, transparent: true, opacity: 0.5, shininess: 0.5, color: 0x000000} )
@@ -135,7 +137,7 @@ export class massDriverTubeModel {
     let massDriverTubeGeometry, massDriverTubeMaterial
     // const lodEnabled = false
     // if (!lodEnabled) {
-      massDriverTubeGeometry = new THREE.TubeGeometry(massDriverSegmentCurve, modelLengthSegments, this.radius * exagerateTubeFactor, modelRadialSegments, false)
+      massDriverTubeGeometry = addTubeCoordinates(new THREE.TubeGeometry(massDriverSegmentCurve, modelLengthSegments, this.radius * exagerateTubeFactor, modelRadialSegments, false), tubeSegmentLength)
       massDriverTubeMaterial = this.massDriverTubeMaterial1
     // }
     // else {
