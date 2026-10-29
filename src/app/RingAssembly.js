@@ -106,13 +106,14 @@ export class RingAssembly {
           const copies = []
           for (let i = 0; i < n / 2; i++) {
             const theta = i * k
-            const { top, quaternion, axialTension, radialTension } = this.ringForcesAt(system, theta)
+            const { top, matrix, axialTension, radialTension } = this.ringForcesAt(system, theta)
             const step = Math.round(balancedPointBxAvePercent(this.planetSpec, crv, d, axialTension, radialTension) / TETHER_DESIGN_STEP)
             const design = designFor(step, axialTension)
             const tether = this.createTetherLOD(design.levels, design.fanWidths)
             tether.position.copy(top)
-            tether.quaternion.copy(quaternion)
-            copies.push({ quaternion, position: top, profiles: design.rootProfiles })
+            tether.matrixAutoUpdate = false
+            tether.matrix.copy(matrix)
+            copies.push({ matrix, position: top, profiles: design.rootProfiles })
             list.push(tether)
             refCoordSys.add(tether)
           }
@@ -187,6 +188,7 @@ export class RingAssembly {
     // curve's normal), so the tethers must cancel every component, including the small one of gravity
     // along the ring (the planet's centre is not quite square to an elliptical ring). A tether hangs in
     // a vertical plane: turn that plane about the local vertical at its top until it holds the pull.
+    // (Applied as a shear, below, so that the tops stay on the rings.)
     const pull = gravity.add(centrifugal).negate()
     const up = top.clone().normalize()
     const radial0 = new THREE.Vector3(top.x, 0, top.z).normalize()   // away from the ring's axis
@@ -199,10 +201,31 @@ export class RingAssembly {
       angle -= pull.dot(side) / pull.dot(up.clone().cross(side))
     }
     turn.setFromAxisAngle(up, angle)
+    // The copy's placement in the ring frame: moved onto the ring, about the ring axis to its azimuth,
+    // and two shears of the tether (in its own frame, before the rotation):
+    // - the turn: each point moves along the ring by the turn times its horizontal distance out from
+    //   the ring, as the turn would move it, except that its tops, which fan out along the ring for
+    //   kilometres, stay on the rings;
+    // - the fan onto the ring: the tops were designed along a circle about the ring axis, but the
+    //   (elliptical) ring there runs at a slight angle to it, so each point moves in the ring's plane
+    //   by that angle times its distance along the ring.
+    const up0 = reference.clone().normalize()
+    const out0 = new THREE.Vector3(reference.x, 0, reference.z).normalize()   // in the ring's plane
+    const horizontal0 = out0.clone().addScaledVector(up0, -out0.dot(up0)).normalize()
+    const along0 = up0.clone().cross(horizontal0)
+    const tangent0 = p2.clone().sub(p0).applyAxisAngle(yAxis, -theta).normalize()
+    const fanAngle = tangent0.dot(out0) / tangent0.dot(along0)
+    const m = [0, 1, 2].map(i => [0, 1, 2].map(j =>
+      angle * along0.getComponent(i) * horizontal0.getComponent(j) + fanAngle * out0.getComponent(i) * along0.getComponent(j)))
+    const shear = new THREE.Matrix4().set(
+      1 + m[0][0], m[0][1], m[0][2], 0,
+      m[1][0], 1 + m[1][1], m[1][2], 0,
+      m[2][0], m[2][1], 1 + m[2][2], 0,
+      0, 0, 0, 1)
+    const matrix = new THREE.Matrix4().compose(top, new THREE.Quaternion().setFromAxisAngle(yAxis, theta), new THREE.Vector3(1, 1, 1)).multiply(shear)
     return {
       top,
-      // The copy's orientation in the ring frame: about the ring axis to its azimuth, then turned.
-      quaternion: turn.clone().multiply(new THREE.Quaternion().setFromAxisAngle(yAxis, theta)),
+      matrix,
       sidewaysTurn: angle,
       axialTension: pull.dot(yAxis.clone().applyQuaternion(turn)),
       radialTension: pull.dot(radial0.applyQuaternion(turn)),

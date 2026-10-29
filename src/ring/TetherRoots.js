@@ -16,8 +16,8 @@ const MIN_STEP_DROP = 30 // m: the smallest drop in height between ground sample
 const _p = new THREE.Vector3()
 
 export class TetherRoots {
-  // copies: [{quaternion, position, profiles}], how each copy of the tether geometry is placed in the
-  // ring frame (rotated by quaternion, then moved to position), and its geometry's
+  // copies: [{matrix, position, profiles}], how each copy of the tether geometry is placed in the ring
+  // frame (matrix; position is its translation), and its geometry's
   // rootProfiles (TetherGeometry; per tether type, null entries have no root).
   constructor({ copies, refCoordSys, ringToPlanetQuaternion, ellipsoid, material }) {
     this.copies = copies
@@ -93,7 +93,7 @@ export class TetherRoots {
     const k = Math.min(points.length - 2, Math.floor(index))
     target.lerpVectors(points[k], points[k + 1], index - k)
     const copy = this.copies[root.copy]
-    return target.applyQuaternion(copy.quaternion).add(copy.position)
+    return target.applyMatrix4(copy.matrix)
   }
 
   // Height above the ground (m) of point `index` of a root's profile.
