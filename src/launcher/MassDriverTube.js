@@ -82,6 +82,7 @@ export class massDriverTubeModel {
     this.mooringCableRadius = dParamWithUnits['launcherMassDriverMooringCableRadius'].value
     this.mooringSpread = dParamWithUnits['launcherMassDriverMooringSpread'].value
     this.mooringCatenary = dParamWithUnits['launcherMassDriverMooringCatenary'].value
+    this.mooringForkLevels = Math.max(0, Math.round(dParamWithUnits['launcherMassDriverMooringForkLevels'].value))
   }
   
   createModel(curve, segmentIndex) {
@@ -190,20 +191,29 @@ export class massDriverTubeModel {
   }
 
   // Mooring cables for the part of this segment that is under the sea (the tube's centre below sea
-  // level): a mooring point every mooringSpacing metres along the whole tube (so the spacing does not
-  // depend on segment boundaries), each holding the bottom of the tube down with an inverted V of
-  // cables to the sea floor. See MooringCables.js.
+  // level): a mooring every mooringSpacing metres along the whole tube, half a spacing in from its start
+  // (so the spacing does not depend on segment boundaries), each an inverted V of cables from anchors on the sea floor, each leg forking
+  // mooringForkLevels times on its way up to hold the bottom of the tube at 2^mooringForkLevels points
+  // spread evenly over the spacing. See MooringCables.js.
   createMooringCables(segmentGroup, curve, segmentIndex, refPoint, orientation, tubeRadius, tubeSegmentLength) {
     const totalLength = curve.getLength()
     const start = segmentIndex / this.massDriverTubeSegments * totalLength
     const end = (segmentIndex + 1) / this.massDriverTubeSegments * totalLength
     const moorings = []
-    for (let s = Math.ceil(start / this.mooringSpacing) * this.mooringSpacing; s < end; s += this.mooringSpacing) {
+    // (Half a spacing in from the end of the tube, so that each holds the whole of its spacing.)
+    for (let s = (Math.ceil(start / this.mooringSpacing - 0.5) + 0.5) * this.mooringSpacing; s < end; s += this.mooringSpacing) {
       const fraction = s / totalLength
       const point = curve.getPointAt(fraction)
       if (ecefToGeodetic(point.x, point.y, point.z, this.ellipsoid).alt >= 0) continue
       const upward = curve.getNormalAt(fraction)
-      moorings.push({ apex: point.addScaledVector(upward, -tubeRadius), side: curve.getBinormalAt(fraction) })
+      // Where the forks of its legs hold the tube: the bottom of the tube, evenly over the spacing.
+      const count = 2 ** this.mooringForkLevels
+      const attachments = []
+      for (let k = 0; k < count; k++) {
+        const at = Math.min(1, Math.max(0, (s + ((k + 0.5) / count - 0.5) * this.mooringSpacing) / totalLength))
+        attachments.push(curve.getPointAt(at).addScaledVector(curve.getNormalAt(at), -tubeRadius))
+      }
+      moorings.push({ apex: point.addScaledVector(upward, -tubeRadius), side: curve.getBinormalAt(fraction), attachments })
     }
     if (moorings.length === 0) return
     const cables = new MooringCables({

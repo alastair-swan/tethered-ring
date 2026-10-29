@@ -347,6 +347,7 @@ export function createParameterDefinitions() {
   launcherMassDriverMooringSpacing: {value: 1000, units: 'm', autoMap: true, min: 20, max: 5000, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverMooringCableRadius: {value: 0.1, units: 'm', autoMap: true, min: 0.01, max: 1, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverMooringSpread: {value: 1, units: '', autoMap: true, min: 0, max: 3, onChange: 'updateLauncher', folder: 'Launcher'},   // sideways distance of each anchor per metre of depth below the tube (1 = 45 degree legs)
+  launcherMassDriverMooringForkLevels: {value: 4, units: '', autoMap: true, min: 0, max: 8, step: 1, onChange: 'updateLauncher', folder: 'Launcher'},   // times each mooring leg forks on its way up (like the ring's tethers): it holds the tube at 2^levels points spread over the mooring spacing
   launcherMassDriverMooringCatenary: {value: 2, units: '', autoMap: true, min: 0.3, max: 20, onChange: 'updateLauncher', folder: 'Launcher'},   // catenary constant of each leg as a multiple of its length (larger = straighter)
   launcherMassDriverTubeLinerThickness: {value: 0.002, units: 'm', autoMap: true, min: 1, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverTubeWallThickness: {value: 0.01, units: 'm', autoMap: true, min: 0, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},

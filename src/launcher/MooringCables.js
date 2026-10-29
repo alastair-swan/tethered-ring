@@ -6,9 +6,15 @@ import { catenaryPoints } from './catenary.js'
 
 // Mooring cables for one tube segment. Where the mass-driver tube runs under the sea it is buoyant
 // and held down by cables to the sea floor, in inverted Vs so that they also resist sideways
-// currents: at each mooring point two legs run from the bottom of the tube to anchors on either side,
-// each offset sideways by (depth below the tube) x spread. Each leg hangs as a catenary between the
-// tube and its anchor (see catenaryPoints).
+// currents: at each mooring two legs run up from anchors on either side, each offset sideways by
+// (depth below the tube) x spread, to the bottom of the tube. Each leg hangs as a catenary between its
+// anchor and the tube (see catenaryPoints).
+//
+// Like the ring's tethers, each leg forks on its way up, so that it holds the tube at many points
+// without more anchors: it forks in two halfway up, each branch again halfway along the rest, and so on
+// (the given attachments: 2^levels points spread along the tube). After each fork a branch heads
+// straight (relative to the leg's catenary) for the middle of the attachments it holds, and the last
+// ones for their own; each fork halves the cable's cross-section.
 //
 // The anchors sit on the terrain, which streams in (and refines) after the tube segments are built,
 // so every set re-samples its anchors from time to time (MooringCables.refreshSome, once per frame)
@@ -17,7 +23,7 @@ import { catenaryPoints } from './catenary.js'
 // The legs are drawn like the ring's tethers, as glowing lines at their real diameter that fade with
 // their pixel coverage (src/scene/structureLines.js), so they can be followed all the way down to the
 // sea floor, where each ends at an anchor block. Close up they are also drawn as solid cable.
-const SEGMENTS_PER_LEG = 32
+const SEGMENTS_PER_FINEST = 4   // line segments along the last stretch (above the last fork) of a leg
 const LINES_MIN_PIXELS = 1 / 2000
 const cylinderGeometry = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true).translate(0, 0.5, 0)
 cylinderGeometry.userData.shared = true
@@ -48,7 +54,9 @@ export class MooringCables {
   static sets = new Set()
   static _queue = []
 
-  // moorings: [{ apex: Vector3 (planet coordinates, bottom of the tube), side: Vector3 (unit, sideways) }]
+  // moorings: [{ apex: Vector3 (planet coordinates, bottom of the tube), side: Vector3 (unit, sideways),
+  //   attachments: [Vector3] (where the legs' forks hold the bottom of the tube: 2^levels of them, in
+  //   order along it; or none, for an unforked leg to the apex) }]
   // toLocal(planetPoint, target): converts planet coordinates to the segment model's coordinates.
   // getSampler(): the terrain height sampler (latDeg, lonDeg) -> { heightMeters } | null, if any yet.
   // shape: catenary constant as a multiple of each leg's length (see catenaryPoints).
@@ -91,7 +99,7 @@ export class MooringCables {
       const geo = ecefToGeodetic(point.x, point.y, point.z, this.ellipsoid)
       return { geo, height: sample(geo.lat, geo.lon)?.heightMeters ?? null }
     }
-    for (const { apex, side } of this.moorings) {
+    for (const { apex, side, attachments } of this.moorings) {
       const below = heightAt(apex)
       if (below.height === null) continue                 // terrain not loaded yet
       const depth = below.geo.alt - below.height
@@ -101,7 +109,7 @@ export class MooringCables {
         const at = heightAt(_p)
         const height = at.height ?? below.height
         const anchor = geodeticToECEF(at.geo.lat, at.geo.lon, height, this.ellipsoid)
-        legs.push([apex, new THREE.Vector3(anchor.x, anchor.y, anchor.z)])
+        legs.push([apex, new THREE.Vector3(anchor.x, anchor.y, anchor.z), attachments?.length ? attachments : [apex]])
       }
     }
     const signature = legs.map(([, anchor]) => `${anchor.x.toFixed(1)},${anchor.y.toFixed(1)},${anchor.z.toFixed(1)}`).join(';')
@@ -114,17 +122,16 @@ export class MooringCables {
   build(legs) {
     this.clear()
     if (legs.length === 0) return
-    const curves = legs.map(([apex, anchor]) => {
-      const up = apex.clone().add(anchor).normalize() // local vertical (geocentric is close enough here)
-      return catenaryPoints(apex, anchor, up, this.shape, SEGMENTS_PER_LEG).map(p => this.toLocal(p, new THREE.Vector3()))
-    })
+    const curves = legs.flatMap(([apex, anchor, attachments]) => this.branches(apex, anchor, attachments))
 
     // Lines (always), with the tether fade
     const positions = []
+    const diameters = []
     let reach = 0
-    for (const points of curves) {
+    for (const { points, radius } of curves) {
       for (let i = 0; i < points.length - 1; i++) {
         positions.push(points[i].x, points[i].y, points[i].z, points[i + 1].x, points[i + 1].y, points[i + 1].z)
+        diameters.push(2 * radius, 2 * radius)
       }
       for (const p of points) reach = Math.max(reach, p.length())
     }
@@ -132,6 +139,7 @@ export class MooringCables {
     const lineGeometry = new THREE.BufferGeometry()
     lineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
     StructureLines.constantAttributes(lineGeometry, count, 2 * this.cableRadius)
+    lineGeometry.setAttribute('diameter', new THREE.Float32BufferAttribute(diameters, 1))
     lineGeometry.computeBoundingSphere()
     lineMaterial ??= StructureLines.createMaterial(0x9a9a9a, { referenceDiameter: 2 * this.cableRadius, fog: true })
     const lines = new THREE.LineSegments(lineGeometry, lineMaterial)
@@ -140,15 +148,15 @@ export class MooringCables {
     this.lines.add(lines)
 
     // Solid cable close up: one cylinder per line segment
-    const cylinders = new THREE.InstancedMesh(cylinderGeometry, cableMaterial, curves.length * SEGMENTS_PER_LEG)
+    const cylinders = new THREE.InstancedMesh(cylinderGeometry, cableMaterial, count / 2)
     cylinders.name = 'mooringCable'
     let n = 0
-    for (const points of curves) {
+    for (const { points, radius } of curves) {
       for (let i = 0; i < points.length - 1; i++) {
         _dir.subVectors(points[i + 1], points[i])
         const length = _dir.length()
         _q.setFromUnitVectors(_yAxis, _dir.divideScalar(length))
-        _s.set(this.cableRadius, length, this.cableRadius)
+        _s.set(radius, length, radius)
         cylinders.setMatrixAt(n++, _m.compose(points[i], _q, _s))
       }
     }
@@ -172,6 +180,37 @@ export class MooringCables {
     // The LOD is judged by the nearest part of the cables, which reach down and out to the anchors.
     this.lod.extent = reach
     this.anchorLod.extent = reach
+  }
+
+  // The branches of one leg, from `anchor` up to the tube (forking towards `attachments`, 2^levels points
+  // along the bottom of the tube, around `apex`), as [{ points (the segment model's coordinates), radius }].
+  branches(apex, anchor, attachments) {
+    const levels = Math.round(Math.log2(attachments.length))
+    const segments = SEGMENTS_PER_FINEST * 2 ** levels
+    const up = apex.clone().add(anchor).normalize() // local vertical (geocentric is close enough here)
+    // The leg's catenary to the apex, from the anchor (t = 0) to the tube (t = 1); forks at t = 1 - 2^-j.
+    const path = catenaryPoints(apex, anchor, up, this.shape, segments)
+    const offsets = attachments.map(a => a.clone().sub(apex))
+    const out = []
+    // A branch holding attachments [first, first + size), from its fork at point `from` (where it is
+    // `base` off the catenary), heading for their middle; it forks again halfway along the rest.
+    const grow = (first, size, from, base, level) => {
+      const target = new THREE.Vector3()
+      for (let k = first; k < first + size; k++) target.add(offsets[k])
+      target.divideScalar(size)
+      const to = size > 1 ? segments - (segments - from) / 2 : segments
+      const at = (i) => _p.copy(base).lerp(target, (i - from) / (segments - from))
+      const points = []
+      for (let i = from; i <= to; i++) points.push(this.toLocal(path[i].clone().add(at(i)), new THREE.Vector3()))
+      out.push({ points, radius: this.cableRadius * Math.SQRT1_2 ** level })
+      if (size > 1) {
+        const fork = at(to).clone()
+        grow(first, size / 2, to, fork, level + 1)
+        grow(first + size / 2, size / 2, to, fork, level + 1)
+      }
+    }
+    grow(0, 2 ** levels, 0, new THREE.Vector3(), 0)
+    return out
   }
 
   clear() {
