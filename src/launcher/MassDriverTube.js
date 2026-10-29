@@ -50,7 +50,9 @@ export class massDriverTubeModel {
     // Low-detail versions for fans a few pixels across (see createLiftFans).
     this.liftFanHubGeometryLow = new THREE.SphereGeometry(this.radius * 0.1, 6, 4)
     this.liftFanHubGeometryLow.scale(1, 1, 3)
-    this.liftFanDiskGeometryLow = new THREE.SphereGeometry(this.radius * 1.5, 3, 16)
+    // (The disks are spheres flattened along z: they need a multiple of 2 segments round, or the
+    // meridians miss one side of the disk and it looks cut off.)
+    this.liftFanDiskGeometryLow = new THREE.SphereGeometry(this.radius * 1.5, 4, 16)
     this.liftFanDiskGeometryLow.scale(1, 1, 0.05)
     // this.liftFanCowlingGeometry = new THREE.TorusGeometry(this.radius*1.6, this.radius/32, 16, 64)
     // this.liftFanCowlingGeometry.scale(1, 1, 4)
