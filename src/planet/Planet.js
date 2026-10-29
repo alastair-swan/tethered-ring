@@ -29,22 +29,37 @@ function bodyKey(planetSpec) {
   return String(planetSpec?.name ?? '').toLowerCase();
 }
 
+// The regional high-resolution bakes for each body (folders under assets/, overlays on the body's global
+// set). Every scene uses all of them that are on the machine: their tiles are streamed only where the
+// camera is close enough to need them (see CubedSpherePlanetRenderer._shouldRefine), and one that is
+// missing (or not pulled from Git LFS) is skipped. The Earth regions other than hawaii are baked by
+// tools/adaptive_lod.py (EARTH_REGIONS); see docs/ASSETS.md.
+export const REGIONAL_BAKES = {
+  earth: ['hawaii', 'chimborazo', 'new_zealand', 'washington', 'kilimanjaro', 'boca_chica', 'christmas_island', 'queensland'],
+  moon: ['moon_tranquillitatis', 'moon_korolev'],
+};
+
 /**
- * Baked asset sets for a body (names of folders under assets/).
- * Earth -> ['earth'], Moon -> ['moon'], anything else -> [] (flat colour).
+ * Baked asset sets for a body (names of folders under assets/): its global set, then its regional
+ * bakes. Earth -> ['earth', ...], Moon -> ['moon', ...], anything else -> [] (flat colour).
  */
 export function defaultPlanetAssets(planetSpec) {
-  switch (bodyKey(planetSpec)) {
-    case 'earth': return ['earth'];
-    case 'moon': return ['moon'];
+  const body = bodyKey(planetSpec);
+  switch (body) {
+    case 'earth':
+    case 'moon':
+      return [body, ...REGIONAL_BAKES[body]];
     default: return [];
   }
 }
 
-// Imagery credits for assets whose manifests do not carry their own (a manifest's `attribution` wins).
+// Imagery credits for assets whose manifests do not carry their own (a manifest's `attribution` wins),
+// shown while their tiles are on screen. hawaii's imagery is Esri World Imagery (fetched by
+// tools/download_xhr_hawaii_texture_tiles.py); the other Earth regions' is EOxCloudless.
 const EOX_CLOUDLESS = 'EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2024)';
+const ESRI_WORLD_IMAGERY = 'Powered by Esri. Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community';
 const ASSET_ATTRIBUTIONS = {
-  hawaii: EOX_CLOUDLESS,
+  hawaii: ESRI_WORLD_IMAGERY,
   chimborazo: EOX_CLOUDLESS,
   // Regional bakes made with tools/adaptive_lod.py's EARTH_REGIONS use the same imagery.
   new_zealand: EOX_CLOUDLESS,
@@ -129,10 +144,11 @@ function assetNamesFromUrl() {
  *                         'roughness' | 'landWater' | 'loading' (default 'none').
  *   startupChart          Log startup timing milestones and an ASCII load chart
  *                         to the console (default false).
- *   onAttribution(text)   Called once the asset manifests have loaded, with the
- *                         imagery credits of the assets that did ('' if none).
- *                         Assets that are not on this machine are skipped (the
- *                         tiles below them are used), and so are their credits.
+ *   onAttribution(text)   Called whenever the imagery on screen changes, with the
+ *                         credits of the assets whose tiles are shown ('' if
+ *                         none). Assets that are not on this machine are skipped
+ *                         (the tiles below them are used), and so are their
+ *                         credits.
  */
 const _atmoQuaternion = new THREE.Quaternion();
 const _atmoInverse = new THREE.Quaternion();
@@ -155,6 +171,8 @@ export class Planet {
     const assetNames = assetNamesFromUrl() ?? parseNameList(assets ?? defaultPlanetAssets(planetSpec));
     this.assetNames = assetNames;
 
+    this.manifestAttributions = new Map(); // asset name -> its manifest's credit
+
     this.surface = new THREE.Group();
     this.surface.name = 'planetSurface';
     this.surface.rotation.y = PLANET_YAW; // aligns the baked longitude frame with the app's
@@ -169,8 +187,11 @@ export class Planet {
       doubleSided,
       opacity,
       water: rendererOptions.water ?? planetSpec.hasOcean === true,
-      onAssetsLoaded: (loaded) => onAttribution?.([...new Set(loaded
-        .map(({ name, attribution }) => attribution ?? ASSET_ATTRIBUTIONS[name])
+      onAssetsLoaded: (loaded) => {
+        for (const { name, attribution } of loaded) if (attribution) this.manifestAttributions.set(name, attribution);
+      },
+      onVisibleAssets: (names) => onAttribution?.([...new Set(names
+        .map((name) => this.manifestAttributions.get(name) ?? ASSET_ATTRIBUTIONS[name])
         .filter(Boolean))].join('; ')),
     });
 

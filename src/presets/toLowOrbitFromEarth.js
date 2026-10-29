@@ -101,8 +101,8 @@ export function toLowOrbitFromEarth(guidParamWithUnits, nonGUIParams) {
   // nonGUIParams['cameraUp'] = new THREE.Vector3(0.8819834230776509, 0.46865418712915813, 0.04968394411213295)  
 
   // Hawaii Big Island
-  // The Big Island's high-resolution bake (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'hawaii'] })
+  // Near the Big Island's regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['hawaii'] })
 
   // nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(0, 0, 0)
   // nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(0, 1, 0)

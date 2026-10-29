@@ -205,7 +205,7 @@ export class App {
       fastCameraSpeed: n.planet2FastCameraSpeed,
       maxLodWhileFast: n.planet2MaxLodWhileFast,
       debugMode: n.planet2DebugMode,
-      // Credits for the planet imagery that loaded (regional tile sets are used only where present).
+      // Credits for the planet imagery on screen.
       onAttribution: (text) => this.setImageryAttribution(text),
     })
     this.planetCoordSys.add(this.planet.surface, this.planet.atmosphere)

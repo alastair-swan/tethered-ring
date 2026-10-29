@@ -80,7 +80,6 @@ export function toOrbitFromMoonLauncherPresets(guidParamWithUnits, nonGUIParams)
   guidParamWithUnits['showMarkers'].value = false
   guidParamWithUnits['showLogo'].value = false
 
-  nonGUIParams['planet2Assets'] = ['moon', 'moon_tranquillitatis']
   nonGUIParams['planet2RequireKtx2'] = false
   nonGUIParams['planet2TextureAnisotropy'] = 16
   nonGUIParams['planet2SurfaceColor'] = 0xffffff

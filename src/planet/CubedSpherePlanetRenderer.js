@@ -8,6 +8,10 @@ import { PixelLOD } from '../scene/PixelLOD.js';
 // many tiles that finish loading together at start-up were all uploaded in one frame's render.
 const TILE_UPLOAD_BUDGET_MS = 4;
 
+// The base tile sets (assets/earth, assets/moon) have every tile through this LOD; regional overlays only
+// add tiles below it (BASE_FULL_COVERAGE_LOD in tools/adaptive_lod.py).
+const BASE_FULL_COVERAGE_LOD = 3;
+
 // =============================================================================
 // CubedSpherePlanetRenderer - cubed-sphere quadtree LOD planet renderer that
 // streams KTX2 colour tiles and u16 height tiles from assets/<name>/.
@@ -420,6 +424,10 @@ export class CubedSpherePlanetRenderer {
     // (or is still a Git LFS pointer, not pulled) is skipped: the tiles below it are used instead.
     this.loadedAssets = [];
     this.onAssetsLoaded = options.onAssetsLoaded ?? null;
+    // The assets whose tiles are on screen (names, sorted), reported to options.onVisibleAssets whenever
+    // they change, so that each source's credit is shown while its imagery is.
+    this.onVisibleAssets = options.onVisibleAssets ?? null;
+    this._visibleAssetsKey = null;
 
     this.enabled = true;
     this.segments = Math.max(2, options.tileSegments ?? 24);
@@ -451,6 +459,8 @@ export class CubedSpherePlanetRenderer {
     // Throttle high-LOD refinement while the camera moves quickly.
     this.fastCameraSpeed = options.fastCameraSpeed ?? Infinity;
     this.maxLodWhileFast = options.maxLodWhileFast ?? Infinity;
+    // The deepest LOD to use (for comparing levels; Infinity = as deep as the assets go).
+    this.lodCap = Infinity;
 
     this.requireKtx2 = options.requireKtx2 === true;
     this.receiveSurfaceShadows = options.receiveSurfaceShadows === true;
@@ -765,6 +775,12 @@ export class CubedSpherePlanetRenderer {
         const mergeStart = performance.now();
         if (data.tiles) {
           for (const [k, v] of Object.entries(data.tiles)) {
+            // The base is complete through BASE_FULL_COVERAGE_LOD, so an overlay's tiles there would
+            // only replace the base's imagery over a large area (a quarter of a cube face at LOD 1) with
+            // its own: older bakes include such a chain of tiles down to their area (tools/adaptive_lod.py
+            // now leaves them out).
+            const lod = Number(k.split('/')[1]);
+            if (lod <= BASE_FULL_COVERAGE_LOD && this.manifestTileMap.has(k) && !this.tileSourceMap.has(k)) continue;
             this.manifestTileMap.set(k, v);
             this.tileSourceMap.set(k, source);
             count += 1;
@@ -1451,15 +1467,14 @@ export class CubedSpherePlanetRenderer {
   // Screen-space-error driven refinement with hysteresis and speed throttling.
   // Refinement is asset-driven: a tile only refines if higher-LOD child tiles
   // were actually generated (present in the manifest), which prevents 404 storms
-  // and the flicker/evict churn they cause.
+  // and the flicker/evict churn they cause. Tiles from regional overlays refine
+  // the same way as the base's (by how large they are on screen): every Earth
+  // scene loads every overlay on the machine, and uses its tiles where the
+  // camera is close enough to need them.
   _shouldRefine(tile) {
-    if (tile.lod >= this.maxAvailableLod) return false;
+    if (tile.lod >= Math.min(this.maxAvailableLod, this.lodCap)) return false;
     this._refreshTileCache(tile);
     if (!tile.hasChildAssets) return false;
-
-    // Enhancement overlays should refine all the way through their own manifest
-    // so the whole overlay region fills in, not just the camera-facing slice.
-    if (this.tileSourceMap.has(tile.id)) return true;
 
     if (this.cameraSpeedMps > this.fastCameraSpeed && tile.lod >= this.maxLodWhileFast) {
       return false;
@@ -1506,9 +1521,6 @@ export class CubedSpherePlanetRenderer {
     boost += Math.max(0, 3 - tile.lod) * 2.5;
     if (tile.lod === 0) boost *= 12;
     else if (tile.lod === 1) boost *= 5;
-    // Overlay tiles should win against the base globe so the enhancement layer
-    // becomes complete instead of being partially starved by base tile traffic.
-    if (this.tileSourceMap.has(tile.id)) boost += 8;
     boost += 2.5 * clamp01((meta.roughness ?? 0.1) * 6);        // rough/mountainous
     boost += 1.2 * land;                                         // land over ocean
     boost -= 0.6 * (1 - land);                                   // de-prioritize ocean
@@ -1527,7 +1539,6 @@ export class CubedSpherePlanetRenderer {
     let priority = 1e6 / distance;
     priority += tile.lod * 50;
     priority *= tile.boost;
-    if (this.tileSourceMap.has(tile.id)) priority *= 20;
 
     // Strongly prefer camera-facing tiles.
     const facing = tile.centerNormal.dot(this._camDirLocal);
@@ -2270,11 +2281,13 @@ varying vec3 vDaylightUp;`)
   // ---------------------------------------------------------------------------
 
   _applyVisibility() {
+    const visibleAssets = new Set();
     for (const tile of this.tiles.values()) {
       if (!tile.mesh) continue;
       const visible = tile.visibleFrame === this.frame;
       tile.visible = visible;
       tile.mesh.visible = visible;
+      if (visible && tile.ready) visibleAssets.add(this.tileSourceMap.get(tile.id)?.name ?? this.assets[0]?.name);
       if (visible && tile.ready && this.debugStats.startupTrace.firstVisibleReadyMs == null) {
         this._traceFirst('firstVisibleReadyMs', tile, 'firstVisibleReadyTileId');
       }
@@ -2284,6 +2297,12 @@ varying vec3 vDaylightUp;`)
       }
     }
     if (this.debugMode !== 'none') this._applyDebugColors();
+    const names = [...visibleAssets].filter(Boolean).sort();
+    const key = names.join(',');
+    if (key !== this._visibleAssetsKey) {
+      this._visibleAssetsKey = key;
+      this.onVisibleAssets?.(names);
+    }
   }
 
   // How many LOD levels coarser the visible neighbour across an edge is

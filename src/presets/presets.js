@@ -96,8 +96,8 @@ function defaultBehaviour(guidParamWithUnits, nonGUIParams) {
 }
 
 function launchVehicleOrbit(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the new_zealand regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'new_zealand'] })
+  // Near the new_zealand regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['new_zealand'] })
 
   // guidParamWithUnits['ringFinalAltitude'].value = 22000  // m
   // guidParamWithUnits['numTethers'].value = 1300
@@ -207,8 +207,8 @@ function launchVehicleOrbit(guidParamWithUnits, nonGUIParams) {
 }
 
 function launchVehiclePanShot(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the new_zealand regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'new_zealand'] })
+  // Near the new_zealand regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['new_zealand'] })
 
   // guidParamWithUnits['ringFinalAltitude'].value = 22000  // m
   // guidParamWithUnits['numTethers'].value = 1300
@@ -303,8 +303,8 @@ function launchVehiclePanShot(guidParamWithUnits, nonGUIParams) {
 
 
 function transitVehicleDollyShotWashington(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the washington regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'washington'] })
+  // Near the washington regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['washington'] })
 
   // guidParamWithUnits['ringFinalAltitude'].value = 22000  // m
   // guidParamWithUnits['numTethers'].value = 1300
@@ -382,8 +382,8 @@ function transitVehicleDollyShotWashington(guidParamWithUnits, nonGUIParams) {
 }
 
 function transitVehicleDollyShotAustralia(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the queensland regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'queensland'] })
+  // Near the queensland regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['queensland'] })
 
   // guidParamWithUnits['ringFinalAltitude'].value = 22000  // m
   // guidParamWithUnits['numTethers'].value = 1300
@@ -553,8 +553,8 @@ function launchVehiclePanShotInSpace(guidParamWithUnits, nonGUIParams) {
 }
 
 function launchVehicleFountain(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the new_zealand regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'new_zealand'] })
+  // Near the new_zealand regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['new_zealand'] })
 
   // guidParamWithUnits['ringFinalAltitude'].value = 22000  // m
   // guidParamWithUnits['numTethers'].value = 1300
@@ -703,8 +703,8 @@ function LaunchVehicleAndTubeBugs(guidParamWithUnits, nonGUIParams) {
 }
 
 function launchSystemOverview(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the new_zealand regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'new_zealand'] })
+  // Near the new_zealand regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['new_zealand'] })
 
   // guidParamWithUnits['ringFinalAltitude'].value = 22000  // m
   // guidParamWithUnits['numTethers'].value = 1300
@@ -866,8 +866,8 @@ function solarPanelsCalifornia(guidParamWithUnits, nonGUIParams) {
 }
 
 function twoStageMassDriver(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the new_zealand regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'new_zealand'] })
+  // Near the new_zealand regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['new_zealand'] })
 
   // Uses Mt Ruapehu launch location
 
@@ -1294,9 +1294,9 @@ function bigIslandLauncher(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-2470937.952519685, 2048799.9499429713, -5527483.037906753)
   nonGUIParams['cameraUp'] = new THREE.Vector3(-0.3901202681575166, 0.3354310762809081, -0.8574917897203093)
 
-  // The Big Island's high-resolution bake, loading the launcher's surroundings first.
+  // Near the Big Island's regional bake: load the launcher's surroundings first.
   planetSetup(nonGUIParams, {
-    assets: ['earth', 'hawaii'],
+    near: ['hawaii'],
     interests: [
       { name: 'Mauna Kea', lat: 19.8207, lon: -155.4681, radiusKm: 80, lodBoost: 2 },
       { name: 'Hawaii Launch Corridor', lat: 19.6, lon: -156.0, radiusKm: 140, lodBoost: 1.5 },
@@ -1476,8 +1476,8 @@ function equatorialLauncher(guidParamWithUnits, nonGUIParams) {
 
 
 function smallRing(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the washington regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'washington'] })
+  // Near the washington regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['washington'] })
   
   guidParamWithUnits['showLogo'].value = false // It will automatically turn off later to indicate that the launch delay timer is about to expire...
   guidParamWithUnits['showXYChart'].value = false
@@ -1567,8 +1567,8 @@ function smallRing(guidParamWithUnits, nonGUIParams) {
 }
 
 function movingRingsOrbit(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the washington regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'washington'] })
+  // Near the washington regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['washington'] })
   
   guidParamWithUnits['showLogo'].value = false // It will automatically turn off later to indicate that the launch delay timer is about to expire...
   guidParamWithUnits['showXYChart'].value = false
@@ -1632,8 +1632,8 @@ function movingRingsOrbit(guidParamWithUnits, nonGUIParams) {
 
 
 function christmasIslandLauncher(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the christmas_island regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'christmas_island'] })
+  // Near the christmas_island regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['christmas_island'] })
 
   // Uses Monna Kea launch location
   guidParamWithUnits['finalLocationRingCenterLatitude'].value = 74
@@ -1785,8 +1785,8 @@ function christmasIslandLauncher(guidParamWithUnits, nonGUIParams) {
 }
 
 function flightPaths(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the new_zealand regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'new_zealand'] })
+  // Near the new_zealand regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['new_zealand'] })
   nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(402701.22087436507, -4015908.319093469, -4952967.081153212)
   nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(0.06409308160535271, -0.6302146235738024, -0.7737710288735681)
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(448508.6471684609, -4007299.454096686, -4996083.6711664805)
