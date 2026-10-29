@@ -376,10 +376,6 @@ export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
   // nonGUIParams['cameraUp'] = new THREE.Vector3(-0.9804590838507269, -0.02196282714073594, 0.19549327128722163)
 
 
-  // Hack to speed up the simulation
-  guidParamWithUnits['showMassDriverAccelerationScrews'].value = false
-  guidParamWithUnits['showMassDriverBrackets'].value = false
-  guidParamWithUnits['showMassDriverTube'].value = true
 
   // Start rotating and zooming out the camera same time that the launch starts
   // nonGUIParams['startTimerActions'] = (startTimerParams) => {
