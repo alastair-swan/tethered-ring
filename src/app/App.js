@@ -636,9 +636,9 @@ export class App {
     this.camera.playbackActive = this.shots.drivesCamera || googleEarthDrives
     this.camera.update(t, dt)
     this.planet.update(this.camera3d)
-    // The water surface follows the camera; in the water (but not inside the evacuated tube) the view
-    // switches to the underwater look (see render()).
-    this.ocean?.update(this.camera3d, (point) => this.launchSystem?.isInsideTube(point) ?? false)
+    // The water surface follows the camera; under it the view switches to the underwater look (see
+    // render()), with the evacuated tube kept dry.
+    this.ocean?.update(this.camera3d, (point, maxDistance) => this.launchSystem?.tubeNear(point, maxDistance) ?? null)
     if (this.ocean) {
       this.planet.setSeafloorView(this.ocean.enabled && this.ocean.cameraUnderSurface ? 1 : 0)
       this.updateSeaSurfaceVisibility()

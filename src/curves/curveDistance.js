@@ -26,6 +26,12 @@ function samplesFor(curve) {
 
 // Returns the distance, or Infinity when it is certainly more than maxDistance (skipping refinement).
 export function distanceToCurve(curve, point, maxDistance = Infinity) {
+  return nearestOnCurve(curve, point, maxDistance)?.distance ?? Infinity
+}
+
+// The nearest point of the curve: { distance, u (its arc-length fraction along the curve) }, or null when
+// it is certainly more than maxDistance away.
+export function nearestOnCurve(curve, point, maxDistance = Infinity) {
   const { key: length, samples } = samplesFor(curve)
   let best = -1, bestD2 = Infinity
   for (let i = 0; i < NUM_SAMPLES; i++) {
@@ -35,7 +41,7 @@ export function distanceToCurve(curve, point, maxDistance = Infinity) {
   }
   // The true nearest point is within one sample spacing of the nearest sample.
   const spacing = length / (NUM_SAMPLES - 1)
-  if (Math.sqrt(bestD2) - spacing > maxDistance) return Infinity
+  if (Math.sqrt(bestD2) - spacing > maxDistance) return null
   const distanceAt = (u) => curve.getPointAt(Math.min(1, Math.max(0, u)), _p).distanceTo(point)
   let lo = Math.max(0, best - 1) / (NUM_SAMPLES - 1)
   let hi = Math.min(NUM_SAMPLES - 1, best + 1) / (NUM_SAMPLES - 1)
@@ -47,5 +53,5 @@ export function distanceToCurve(curve, point, maxDistance = Infinity) {
     if (f1 < f2) { hi = x2; x2 = x1; f2 = f1; x1 = hi - ratio * (hi - lo); f1 = distanceAt(x1) }
     else { lo = x1; x1 = x2; f1 = f2; x2 = lo + ratio * (hi - lo); f2 = distanceAt(x2) }
   }
-  return Math.min(f1, f2)
+  return f1 < f2 ? { distance: f1, u: x1 } : { distance: f2, u: x2 }
 }

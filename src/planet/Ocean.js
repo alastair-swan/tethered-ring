@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { ecefToGeodetic } from '../physics/geodesy.js'
 import { fbmGlsl, noiseOffsets, SEA_SURFACE_FREQUENCIES, seaSurfaceLookGlsl } from './seaNoise.js'
 import { SeaDarkening } from './seaDarkening.js'
+import { WaterFog } from './waterFog.js'
 
 // The sea, as seen from in it: the underside of the water surface, and an underwater look (fog in the
 // water colour, no sky). From above, the surface is drawn by the planet's tiles in the colour of the
@@ -14,9 +15,10 @@ import { SeaDarkening } from './seaDarkening.js'
 // camera is under the surface.
 //
 // The camera is "under the surface" when it is below sea level and above the sea floor, and "in the
-// water" when, in addition, it is not inside something that keeps the water out (the evacuated
-// mass-driver tube: see isDry in update()). Under the surface there is no sky (the background is the
-// water colour); only in the water does everything also fade into the water with distance.
+// water" when, in addition, it is not inside the evacuated mass-driver tube, which keeps the water out.
+// Under the surface there is no sky (the background is the water colour), and things fade into the water
+// by how far the line of sight travels through water, leaving out the part inside the tube (see
+// waterFog.js).
 const RINGS = 64
 const SECTORS = 64
 const UNDERSIDE_COLOR = new THREE.Color(0x6fb3c9)
@@ -116,9 +118,9 @@ else {
     }
   }
 
-  // camera: the rendering camera. isDry(localPoint): true where the camera is shielded from the water
-  // (inside the evacuated tube); localPoint is in the parent's coordinates.
-  update(camera, isDry = () => false) {
+  // camera: the rendering camera. tubeNear(localPoint, maxDistance): the evacuated tube near a point (in
+  // the parent's coordinates), { point, tangent, radius } (see LaunchSystem.tubeNear), or null.
+  update(camera, tubeNear = () => null) {
     if (!this.enabled) return
     this.parent.updateWorldMatrix(true, false)
     camera.getWorldPosition(_camera)
@@ -127,7 +129,11 @@ else {
     const geo = ecefToGeodetic(_camera.x, _camera.y, _camera.z, this.ellipsoid)
     const seaFloor = (geo.alt < 0) ? this.sampleTerrainHeight(geo.lat, geo.lon)?.heightMeters ?? -Infinity : -Infinity
     this.cameraUnderSurface = geo.alt < 0 && geo.alt > seaFloor
-    this.setCameraInWater(this.cameraUnderSurface && !isDry(_camera), -geo.alt)
+    // (Beyond twice the visibility the tube makes no difference: the water has hidden it.)
+    const tube = this.cameraUnderSurface ? tubeNear(_camera, 2 * this.visibility) : null
+    WaterFog.update(tube, _camera, this.parent.getWorldQuaternion(_quaternion))
+    const dry = tube && _dir.subVectors(_camera, tube.point).projectOnPlane(tube.tangent).length() < tube.radius
+    this.setCameraInWater(this.cameraUnderSurface && !dry, -geo.alt)
     // From above the sea, things under it fade into the water by their optical path through it.
     const above = !this.cameraUnderSurface
     SeaDarkening.update(above, _camera, this.ellipsoid, this.parent.getWorldQuaternion(_quaternion))
@@ -162,9 +168,10 @@ else {
     const darkening = SURFACE_DARKENING + (MAX_DARKENING - SURFACE_DARKENING) * (1 - Math.exp(-Math.max(0, depth) / DARKENING_DEPTH))
     this.fog.color.copy(SHALLOW_WATER_COLOR).lerp(DEEP_WATER_COLOR, darkening)
     // The fog stays on the scene while the sea is shown (so materials keep the fog code, which also
-    // carries the from-above darkening: see seaDarkening.js); it only fades things in the water.
+    // carries the from-above darkening: see seaDarkening.js); it only fades things under the surface,
+    // by their path through water (inside the tube, only what is seen through its walls: waterFog.js).
     // FogExp2 reaches ~95% at sqrt(3) / density.
-    this.fog.density = inWater ? Math.sqrt(3) / Math.max(1, this.visibility) : 0
+    this.fog.density = this.cameraUnderSurface ? Math.sqrt(3) / Math.max(1, this.visibility) : 0
     if (this.enabled) this.scene.fog = this.fog
   }
 

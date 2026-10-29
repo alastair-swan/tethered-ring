@@ -21,7 +21,7 @@ import * as OrbitMath from './OrbitMath.js'
 import * as SaveGeometryAsSTL from '../export/SaveGeometryAsSTL.js'
 import * as EngineeringDetails from './EngineeringDetails.js'
 import { ExtractedTelemetryLoader } from './ExtractedTelemetryLoader.js'
-import { distanceToCurve } from '../curves/curveDistance.js'
+import { nearestOnCurve } from '../curves/curveDistance.js'
 
 //import { arrow } from '../ring/markers.js'
 //import { FrontSide } from 'three'
@@ -362,13 +362,19 @@ export class launcher {
     if (this.tubeModelObject) this.tubeModelObject.sampleTerrainHeight = sampleTerrainHeight
   }
 
-  // True if `localPoint` (planet coordinates) is inside the evacuated tube, where there is vacuum
-  // rather than water (used for the underwater view).
-  isInsideTube(localPoint) {
+  // The evacuated tube near `localPoint` (planet coordinates), within maxDistance of its axis: { point,
+  // tangent (its axis's nearest point and direction there, planet coordinates), radius (inside) }, or null.
+  // (Inside it there is vacuum rather than water: used for the underwater view.)
+  tubeNear(localPoint, maxDistance) {
     const refFrame = virtualMassDriverTube.refFrames?.[0]
-    if (!refFrame || !virtualMassDriverTube.isVisible || !this.tubeInnerRadius) return false
-    const radius = this.tubeInnerRadius
-    return refFrame.curve.superCurves.some(curve => distanceToCurve(curve, localPoint, radius) < radius)
+    if (!refFrame || !virtualMassDriverTube.isVisible || !this.tubeInnerRadius) return null
+    let best = null, bestCurve = null
+    for (const curve of refFrame.curve.superCurves) {
+      const nearest = nearestOnCurve(curve, localPoint, maxDistance)
+      if (nearest && (!best || nearest.distance < best.distance)) { best = nearest; bestCurve = curve }
+    }
+    if (!best || best.distance > maxDistance) return null
+    return { point: bestCurve.getPointAt(best.u, new THREE.Vector3()), tangent: bestCurve.getTangentAt(best.u, new THREE.Vector3()).normalize(), radius: this.tubeInnerRadius }
   }
 
   // Animation state beyond (parameters, timeSinceStart): the time at which the animation is frozen while
