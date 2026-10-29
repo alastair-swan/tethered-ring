@@ -2,8 +2,11 @@ import * as THREE from 'three'
 import { toLowOrbitWithRocket } from './toLowOrbitWithRocket.js'
 //import { actualSizeDollyShot } from './actualSizeDollyShot.js'
 import { setAllShowsToFalse } from "./cameraShotHelperFunctions.js"
+import { planetSetup } from './planetSetup.js'
 
 export function toLEOFromBocaChikaWithStarship(guidParamWithUnits, nonGUIParams) {
+  // Sharper ground where the boca_chica regional bake is on this machine (see planetSetup.js).
+  planetSetup(nonGUIParams, { assets: ['earth', 'boca_chica'] })
 
   // Lat/Lon of Boca Chika is 25.9975° N, 97.1560° W  
   const rocketLaunchPadLatitude = 25.9975 // °N (Boca Chika)

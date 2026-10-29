@@ -415,6 +415,11 @@ export class CubedSpherePlanetRenderer {
     // Assets after the first one are overlaid in order, each using its own
     // manifest and tile folders.
     this.overlays = this.assets.slice(1);
+    // The assets whose manifests loaded, as { name, attribution } (from the manifest, if it has one),
+    // reported to options.onAssetsLoaded once all have been tried. An asset that is not on this machine
+    // (or is still a Git LFS pointer, not pulled) is skipped: the tiles below it are used instead.
+    this.loadedAssets = [];
+    this.onAssetsLoaded = options.onAssetsLoaded ?? null;
 
     this.enabled = true;
     this.segments = Math.max(2, options.tileSegments ?? 24);
@@ -676,6 +681,7 @@ export class CubedSpherePlanetRenderer {
       const response = await fetch(this.manifestUrl);
       if (!response.ok) throw new Error(`manifest fetch ${response.status}`);
       this.manifest = await response.json();
+      this.loadedAssets.push({ name: this.assets[0].name, attribution: this.manifest.attribution ?? null });
       this.maxAvailableLod = this.manifest.maxAvailableLod ?? this.maxAvailableLod;
       this.heightMinMeters = this.manifest.minHeight ?? this.heightMinMeters;
       this.heightMaxMeters = this.manifest.maxHeight ?? this.heightMaxMeters;
@@ -703,6 +709,7 @@ export class CubedSpherePlanetRenderer {
       trace.manifestFetchEndMs = performance.now() - trace.t0Ms;
       this._recordStartupManifestEvent('manifestReady', trace.manifestFetchEndMs);
       this.manifestReady = true;
+      this.onAssetsLoaded?.(this.loadedAssets);
       this._traceFirst('manifestReadyMs');
     }
   }
@@ -719,11 +726,15 @@ export class CubedSpherePlanetRenderer {
         const overlayFetchStartMs = performance.now() - this.debugStats.startupTrace.t0Ms;
         this._recordStartupManifestEvent('overlayFetch', overlayFetchStartMs);
         const response = await fetch(overlay.manifestUrl);
-        if (!response.ok) {
-          throw new Error(`overlay manifest fetch ${response.status} for "${overlay.name}"`);
-        }
         const manifestStart = performance.now();
-        const data = await response.json();
+        // Not on this machine (a 404, or the dev server's page instead), or not pulled from Git LFS (a
+        // pointer file): fall back to the tiles below.
+        const data = response.ok ? await response.json().catch(() => null) : null;
+        if (!data || typeof data !== 'object') {
+          console.info(`[planet] "${overlay.name}" is not on this machine (or not pulled from Git LFS): ` +
+            'using the tiles below it');
+          continue;
+        }
         const manifestMs = performance.now() - manifestStart;
 
         // Overlays must share the base height decode range: all height tiles are
@@ -742,6 +753,7 @@ export class CubedSpherePlanetRenderer {
         if (data.maxAvailableLod != null) {
           this.maxAvailableLod = Math.max(this.maxAvailableLod, data.maxAvailableLod);
         }
+        this.loadedAssets.push({ name: overlay.name, attribution: data.attribution ?? null });
 
         const source = {
           name: overlay.name,

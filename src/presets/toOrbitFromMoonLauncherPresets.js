@@ -105,8 +105,6 @@ export function toOrbitFromMoonLauncherPresets(guidParamWithUnits, nonGUIParams)
   // Other planetary presets continue to use main.js's defaults (1 and 2).
   nonGUIParams['sunLightIntensity'] = 3.0
   nonGUIParams['ambientLightIntensity'] = 0.2
-  nonGUIParams['imageryAttribution'] =
-    'NASA Scientific Visualization Studio; LRO LROC/LOLA'
   nonGUIParams['locationInterests'] = [
     { name: 'Mare Tranquillitatis mass driver', lat: launcherRampEndLatitude,
       lon: launcherRampEndLongitude, radiusKm: 120, lodBoost: 2 }

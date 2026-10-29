@@ -41,6 +41,20 @@ export function defaultPlanetAssets(planetSpec) {
   }
 }
 
+// Imagery credits for assets whose manifests do not carry their own (a manifest's `attribution` wins).
+const EOX_CLOUDLESS = 'EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2024)';
+const ASSET_ATTRIBUTIONS = {
+  hawaii: EOX_CLOUDLESS,
+  chimborazo: EOX_CLOUDLESS,
+  // Regional bakes made with tools/adaptive_lod.py's EARTH_REGIONS use the same imagery.
+  new_zealand: EOX_CLOUDLESS,
+  washington: EOX_CLOUDLESS,
+  kilimanjaro: EOX_CLOUDLESS,
+  boca_chica: EOX_CLOUDLESS,
+  christmas_island: EOX_CLOUDLESS,
+  queensland: EOX_CLOUDLESS,
+};
+
 function assetFromName(name) {
   const base = `${import.meta.env?.BASE_URL ?? '/'}assets/${name}`;
   return {
@@ -115,6 +129,10 @@ function assetNamesFromUrl() {
  *                         'roughness' | 'landWater' | 'loading' (default 'none').
  *   startupChart          Log startup timing milestones and an ASCII load chart
  *                         to the console (default false).
+ *   onAttribution(text)   Called once the asset manifests have loaded, with the
+ *                         imagery credits of the assets that did ('' if none).
+ *                         Assets that are not on this machine are skipped (the
+ *                         tiles below them are used), and so are their credits.
  */
 const _atmoQuaternion = new THREE.Quaternion();
 const _atmoInverse = new THREE.Quaternion();
@@ -129,6 +147,7 @@ export class Planet {
     doubleSided = false,
     opacity = 1,
     showAtmosphere = true,
+    onAttribution = null,
     ...rendererOptions
   } = {}) {
     this.planetSpec = planetSpec;
@@ -150,6 +169,9 @@ export class Planet {
       doubleSided,
       opacity,
       water: rendererOptions.water ?? planetSpec.hasOcean === true,
+      onAssetsLoaded: (loaded) => onAttribution?.([...new Set(loaded
+        .map(({ name, attribution }) => attribution ?? ASSET_ATTRIBUTIONS[name])
+        .filter(Boolean))].join('; ')),
     });
 
     // The atmosphere: a shell ATMOSPHERE_HEIGHT above the sea-level ellipsoid, drawn from inside

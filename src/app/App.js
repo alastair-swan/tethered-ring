@@ -153,18 +153,29 @@ export class App {
     this.overlays.setChartVisible(this.d.showXYChart.value)
     this.overlays.redrawChartFrame()
 
-    if (n.imageryAttribution) {
-      const attribution = document.createElement('div')
-      attribution.className = 'imagery-attribution'
-      attribution.textContent = n.imageryAttribution
-      document.body.appendChild(attribution)
-    }
+    this.setImageryAttribution()
     for (const marker of n.debugGeodeticMarkers ?? []) {
       const ecef = tram.geodeticToECEF(marker.lat, marker.lon, marker.altitude || 0, this.planetSpec.ellipsoid)
       const mesh = new THREE.Mesh(new THREE.SphereGeometry(marker.radius || 100000, 16, 12), new THREE.MeshBasicMaterial({ color: marker.color ?? 0xff00ff }))
       mesh.name = marker.name || 'debugGeodeticMarker'
       mesh.position.set(ecef.x, ecef.y, ecef.z)
       this.planetCoordSys.add(mesh)
+    }
+  }
+
+  // Shows the imagery credits: the planet's (`planetCredits`, as its tile sets load) and any the preset
+  // gives (nonGUIParams.imageryAttribution, e.g. for a background image).
+  setImageryAttribution(planetCredits) {
+    this._planetCredits = planetCredits ?? this._planetCredits ?? ''
+    const text = [this.nonGUIParams.imageryAttribution, this._planetCredits].filter(Boolean).join('; ')
+    if (!this._attribution && text) {
+      this._attribution = document.createElement('div')
+      this._attribution.className = 'imagery-attribution'
+      document.body.appendChild(this._attribution)
+    }
+    if (this._attribution) {
+      this._attribution.textContent = text
+      this._attribution.hidden = !text
     }
   }
 
@@ -194,6 +205,8 @@ export class App {
       fastCameraSpeed: n.planet2FastCameraSpeed,
       maxLodWhileFast: n.planet2MaxLodWhileFast,
       debugMode: n.planet2DebugMode,
+      // Credits for the planet imagery that loaded (regional tile sets are used only where present).
+      onAttribution: (text) => this.setImageryAttribution(text),
     })
     this.planetCoordSys.add(this.planet.surface, this.planet.atmosphere)
     // Tethers and cables are hazed by the planet's air, and glow (see src/scene/structureLines.js).

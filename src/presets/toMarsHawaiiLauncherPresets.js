@@ -221,9 +221,6 @@ export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
   //nonGUIParams['planet2Assets'] = ['earth', 'chimborazo']
   nonGUIParams['planet2RequireKtx2'] = false
   nonGUIParams['planet2StartupChart'] = true
-  nonGUIParams['imageryAttribution'] =
-    'EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH ' +
-    '(Contains modified Copernicus Sentinel data 2024)'
 
   // Bright reference marker centered 200 m above Chimborazo's 6,263 m summit.
   nonGUIParams['debugGeodeticMarkers'] = [

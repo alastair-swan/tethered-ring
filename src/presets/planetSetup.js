@@ -6,20 +6,26 @@
 // the larger streaming budgets they need (a regional bake keeps many more, smaller tiles loaded: with the
 // default budget of 320, the island in view would keep being evicted and reloaded).
 //
-// Scenes elsewhere use the global tiles only (about 75 m per texel at their finest, sharper than the old
-// planet renderer's high-resolution regions). Where a scene would benefit from a regional bake that does
-// not exist yet, it says so in a comment by its planetSetup call.
-
-const EOX_CLOUDLESS = 'EOxCloudless https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2024)'
+// A regional bake is used where it is on the machine and skipped (falling back to the global tiles, and
+// leaving out its imagery credit) where it is not: one not yet uploaded to Git LFS, or not pulled. So
+// scenes list every bake for their area, made or not; they use it as soon as it is there.
+//
+// The Earth regions (other than hawaii) are baked with tools/adaptive_lod.py (EARTH_REGIONS, which also
+// gives their extents); the global tiles alone are about 75 m per texel at their finest.
 
 // The regional bakes: where their sharpest tiles are (to load first: the centres of their bakes' core
-// areas, see tools/bake_hawaii_bigisland_hires.py and tools/adaptive_lod.py), and their imagery's
-// attribution.
+// areas, see tools/bake_hawaii_bigisland_hires.py and tools/adaptive_lod.py).
 export const REGIONAL_ASSETS = {
-  hawaii: { name: 'Big Island of Hawaii', lat: 19.6, lon: -155.43, radiusKm: 100, attribution: EOX_CLOUDLESS },
-  chimborazo: { name: 'Chimborazo', lat: -1.47, lon: -79.0, radiusKm: 80, attribution: EOX_CLOUDLESS },
-  moon_tranquillitatis: { name: 'Mare Tranquillitatis', lat: 0.7, lon: 23.5, radiusKm: 60, attribution: null },
-  moon_korolev: { name: 'Korolev crater', lat: -3.1, lon: -158.25, radiusKm: 60, attribution: null },
+  hawaii: { name: 'Big Island of Hawaii', lat: 19.6, lon: -155.43, radiusKm: 100 },
+  chimborazo: { name: 'Chimborazo', lat: -1.47, lon: -79.0, radiusKm: 80 },
+  new_zealand: { name: 'Central North Island, New Zealand', lat: -39.15, lon: 175.65, radiusKm: 80 },
+  washington: { name: 'Cascades, Washington', lat: 47.8, lon: -121.5, radiusKm: 150 },
+  kilimanjaro: { name: 'Mount Kilimanjaro', lat: -3.05, lon: 37.35, radiusKm: 30 },
+  boca_chica: { name: 'Boca Chica', lat: 26.0, lon: -97.15, radiusKm: 30 },
+  christmas_island: { name: 'Christmas Island', lat: -10.49, lon: 105.62, radiusKm: 25 },
+  queensland: { name: 'North Queensland', lat: -17.0, lon: 141.1, radiusKm: 80 },
+  moon_tranquillitatis: { name: 'Mare Tranquillitatis', lat: 0.7, lon: 23.5, radiusKm: 60 },
+  moon_korolev: { name: 'Korolev crater', lat: -3.1, lon: -158.25, radiusKm: 60 },
 }
 
 // Sets the planet's tile sets for a preset. assets: the tile sets, base first then regional overlays
@@ -35,6 +41,4 @@ export function planetSetup(nonGUIParams, { assets, interests } = {}) {
   nonGUIParams['maxTileGpuBytes'] = 1536 * 1024 * 1024
   nonGUIParams['locationInterests'] = interests ??
     regional.map(({ name, lat, lon, radiusKm }) => ({ name, lat, lon, radiusKm, lodBoost: 1.5 }))
-  const attribution = [...new Set(regional.map(r => r.attribution).filter(Boolean))].join('; ')
-  if (attribution) nonGUIParams['imageryAttribution'] = attribution
 }
