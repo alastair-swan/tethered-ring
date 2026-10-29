@@ -243,9 +243,7 @@ export function elevatedEvacuatedTubeDeployment(guidParamWithUnits, nonGUIParams
   guidParamWithUnits['adaptiveNutGrapplerMagnetThickness'].value = 0.06  // m
   guidParamWithUnits['adaptiveNutShaftToGrapplerPad'].value = 0.02
   guidParamWithUnits['adaptiveNutGrapplerPadLiftAwayDistance'].value = 0.01
-  guidParamWithUnits['adaptiveNutGrapplerPadLiftAwayPortion'].value = 0.1
   guidParamWithUnits['adaptiveNutGrapplerClearanceFactor'].value = 0.1
-  guidParamWithUnits['adaptiveNutGrapplerPadTwistPortion'].value = 0.1
   guidParamWithUnits['adaptiveNutGrapplerBallJointClearance'].value = 0.1
   guidParamWithUnits['adaptiveNutGrapplerBallJointRadius'].value = 0.04
   guidParamWithUnits['adaptiveNutGrapplerRangeFactor'].value = .01

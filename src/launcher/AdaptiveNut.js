@@ -5,6 +5,7 @@ import * as tram from '../utils/tram.js'
 import { quaternionFromFrame } from '../curves/SuperCurves.js'
 import { MovingVirtualObject, curveFrameAtTime, parameterSignature } from './VirtualObject.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
+import { grapplerPose } from './grapplerSwitchover.js'
 
 const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
 const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
@@ -260,11 +261,10 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     v.launcherMassDriverScrewSidewaysOffset = p('launcherMassDriverScrewSidewaysOffset')
     v.launcherMassDriverScrewUpwardsOffset = p('launcherMassDriverScrewUpwardsOffset')
     v.padLiftActuation = p('adaptiveNutGrapplerPadLiftAwayDistance')
-    v.padLiftPortion = Math.max(1e-9, p('adaptiveNutGrapplerPadLiftAwayPortion'))
+    v.switchoverTime = p('adaptiveNutGrapplerSwitchoverTime')
     const r1 = v.launcherMassDriverScrewThreadRadius
     const r2 = v.launcherMassDriverScrewShaftOuterRadius
     v.padRadialActuation = (r1 - r2) * (1 + p('adaptiveNutGrapplerClearanceFactor'))
-    v.padTwistPortion = Math.max(1e-9, p('adaptiveNutGrapplerPadTwistPortion'))
     v.adaptiveNutWidth = p('adaptiveNutWidth')
     v.adaptiveNutGrapplerMaxRangeOfMotion = p('adaptiveNutGrapplerMaxRangeOfMotion')
     v.adaptiveNutGrapplerTopDeadCenterRotation = p('adaptiveNutGrapplerTopDeadCenterRotation')
@@ -365,24 +365,30 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     if (!padsWanted && !hardwareWanted) return
     const activeGrapplers = Math.min(numGrapplers, g.numGrapplers)
 
+    // Engage the grapplers only if we're on the part of the curve path that has the twin-screws
+    const onScrews = (relevantCurve.name=='massDriver1Curve') || (relevantCurve.name=='massDriver2Curve')
+    const speed = Math.sqrt(Math.max(1, initialVelocity**2 + 2 * acceleration * Math.max(0, distanceToSledAft)))
     const info = makeInfo(distanceToSledAft, additionalRotation)
+    info.nutSpeed = speed
     const grapplerOffset = []
-    const grapplerSwitchoverSignal = []
+    const grapplerPoses = []
     const grapplerThreadPitch = []
     const grapplerThreadStarts = []
     for (let i = 0, grapplerDistance = firstGrapplerDistance; i<numGrapplers; i++, grapplerDistance += grapplerSpacing) {
       info.generatePlacementInfo(grapplerDistance, v.adaptiveNutGrapplerRangeFactor)
       grapplerOffset[i] = info.offset
-      grapplerSwitchoverSignal[i] = info.switchoverSignal
       grapplerThreadPitch[i] = info.threadPitch
       grapplerThreadStarts[i] = info.threadStarts
+      // Where the grappler is in its hop from flight to flight (see grapplerSwitchover.js).
+      info.alpha = ((info.offset.θ + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI
+      if (!onScrews) info.engageable = false
+      grapplerPoses[i] = grapplerPose(info, v.switchoverTime)
     }
 
 
     // Regenerate the pad geometry deterministically: the key depends only on the nut's speed (a pure
     // function of time), and the geometry is built for the key's speed with zero phase (the phase is
     // applied by the per-frame rotations below).
-    const speed = Math.sqrt(Math.max(1, initialVelocity**2 + 2 * acceleration * Math.max(0, distanceToSledAft)))
     const regenKey = Math.floor(Math.log(speed) / GRAPPLER_REGEN_RELATIVE_SPEED_STEP) + ':' + grapplerThreadStarts.join(',')
     if (padsWanted && g.key !== regenKey) {
       const keySpeed = Math.exp(Math.floor(Math.log(speed) / GRAPPLER_REGEN_RELATIVE_SPEED_STEP) * GRAPPLER_REGEN_RELATIVE_SPEED_STEP)
@@ -404,29 +410,22 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
       g.key = regenKey
     }
 
-    // Engage the grapplers only if we're on the part of the curve path that has the twin-screws
-    const onScrews = (relevantCurve.name=='massDriver1Curve') || (relevantCurve.name=='massDriver2Curve')
-
     // Model axes: x = rightward, y = forward, z = upward
     let padInstance = 0
     let hardwareInstance = 0
     for (let grapplerIndex = 0; grapplerIndex < g.numGrapplers; grapplerIndex++) {
       const active = grapplerIndex < activeGrapplers
-      let offset, switchoverSignal, threadPitch
-      let padLiftActuation, padRadialActuation, padTwistActuation, padThetaFactor, padLiftActuationThetaComponent, padLiftActuationYComponent
+      let offset, pose, threadPitch
+      let padLiftActuation, padRadialActuation, padTwistActuation, padLiftActuationThetaComponent, padLiftActuationYComponent
       if (active) {
         offset = grapplerOffset[grapplerIndex]
-        switchoverSignal = onScrews ? grapplerSwitchoverSignal[grapplerIndex] : 1
+        pose = grapplerPoses[grapplerIndex]
         threadPitch = grapplerThreadPitch[grapplerIndex]
-        // The switchover signal pushes the grappler back towards the top dead center position. Its range is
-        // divided into three parts: padLiftPortion moves the pad away from the screw face, padTwistPortion
-        // moves it radially outwards, and the remainder moves it circumferentially back to top dead center.
-        padLiftActuation = Math.min(1, switchoverSignal/v.padLiftPortion) * v.padLiftActuation
-        padRadialActuation = Math.max(0, Math.min(1, switchoverSignal/v.padLiftPortion)) * v.padRadialActuation
-        padTwistActuation = Math.max(0, Math.min(1, (switchoverSignal-v.padLiftPortion)/v.padTwistPortion)) * Math.atan(threadPitch)
-        const alreadyUsedPortion = v.padLiftPortion + v.padTwistPortion
-        const remainingPortion = Math.max(1e-9, 1 - alreadyUsedPortion)
-        padThetaFactor = 1 - Math.max(0, Math.min(1, (switchoverSignal-alreadyUsedPortion)/remainingPortion))
+        // The hop from flight to flight (grapplerSwitchover.js): lift off the face, raise clear of the
+        // flights, untwist, move round, twist to the new flight, lower, attach.
+        padLiftActuation = pose.lift * v.padLiftActuation
+        padRadialActuation = pose.raise * v.padRadialActuation
+        padTwistActuation = pose.neutral * Math.atan(threadPitch)
         const grapplerScrewAngle = Math.atan(threadPitch)
         padLiftActuationThetaComponent = padLiftActuation * Math.sin(grapplerScrewAngle)
         padLiftActuationYComponent = padLiftActuation * Math.cos(grapplerScrewAngle)
@@ -437,7 +436,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
         if (active) {
           rOffset = offset.r + padRadialActuation
           midTheta = 2*Math.PI * midwayRotation
-          thetaOffset = ((offset.θ + 3*Math.PI) % (2*Math.PI) - Math.PI) * padThetaFactor + padLiftActuationThetaComponent
+          thetaOffset = pose.alpha + padLiftActuationThetaComponent
           sinThetaOffset = Math.sin(thetaOffset + midTheta)
           cosThetaOffset = Math.cos(thetaOffset + midTheta)
           rOffsetPlus = rOffset + padCenterToEdge + ballJointClearance + ballJointRadius * 3
@@ -464,7 +463,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
             _object.rotateZ(-leftRightSign*padTwistActuation)
             _object.updateMatrix()
             g.pads.setMatrixAt(padId, _object.matrix)
-            g.pads.setColorAt(padId, (switchoverSignal==0) ? _disengagedColor : _engagedColor)
+            g.pads.setColorAt(padId, pose.attached ? _disengagedColor : _engagedColor)
           }
           // Ball joints, posts, piston rods and cylinders
           for (let io = 0; io < INNER_MIDDLE_OUTER.length; io++) {

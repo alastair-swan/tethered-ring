@@ -70,6 +70,7 @@ class SledGrapplerPlacementInfo {
     this.offset = null // Later will be new Vector3()
     this.orientation = null // Later will be new Quaternion()
     this.switchoverSignal = null // Later will be an number from 0 to 1
+    this.nutSpeed = 0 // Set by the caller (m/s), for rotationRate
     this.screwPitch = null // Later will be a number from 0 to 1
     this.launchSledGrapplerMaxRangeOfMotion = launchSledGrapplerMaxRangeOfMotion
     this.launchSledGrapplerTopDeadCenterRotation = launchSledGrapplerTopDeadCenterRotation
@@ -85,6 +86,16 @@ class SledGrapplerPlacementInfo {
   }
 
   // ToDo: I don't think we need launchSledGrapplerRangeFactor as a parameter. It should be a property of the class.
+  phase() {
+    return this._phase
+  }
+
+  phaseAt(t) {
+    const position = this._phasePosition + this.nutSpeed * t + this.acceleration * t * t / 2
+    const later = threadTime(position, this.initialVelocity, this.initialDistance, this.acceleration)
+    return this._phase + this.threadStarts * this.revolutionsPerSecond * (t + later - this._phaseTime)
+  }
+
   generatePlacementInfo(grapplerDistance, launchSledGrapplerRangeFactor) {
     // See LauncherMathDocumentation.docx for the derivation of the following equations
 
@@ -109,6 +120,11 @@ class SledGrapplerPlacementInfo {
     //const deltaAngle = ( -Math.sqrt(cBSqrd - 4*cA*cC)  + Math.sqrt(cBSqrd - 4*cA*cC_Mid)) / (2*cA) * this.revolutionsPerSecond
 
     const rotations = this.additionalRotation + this.revolutionsPerSecond * time
+    // How fast this grappler's thread phase drifts (rotations per second) as the nut moves on at
+    // nutSpeed (the additional rotation is the screw's turning: revolutionsPerSecond).
+    const rateStep = 1e-3
+    const later = threadTime(this.distanceToSledAft + gPlus + shift + this.nutSpeed * rateStep, this.initialVelocity, this.initialDistance, this.acceleration)
+    this.rotationRate = this.revolutionsPerSecond * (1 + (later - time) / rateStep)
     // Calculate the maximum theoretical value for rotationAwayFromMidPoint
     const maxRotationAwayFromMidPoint = 0.5 / threadStarts
 
@@ -126,6 +142,18 @@ class SledGrapplerPlacementInfo {
     // The second range limit is needed to cause the grappler move from thread to thread even before the grappler's range of motion is exceeded. 
     const rangeLimit2 = Math.max(0, maxRotationAwayFromMidPoint - launchSledGrapplerRangeFactor / Math.abs(outerThreadPitch))
     const rotationAwayLimit = Math.min(rangeLimit1, rangeLimit2)
+    // For the switchover sequence (see AdaptiveNut.js): where the grappler is (in rotations from its
+    // midpoint, between -maxRotationAway and +maxRotationAway, the point halfway between two flights),
+    // how far it may go, and whether it can engage at all.
+    this.rotationAway = rotationAwayFromMidPoint
+    this.maxRotationAway = maxRotationAwayFromMidPoint
+    this.rotationAwayLimit = rotationAwayLimit
+    this.engageable = isOnThread(this.distanceToSledAft + grapplerDistance, this.threadStartDistance) && (Math.abs(time - this.midwayTime) <= 0.01)
+    // The thread phase in cycles (whole numbers halfway between flights), now and `t` s from now (the
+    // nut moving on at nutSpeed and its acceleration), unwrapped: see grapplerSwitchover.js.
+    this._phase = rotationsWithTwistFrac * threadStarts
+    this._phasePosition = this.distanceToSledAft + gPlus + shift
+    this._phaseTime = time
 
     if (!isOnThread(this.distanceToSledAft + grapplerDistance, this.threadStartDistance) || (Math.abs(time - this.midwayTime) > 0.01)) {
       // Not on the thread yet, or too far (in thread phase) from the middle grappler: disengaged.
