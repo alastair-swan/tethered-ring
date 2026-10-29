@@ -711,7 +711,7 @@ export class App {
     InstancedProxyPool.syncAll(this.camera3d, PixelLOD.viewportHeight)
     this.ring.update()
     // Tethers and cables: pixel coverage, and haze from the air (not from under the sea).
-    StructureLines.update(this.camera3d, PixelLOD.viewportHeight,
+    StructureLines.update(
       this.planetSpec.hasOcean === true && this.planet.atmosphere.visible && !this.ocean?.cameraUnderSurface)
     SubPixelFade.update(this.camera3d, PixelLOD.viewportHeight)
     // Lets the transit system keep objects until they are sub-pixel instead of using fixed ranges.

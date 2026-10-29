@@ -133,7 +133,7 @@ export class MooringCables {
     lineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
     StructureLines.constantAttributes(lineGeometry, count, 2 * this.cableRadius)
     lineGeometry.computeBoundingSphere()
-    lineMaterial ??= StructureLines.createMaterial(0x9a9a9a, { fog: true })
+    lineMaterial ??= StructureLines.createMaterial(0x9a9a9a, { referenceDiameter: 2 * this.cableRadius, fog: true })
     const lines = new THREE.LineSegments(lineGeometry, lineMaterial)
     lines.name = 'mooringCableLines'
     lines.renderOrder = 1 // like the tethers

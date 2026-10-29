@@ -65,7 +65,7 @@ export class ElevatorCableLayer {
     // Drawn at their real (constant) diameter, glowing (see src/scene/structureLines.js).
     this.diameter = elevatorCableDiameter(dParamWithUnits, upperUp - lowerUp, dParamWithUnits['elevatorCarMass'].value)
     StructureLines.constantAttributes(geometry, maxCables * 2, this.diameter)
-    this.material = StructureLines.createMaterial(0x4897f8)
+    this.material = StructureLines.createMaterial(0x4897f8, { referenceDiameter: this.diameter })
     this.mesh = new THREE.LineSegments(geometry, this.material)
     this.mesh.name = 'elevatorCables'
     this.mesh.renderOrder = 1

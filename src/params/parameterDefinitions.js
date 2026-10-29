@@ -551,7 +551,7 @@ export function createParameterDefinitions() {
   earthTextureDoubleSided: {value: false, units: '', autoMap: true, onChange: 'adjustEarthTextureSidedness', folder: 'Rendering'},
   // Tethers and cables are drawn at their real diameters and glow (see src/scene/structureLines.js): how
   // far away a 1 cm line still glows at full brightness; beyond that it fades with its pixel coverage.
-  structureGlowDistance: {value: 20000, units: 'm', autoMap: true, min: 100, max: 10000000, onChange: 'adjustStructureGlow', folder: 'Rendering'},
+  structureGlowDistance: {value: 10000000, units: 'm', autoMap: true, min: 100, max: 10000000, onChange: 'adjustStructureGlow', folder: 'Rendering'},
   showMoon: {value: defaultShows, units: '', autoMap: true, onChange: 'adjustMoonsVisibility', folder: 'Rendering'},
   showStars: {value: defaultShows, units: '', autoMap: true, onChange: 'adjustStarsVisibility', folder: 'Rendering'},
   showEarthAxis: {value: false, units: '', autoMap: true, onChange: 'earthAxisObjectUpdate', folder: 'Rendering'},

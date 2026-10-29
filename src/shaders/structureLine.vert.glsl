@@ -1,22 +1,20 @@
 // Thin structural lines (tethers, elevator and mooring cables), drawn at their real diameter: see
-// src/scene/structureLines.js. Per vertex: how much of a pixel the line covers, times the glow, times
-// the haze transmittance of the air between the camera and the vertex.
+// src/scene/structureLines.js. Per vertex: how much of its pixel the line covers (vCoverage: the glow,
+// times the haze transmittance of the air between the camera and the vertex).
 #include <common>
 #include <logdepthbuf_pars_vertex>
 #include <fog_pars_vertex>
 
-uniform float structurePixelsPerRadian;
-uniform float structureGlow;
-uniform vec2 structureMaxContrast;    // x: the most contrast close up; y: distance (m) beyond which it rises
+uniform float structureMaxCoverage;
+uniform float structureGlowDistance;   // m
+uniform float referenceDiameter;       // m: the structure's thickest member
 uniform float hazeActive;
 uniform vec4 atmoCamera;   // xyz: stretched camera position relative to the planet centre (world axes)
 uniform vec4 atmoPole;     // xyz: polar axis (world); w: a/b - 1
-uniform vec4 atmoParams;   // x: |C'|^2 - a^2 (ground); z: a (m)
-uniform vec3 atmoSun;      // direction to the sun (world)
+uniform vec4 atmoParams;   // z: a (m)
 attribute float diameter;  // m
 attribute float strands;   // full-detail strands this line stands for (merged distant forks)
-varying float vLight;
-varying float vAgainstSky;   // 1: seen against the daylit sky, so the line darkens it
+varying float vCoverage;
 
 // Air (density-weighted metres, scale height H) from p out along `up`, a direction at or above p's
 // horizon: H exp(-h/H) ch(r/H, c) with Schuler's Chapman approximation ch ~ k / ((k - 1) c + 1).
@@ -44,11 +42,11 @@ void main() {
   #include <logdepthbuf_vertex>
   #include <fog_vertex>
   float eyeDistance = max(length(mvPosition.xyz), 1e-3);
-  // Fraction of a (1 px wide) line's pixel the real cable covers; the glow makes thin lines visible.
-  float coverage = diameter * structurePixelsPerRadian / eyeDistance;
-  float maxContrast = structureMaxContrast.x * max(1.0, eyeDistance / structureMaxContrast.y);
-  float light = min(1.0, min(maxContrast, structureGlow * coverage) * strands);
-  vAgainstSky = 0.0;
+  // The glow: as the square root of the diameter (relative to the structure's thickest member), held
+  // out to the glow distance and fading as 1 / distance beyond it. A merged strand covers what the strands it
+  // stands for would (overlapping, they hide each other).
+  float strand = structureMaxCoverage * sqrt(min(1.0, diameter / referenceDiameter)) * min(1.0, structureGlowDistance / eyeDistance);
+  float coverage = 1.0 - pow(1.0 - strand, strands);
   if (hazeActive > 0.5) {
     vec3 offset = transpose(mat3(viewMatrix)) * mvPosition.xyz;            // camera -> vertex, world axes
     offset += atmoPole.w * dot(offset, atmoPole.xyz) * atmoPole.xyz;       // stretched (ellipsoid -> sphere)
@@ -58,17 +56,7 @@ void main() {
     float airR = max(hazeSegmentAir(atmoCamera.xyz, pv, d, len, 8000.0), 0.0);
     float airM = max(hazeSegmentAir(atmoCamera.xyz, pv, d, len, 1200.0), 0.0);
     // Extinction at sea level (1/m) for Rayleigh (green) and Mie, as in atmosphere.frag.glsl.
-    light *= exp(-(13.5e-6 * airR + 8.8e-6 * airM));
-    // Behind the line is sky if the line of sight misses the ground. The sky is bright if the sun is
-    // up at the camera and there is enough air above it (it darkens towards black by ~30 km).
-    float b = dot(atmoCamera.xyz, d);
-    bool groundBehind = b < 0.0 && b * b - atmoParams.x > 0.0;
-    if (!groundBehind) {
-      float rc = length(atmoCamera.xyz);
-      float sunUp = smoothstep(-0.05, 0.1, dot(atmoCamera.xyz, atmoSun) / rc);
-      float airAbove = smoothstep(0.0, 0.25, exp(-max(rc - atmoParams.z, 0.0) / 8000.0));
-      vAgainstSky = sunUp * airAbove;
-    }
+    coverage *= exp(-(13.5e-6 * airR + 8.8e-6 * airM));
   }
-  vLight = light;
+  vCoverage = coverage;
 }

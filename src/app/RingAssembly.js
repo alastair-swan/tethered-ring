@@ -116,6 +116,9 @@ export class RingAssembly {
             list.push(tether)
             refCoordSys.add(tether)
           }
+          // The thickest member (the trunks just below the first forks) gets the full glow.
+          const thickest = Math.max(...copies.flatMap(copy => copy.profiles.filter(Boolean).map(profile => 2 * Math.sqrt(Math.max(...profile.areas) / Math.PI))))
+          if (thickest > 0) StructureLines.setReferenceDiameter(this.tetherMaterial, thickest)
           const roots = new TetherRoots({ copies, refCoordSys, ringToPlanetQuaternion: system.ringToPlanetQuaternion, ellipsoid: this.planetSpec.ellipsoid, material: this.tetherMaterial })
           if (this.terrainSampler) roots.setTerrain(this.terrainSampler)
           this.tetherRoots.push(roots)
