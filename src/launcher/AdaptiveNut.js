@@ -375,14 +375,10 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     const grapplerThreadPitch = []
     const grapplerThreadStarts = []
     for (let i = 0, grapplerDistance = firstGrapplerDistance; i<numGrapplers; i++, grapplerDistance += grapplerSpacing) {
-      info.generatePlacementInfo(grapplerDistance, v.adaptiveNutGrapplerRangeFactor)
+      grapplerPoses[i] = grapplerPoseAt(info, grapplerDistance, onScrews)   // (leaves info for this grappler)
       grapplerOffset[i] = info.offset
       grapplerThreadPitch[i] = info.threadPitch
       grapplerThreadStarts[i] = info.threadStarts
-      // Where the grappler is in its hop from flight to flight (see grapplerSwitchover.js).
-      info.alpha = ((info.offset.θ + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI
-      if (!onScrews) info.engageable = false
-      grapplerPoses[i] = grapplerPose(info, v.switchoverTime)
     }
 
 
@@ -491,6 +487,38 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
       }
     }
   }
+}
+
+const smoothstep = (x) => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x) }
+
+// A grappler's pose (grapplerSwitchover.js) from its placement info, with `starts` flights (or the
+// screw's number where it is). Off the screws it is parked.
+function poseWith(info, grapplerDistance, starts, onScrews) {
+  const v = virtualAdaptiveNut
+  info.generatePlacementInfo(grapplerDistance, v.adaptiveNutGrapplerRangeFactor, starts)
+  info.alpha = ((info.offset.θ + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI
+  if (!onScrews) {
+    info.engageable = false
+    info.engageableAt = () => false
+  }
+  return grapplerPose(info, v.switchoverTime, {})
+}
+
+// Where a grappler (at grapplerDistance along the nut) is in its hop from flight to flight. Where the
+// screw adds flights (between its existing ones), the pose blends from the one with the old flights to
+// the one with the new over a hop's time, so that a grappler does not jump to a new flight. Leaves
+// `info` as generated for the grappler.
+export function grapplerPoseAt(info, grapplerDistance, onScrews) {
+  const v = virtualAdaptiveNut
+  info.generatePlacementInfo(grapplerDistance, v.adaptiveNutGrapplerRangeFactor)
+  const change = onScrews ? info.threadStartsChange(v.switchoverTime / 2) : null
+  if (!change) return poseWith(info, grapplerDistance, undefined, onScrews)
+  const before = poseWith(info, grapplerDistance, change.before, onScrews)
+  const after = poseWith(info, grapplerDistance, change.after, onScrews)
+  info.generatePlacementInfo(grapplerDistance, v.adaptiveNutGrapplerRangeFactor)
+  const w = smoothstep((v.switchoverTime / 2 - change.time) / v.switchoverTime)
+  const mix = (key) => before[key] + (after[key] - before[key]) * w
+  return { lift: mix('lift'), raise: mix('raise'), neutral: mix('neutral'), alpha: mix('alpha'), attached: w < 0.5 ? before.attached : after.attached }
 }
 
 // Matrix that places a +y-pointing part at `from`, aimed at `to`.

@@ -81,7 +81,8 @@ class SledGrapplerPlacementInfo {
     const midwayGrapplerDistance = this.bodyLength / 2
     const midwayGPlus = midwayGrapplerDistance + this.grapplerMidOffset
     const midwayShift = shiftToThread(this.distanceToSledAft + midwayGrapplerDistance, threadStartDistance)
-    this.midwayTime = threadTime(this.distanceToSledAft + midwayGPlus + midwayShift, this.initialVelocity, this.initialDistance, this.acceleration)
+    this._midwayPosition = this.distanceToSledAft + midwayGPlus + midwayShift
+    this.midwayTime = threadTime(this._midwayPosition, this.initialVelocity, this.initialDistance, this.acceleration)
 
   }
 
@@ -90,13 +91,43 @@ class SledGrapplerPlacementInfo {
     return this._phase
   }
 
+  // Whether the grappler may grip the screw `t` s from now (the nut moving on as in phaseAt): it must be
+  // over the thread, and close (in thread time) to the middle grappler. engageable is this now.
+  engageableAt(t) {
+    const advance = this.nutSpeed * t + this.acceleration * t * t / 2
+    if (!isOnThread(this._padStart + advance, this.threadStartDistance)) return false
+    const time = threadTime(this._phasePosition + advance, this.initialVelocity, this.initialDistance, this.acceleration)
+    const midway = threadTime(this._midwayPosition + advance, this.initialVelocity, this.initialDistance, this.acceleration)
+    return Math.abs(time - midway) <= 0.01
+  }
+
   phaseAt(t) {
     const position = this._phasePosition + this.nutSpeed * t + this.acceleration * t * t / 2
     const later = threadTime(position, this.initialVelocity, this.initialDistance, this.acceleration)
     return this._phase + this.threadStarts * this.revolutionsPerSecond * (t + later - this._phaseTime)
   }
 
-  generatePlacementInfo(grapplerDistance, launchSledGrapplerRangeFactor) {
+  // The nearest time within `limit` s of now at which the number of flights under this grappler changes
+  // (the screw adds flights between its existing ones at segment boundaries), as {time, before, after},
+  // or null.
+  threadStartsChange(limit, steps = 20) {
+    const startsAt = (t) => this.startsAt(this._startsPosition + this.nutSpeed * t + this.acceleration * t * t / 2)
+    const now = startsAt(0)
+    const step = limit / steps
+    for (let i = 1; i <= steps; i++) {
+      for (const t of [-i * step, i * step]) {
+        if (startsAt(t) === now) continue
+        let a = t > 0 ? t - step : t + step, b = t
+        for (let j = 0; j < 30; j++) { const m = (a + b) / 2; if (startsAt(m) === now) a = m; else b = m }
+        const time = (a + b) / 2
+        return t > 0 ? { time, before: now, after: startsAt(t) } : { time, before: startsAt(t), after: now }
+      }
+    }
+    return null
+  }
+
+  // forcedStarts: use this number of flights instead of the screw's here (see threadStartsChange).
+  generatePlacementInfo(grapplerDistance, launchSledGrapplerRangeFactor, forcedStarts) {
     // See LauncherMathDocumentation.docx for the derivation of the following equations
 
 
@@ -104,7 +135,8 @@ class SledGrapplerPlacementInfo {
     // We need the distance to the middle of the grappler pad. We'll call this "gPlus"
     const gPlus = grapplerDistance + this.grapplerMidOffset
     const shift = shiftToThread(this.distanceToSledAft + grapplerDistance, this.threadStartDistance)
-    const threadStarts = this.threadStarts = this.startsAt(this.distanceToSledAft + grapplerDistance + shift)
+    this._startsPosition = this.distanceToSledAft + grapplerDistance + shift
+    const threadStarts = this.threadStarts = forcedStarts ?? this.startsAt(this._startsPosition)
     const time = threadTime(this.distanceToSledAft + gPlus + shift, this.initialVelocity, this.initialDistance, this.acceleration)
 
     const rateOfChangeInForwardDisplacement = threadSpeed(this.distanceToSledAft + gPlus + shift, this.initialVelocity, this.initialDistance, this.acceleration)
@@ -154,6 +186,7 @@ class SledGrapplerPlacementInfo {
     this._phase = rotationsWithTwistFrac * threadStarts
     this._phasePosition = this.distanceToSledAft + gPlus + shift
     this._phaseTime = time
+    this._padStart = this.distanceToSledAft + grapplerDistance
 
     if (!isOnThread(this.distanceToSledAft + grapplerDistance, this.threadStartDistance) || (Math.abs(time - this.midwayTime) > 0.01)) {
       // Not on the thread yet, or too far (in thread phase) from the middle grappler: disengaged.
