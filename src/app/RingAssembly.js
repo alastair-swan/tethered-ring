@@ -106,13 +106,13 @@ export class RingAssembly {
           const copies = []
           for (let i = 0; i < n / 2; i++) {
             const theta = i * k
-            const { top, axialTension, radialTension } = this.ringForcesAt(system, theta)
+            const { top, quaternion, axialTension, radialTension } = this.ringForcesAt(system, theta)
             const step = Math.round(balancedPointBxAvePercent(this.planetSpec, crv, d, axialTension, radialTension) / TETHER_DESIGN_STEP)
             const design = designFor(step, axialTension)
             const tether = this.createTetherLOD(design.levels, design.fanWidths)
             tether.position.copy(top)
-            tether.rotation.y = theta
-            copies.push({ theta, position: top, profiles: design.rootProfiles })
+            tether.quaternion.copy(quaternion)
+            copies.push({ quaternion, position: top, profiles: design.rootProfiles })
             list.push(tether)
             refCoordSys.add(tether)
           }
@@ -180,11 +180,29 @@ export class RingAssembly {
     const nominalCentrifugal = types.reduce((sum, f) => sum + f.ρ, 0) / types.length
     const gravity = top.clone().normalize().multiplyScalar(-Math.hypot(nominalGravity.ρ, nominalGravity.z) * (reference.length() / top.length())**2)
     const centrifugal = outward.multiplyScalar(nominalCentrifugal * crv.mainRingRadius * curvature)
-    const radial = new THREE.Vector3(top.x, 0, top.z).normalize()   // away from the ring's axis
+    // The ring has no stiffness of its own (only the moving ring's hoop load, which acts along the
+    // curve's normal), so the tethers must cancel every component, including the small one of gravity
+    // along the ring (the planet's centre is not quite square to an elliptical ring). A tether hangs in
+    // a vertical plane: turn that plane about the local vertical at its top until it holds the pull.
+    const pull = gravity.add(centrifugal).negate()
+    const up = top.clone().normalize()
+    const radial0 = new THREE.Vector3(top.x, 0, top.z).normalize()   // away from the ring's axis
+    const side0 = yAxis.clone().cross(radial0)
+    const turn = new THREE.Quaternion()
+    let angle = 0
+    for (let i = 0; i < 4; i++) {
+      turn.setFromAxisAngle(up, angle)
+      const side = side0.clone().applyQuaternion(turn)
+      angle -= pull.dot(side) / pull.dot(up.clone().cross(side))
+    }
+    turn.setFromAxisAngle(up, angle)
     return {
       top,
-      axialTension: -(gravity.y + centrifugal.y),
-      radialTension: -(gravity.dot(radial) + centrifugal.dot(radial)),
+      // The copy's orientation in the ring frame: about the ring axis to its azimuth, then turned.
+      quaternion: turn.clone().multiply(new THREE.Quaternion().setFromAxisAngle(yAxis, theta)),
+      sidewaysTurn: angle,
+      axialTension: pull.dot(yAxis.clone().applyQuaternion(turn)),
+      radialTension: pull.dot(radial0.applyQuaternion(turn)),
     }
   }
 
