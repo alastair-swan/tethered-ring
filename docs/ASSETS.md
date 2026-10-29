@@ -105,5 +105,19 @@ tile bakes. To move them into LFS:
 1. Remove `textures` from `.gitignore`, and track it in LFS: `git lfs track "textures/**"` (adds the
    pattern to `.gitattributes`).
 2. `git add .gitattributes .gitignore textures` and commit; push, then upload them (above).
-3. Once the bucket has them, remove `scripts/sync-textures.mjs` and its step in `scripts/setup.mjs`
-   (`git lfs pull` then fetches the textures too).
+3. Once the bucket has them, remove the website download (below): `git lfs pull` then fetches the
+   textures too.
+
+### Clean-up once everything is in LFS
+
+When the new texture architecture is complete and all its data (planet tile sets, runtime textures and the
+source data the tile bakes are built from) is in Git LFS, nothing needs the project-atlantis.com download
+any more. Remove all of it:
+
+- `scripts/sync-textures.mjs`, and the `sync-textures` script in `package.json`.
+- The texture download step (and its warning) in `scripts/setup.mjs`.
+- The `textures` entry in `.gitignore` (the folder is then tracked in LFS).
+- The mentions of the download: `README.md` (setup), `CLAUDE.md` (`textures/` is downloaded),
+  `docs/ARCHITECTURE.md` (the folder list) and the top of this file.
+- Defaults in the bake tools that point at source files under `textures/` (for example `COLOR_SOURCE` and
+  `HEIGHT_SOURCE` in `tools/adaptive_lod.py`), once the bakes read the sources built by `tools/sources/`.
