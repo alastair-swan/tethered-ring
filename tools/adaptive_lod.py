@@ -996,6 +996,109 @@ def tranquillitatis_sizes_for_lod(lod: int, face_size: int,
     return korolev_sizes_for_lod(lod, face_size, base_height)
 
 
+# ---------------------------------------------------------------------------
+# Earth regional bakes: high-resolution overlays streamed on top of assets/earth
+# ---------------------------------------------------------------------------
+#
+# Each is baked from EOxCloudless 2024 imagery and Copernicus GLO-30 terrain, fetched over source_bbox
+# (tools/fetch_chimborazo_sources.py; source_pixels across, imagery from web-map zoom level zoom), into
+# assets/<name>, with tiles sized by sizes_for_lod (default: Chimborazo's, at least 512 px of colour and
+# 256 samples of height per tile). Its tiles are a cone: for each band (bbox, deepest LOD, grid step in degrees), every
+# tile from min_lod down to that LOD that touches the band's bbox, closed into a quadtree. The first band
+# is the widest; the sources are cropped to it plus crop_margin degrees. bboxes are (lon_min, lon_max,
+# lat_min, lat_max).
+#
+#   python -m tools.adaptive_lod <name> --estimate   # tile counts and approximate size, no downloads
+#   python -m tools.adaptive_lod <name> --jobs 8     # fetch the sources and bake
+#
+# After baking one, set it to baked in REGIONAL_ASSETS in src/presets/planetSetup.js (which also lists
+# where the scenes look), and commit assets/<name> (Git LFS: assets/** is tracked).
+#
+# chimborazo is baked. The others are proposals, not yet baked: their boxes come from the areas the old
+# planet renderer's presets loaded in high resolution and from the scenes' camera positions, and are
+# meant to be adjusted (the cores especially) before baking.
+EARTH_REGIONS = {
+    'chimborazo': dict(
+        source_bbox=CHIMBORAZO_REGION_BBOX, min_lod=CHIMBORAZO_MIN_LOD,
+        bands=[
+            (CHIMBORAZO_WIDE_BBOX, CHIMBORAZO_MIN_LOD, 0.05),
+            (CHIMBORAZO_MID_BBOX, CHIMBORAZO_MID_LOD, 0.01),
+            (CHIMBORAZO_CORE_BBOX, CHIMBORAZO_MAX_LOD, 0.005),
+            (CHIMBORAZO_WEST_MID_BBOX, CHIMBORAZO_MID_LOD, 0.01),
+            (CHIMBORAZO_WEST_CORE_BBOX, CHIMBORAZO_MAX_LOD, 0.005),
+        ],
+    ),
+    # New Zealand's North Island, sharper over the central plateau (Taupo, Tongariro), where the
+    # launch system scenes look.
+    'new_zealand': dict(
+        source_bbox=(172.4, 178.8, -41.9, -34.2), min_lod=5, source_pixels=16384,
+        bands=[
+            ((172.6, 178.6, -41.7, -34.4), 7, 0.05),
+            ((174.8, 176.6, -39.9, -38.3), 9, 0.01),
+            ((175.3, 176.0, -39.5, -38.8), 11, 0.005),
+        ]),
+    # Washington State, sharper over the Cascades between Mount Rainier and Mount Baker.
+    'washington': dict(
+        source_bbox=(-125.0, -116.7, 45.3, 49.2), min_lod=5, source_pixels=16384,
+        bands=[
+            ((-124.8, -116.9, 45.5, 49.0), 7, 0.05),
+            ((-122.6, -120.4, 46.6, 49.0), 9, 0.01),
+        ]),
+    # Mount Kilimanjaro (the demonstrator launcher's ramp ends at 3.07 S, 37.36 E).
+    'kilimanjaro': dict(
+        source_bbox=(36.4, 38.4, -4.0, -2.2), min_lod=5,
+        bands=[
+            ((36.6, 38.2, -3.8, -2.4), 7, 0.05),
+            ((37.0, 37.7, -3.4, -2.8), 9, 0.01),
+            ((37.2, 37.5, -3.2, -2.9), 11, 0.005),
+        ]),
+    # Boca Chica, Texas (Starbase).
+    'boca_chica': dict(
+        source_bbox=(-98.2, -96.4, 25.2, 26.7), min_lod=5,
+        bands=[
+            ((-98.0, -96.6, 25.4, 26.5), 8, 0.05),
+            ((-97.3, -97.0, 25.9, 26.1), 11, 0.005),
+        ]),
+    # Christmas Island (Indian Ocean): the whole island, sharply.
+    'christmas_island': dict(
+        source_bbox=(105.3, 106.0, -10.8, -10.2), min_lod=5,
+        bands=[
+            ((105.45, 105.8, -10.62, -10.35), 11, 0.005),
+        ]),
+    # North Queensland, Australia (the Australian transit vehicle scene).
+    'queensland': dict(
+        source_bbox=(139.8, 144.2, -21.2, -15.8), min_lod=5, source_pixels=16384,
+        bands=[
+            ((140.0, 144.0, -21.0, -16.0), 7, 0.05),
+            ((140.6, 141.6, -17.5, -16.5), 9, 0.01),
+        ]),
+}
+
+
+def earth_region_cone(region: dict) -> set:
+    """The tiles of an Earth regional bake (see EARTH_REGIONS)."""
+    cone = set()
+    for bbox, max_lod, step in region['bands']:
+        cone |= hawaii.collect_island_tiles(bbox, region['min_lod'], max_lod, step)
+    return hawaii.close_quadtree(cone, region['min_lod'])
+
+
+def estimate_earth_region(name: str, color_size: int, height_size: int) -> None:
+    """Prints a regional bake's tile counts per LOD and its approximate size on disk, without baking."""
+    region = EARTH_REGIONS[name]
+    sizes = region.get('sizes_for_lod', chimborazo_sizes_for_lod)
+    per_lod: dict[int, int] = {}
+    total = 0.0
+    for tile in earth_region_cone(region):
+        lod = tile[1]
+        per_lod[lod] = per_lod.get(lod, 0) + 1
+        color, height = sizes(lod, color_size, height_size)
+        # KTX2/UASTC: one byte per texel, plus a third for the mipmaps; heights: two bytes per sample.
+        total += color * color * 4 / 3 + height * height * 2
+    counts = ', '.join(f'LOD {lod}: {n}' for lod, n in sorted(per_lod.items()))
+    print(f'[{name}] {sum(per_lod.values())} tiles ({counts}), about {total / 1e6:.0f} MB')
+
+
 def build_overlay(color_source: str, height_source: str, color_size: int,
                   height_size: int, height_min_m: float, height_max_m: float,
                   jobs: int, can_try_ktx2: bool,
@@ -1159,7 +1262,8 @@ def build_overlay(color_source: str, height_source: str, color_size: int,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('asset', nargs='?', default='earth',
-                        help='Asset root to build (earth, moon, moon_korolev, moon_tranquillitatis, hawaii, or chimborazo).')
+                        help='Asset root to build (earth, moon, moon_korolev, moon_tranquillitatis, hawaii, '
+                             'or an Earth region: ' + ', '.join(EARTH_REGIONS) + ').')
     parser.add_argument('--color-source', type=str, default='textures/bluemarble_86400x43200.png')
     parser.add_argument('--height-source', type=str, default=HEIGHT_SOURCE)
     parser.add_argument('--color-size', type=int, default=256,
@@ -1174,11 +1278,13 @@ def main() -> None:
                         help='Skip KTX2 encoding (leaves PNG color tiles).')
     parser.add_argument('--lodvis', action='store_true', default=False,
                         help='Bake visualization tiles instead of imagery tiles.')
+    parser.add_argument('--estimate', action='store_true', default=False,
+                        help='For an Earth region: print its tile counts and approximate size, and stop.')
     parser.add_argument('--max-lod', type=int, default=4,
                         help='Deepest level for a uniform base layer (Moon default: 4).')
     args = parser.parse_args()
 
-    if not args.no_ktx2 and not _toktx_available():
+    if not args.no_ktx2 and not args.estimate and not _toktx_available():
         _print_toktx_install_instructions()
 
     if args.asset == 'earth':
@@ -1315,57 +1421,44 @@ def main() -> None:
             regional_height_data_bbox=hawaii.BIG_ISLAND_HEIGHT_BBOX,
             tile_size_for_lod=hawaii.sizes_for_lod,
         )
-    elif args.asset == 'chimborazo':
-        cone = hawaii.collect_island_tiles(
-            CHIMBORAZO_WIDE_BBOX, CHIMBORAZO_MIN_LOD,
-            CHIMBORAZO_MIN_LOD, 0.05)
-        cone |= hawaii.collect_island_tiles(
-            CHIMBORAZO_MID_BBOX, CHIMBORAZO_MIN_LOD,
-            CHIMBORAZO_MID_LOD, 0.01)
-        cone |= hawaii.collect_island_tiles(
-            CHIMBORAZO_CORE_BBOX, CHIMBORAZO_MIN_LOD,
-            CHIMBORAZO_MAX_LOD, 0.005)
-        cone |= hawaii.collect_island_tiles(
-            CHIMBORAZO_WEST_MID_BBOX, CHIMBORAZO_MIN_LOD,
-            CHIMBORAZO_MID_LOD, 0.01)
-        cone |= hawaii.collect_island_tiles(
-            CHIMBORAZO_WEST_CORE_BBOX, CHIMBORAZO_MIN_LOD,
-            CHIMBORAZO_MAX_LOD, 0.005)
-        cone = hawaii.close_quadtree(cone, CHIMBORAZO_MIN_LOD)
-
-        crop_bbox = (
-            CHIMBORAZO_WIDE_BBOX[0] - 0.25,
-            CHIMBORAZO_WIDE_BBOX[1] + 0.25,
-            CHIMBORAZO_WIDE_BBOX[2] - 0.25,
-            CHIMBORAZO_WIDE_BBOX[3] + 0.25,
-        )
+    elif args.asset in EARTH_REGIONS:
+        region = EARTH_REGIONS[args.asset]
+        if args.estimate:
+            estimate_earth_region(args.asset, args.color_size, args.height_size)
+            return
+        cone = earth_region_cone(region)
+        wide = region['bands'][0][0]
+        margin = region.get('crop_margin', 0.25)
+        crop_bbox = (wide[0] - margin, wide[1] + margin, wide[2] - margin, wide[3] + margin)
         regional_color = regional_height = None
         if not args.lodvis:
             regional_color, regional_height = prepare_chimborazo_sources(
-                ROOT, CHIMBORAZO_REGION_BBOX)
+                ROOT, region['source_bbox'], pixels=region.get('source_pixels', 12288),
+                region=args.asset, zoom=region.get('zoom', 12))
         build_overlay(
-            CHIMBORAZO_BASE_COLOR, args.height_source,
+            COLOR_SOURCE, args.height_source,
             args.color_size, args.height_size, args.height_min_m,
             args.height_max_m, args.jobs, not args.no_ktx2,
             cone=cone,
             lodvis=args.lodvis,
-            out_root=('assets/chimborazo_lodvis'
-                      if args.lodvis else CHIMBORAZO_ROOT),
-            overlay_name='chimborazo',
+            out_root=(f'assets/{args.asset}_lodvis'
+                      if args.lodvis else f'assets/{args.asset}'),
+            overlay_name=args.asset,
             lod_palette=ENHANCEMENT_LOD_PALETTE if args.lodvis else None,
             regional_color_source=(str(regional_color.relative_to(ROOT))
                                    if regional_color else None),
             regional_height_source=(str(regional_height.relative_to(ROOT))
                                     if regional_height else None),
-            regional_bbox=CHIMBORAZO_REGION_BBOX,
+            regional_bbox=region['source_bbox'],
             regional_crop_bbox=crop_bbox,
-            tile_size_for_lod=chimborazo_sizes_for_lod,
+            tile_size_for_lod=region.get('sizes_for_lod', chimborazo_sizes_for_lod),
             base_tile_root='assets/earth',
         )
     else:
         raise SystemExit(
             f"Unsupported asset '{args.asset}'. Supported assets are: "
-            "earth, moon, moon_korolev, moon_tranquillitatis, hawaii, chimborazo. "
+            "earth, moon, moon_korolev, moon_tranquillitatis, hawaii, "
+            f"{', '.join(EARTH_REGIONS)}. "
             "Add a new branch in tools/adaptive_lod.py if you want to build another asset."
         )
 

@@ -1,4 +1,5 @@
-"""Fetch the authoritative regional inputs used by the Chimborazo LOD bake."""
+"""Fetch the regional inputs for an Earth regional bake (first used for Chimborazo): EOxCloudless 2024
+imagery and Copernicus GLO-30 terrain over a bounding box (see EARTH_REGIONS in tools/adaptive_lod.py)."""
 
 from __future__ import annotations
 
@@ -67,9 +68,12 @@ def prepare_sources(
     root: Path,
     bbox: tuple[float, float, float, float],
     pixels: int = 12288,
+    region: str = "chimborazo",
+    zoom: int = 12,
 ) -> tuple[Path, Path]:
-    """Return locally prepared color/height images made from upstream datasets."""
-    cache = root / ".cache" / "adaptive_lod" / "chimborazo"
+    """Return locally prepared color/height images made from upstream datasets, `pixels` across, for
+    `region` (names the cache folder), with imagery from web-map zoom level `zoom`."""
+    cache = root / ".cache" / "adaptive_lod" / region
     cache.mkdir(parents=True, exist_ok=True)
     # Include the requested extent in derived filenames. Otherwise changing the
     # overlay boundary silently reuses the old, narrower crop and makes a rebuild
@@ -79,19 +83,19 @@ def prepare_sources(
     height = cache / f"copernicus_glo30_{pixels}_{bbox_tag}_meters.tif"
 
     if not color.exists():
-        print("[chimborazo] fetching EOxCloudless 2024 source tiles")
+        print(f"[{region}] fetching EOxCloudless 2024 source tiles")
         # Zoom 12 supplies roughly 38 m source pixels at the equator, closely
-        # matching a 12288px equirectangular output across this 3.5-degree box.
+        # matching a 12288px equirectangular output across Chimborazo's 3.5-degree box.
         lon_min, lon_max, lat_min, lat_max = bbox
         imagery_bbox = (lon_min, lat_min, lon_max, lat_max)
         image, _, _ = fetch_xyz_mosaic(
-            imagery_bbox, desired_px=pixels, zoom=12, max_workers=4,
+            imagery_bbox, desired_px=pixels, zoom=zoom, max_workers=4,
             url_template=EOX_CLOUDLESS_2024,
             cache_dir=cache / "eox_xyz_tiles")
         image.save(color, quality=95, optimize=True)
 
     if not height.exists():
-        print("[chimborazo] fetching Copernicus GLO-30 source tiles")
+        print(f"[{region}] fetching Copernicus GLO-30 source tiles")
         lon_min, lon_max, lat_min, lat_max = bbox
         dem_dir = cache / "copernicus"
         sources: list[Path] = []
@@ -100,10 +104,10 @@ def prepare_sources(
                 name = _copernicus_name(lat, lon)
                 path = dem_dir / f"{name}.tif"
                 if not path.exists():
-                    print(f"[chimborazo] downloading {name}", flush=True)
+                    print(f"[{region}] downloading {name}", flush=True)
                     found = _download(f"{COPERNICUS_GLO30}/{name}/{name}.tif", path)
                     if not found:
-                        print(f"[chimborazo] Copernicus tile absent (ocean): {name}")
+                        print(f"[{region}] Copernicus tile absent (ocean): {name}")
                         continue
                 sources.append(path)
         build_displacement_tile(
