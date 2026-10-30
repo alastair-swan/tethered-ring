@@ -8,14 +8,43 @@
 //   preset: 'default',                      // preset id (see src/presets/presets.js)
 //   parameters: { name: value, ... },       // full parameter snapshot at the start of the shot
 //   simulation: { startTime, animationState },
-//   camera: { interpolation: 'smooth' | 'linear', keyframes: [{ time, position, target, up, orbitUp, fov }] },
+//   camera: { interpolation: 'smooth' | 'linear', keyframes: [keyframe, ...] },
 //   parameterTracks: { name: [{ time, value }] },   // optional, times relative to the shot start
 //   output: { width, height, fps, duration, codec, container, bitrateMbps, waitForTerrain },
 // }
 //
-// Positions are world coordinates in metres (planet centre at the origin), stored as JSON doubles.
+// keyframe: {
+//   time,                        // video seconds from the start of the shot
+//   position, target, up, orbitUp, fov,
+//   anchor,                      // what position, target and up are relative to (default world)
+//   lookAt,                      // optional: a different anchor that `target` is relative to
+//   speed,                       // simulated seconds per video second here (default 1, see ShotTiming.js)
+//   ease,                        // true: the camera comes to rest at this keyframe (see CameraPath.js)
+//   motion,                      // 'auto' | 'direct' | 'orbit': how the camera moves to the next keyframe
+// }
+//
+// anchor: { type: 'world' } or a moving object, for example { type: 'launchVehicle', launchIndex: 74,
+// orient: 'follow' }; see ANCHOR_TYPES and src/shots/Anchors.js. Keyframe vectors are in the anchor's
+// frame: metres from the object along its own axes. With the world anchor they are world coordinates
+// in metres (planet centre at the origin). Everything is stored as JSON doubles.
+//
+// Version 1 files (no anchors, speeds, easing or motions) are read as world-anchored keyframes.
 export const SHOT_FORMAT = 'tethered-ring-shot'
-export const SHOT_VERSION = 1
+export const SHOT_VERSION = 2
+
+// Anchor types and the fields that identify the object.
+export const ANCHOR_TYPES = {
+  world: [],
+  launchVehicle: ['launchIndex'],
+  launchSled: ['launchIndex'],
+  adaptiveNut: ['launchIndex'],
+  transitVehicle: ['lane', 'p'],
+  elevatorCar: ['p'],
+}
+// How the anchor's frame turns: with the object (follow), with its heading but kept level with the
+// local horizon (level), or not at all (translate: world axes, moving with the object).
+export const ANCHOR_ORIENTS = ['follow', 'level', 'translate']
+export const MOTIONS = ['auto', 'direct', 'orbit']
 export const SHOT_FILE_EXTENSION = '.shot.json'
 
 export const DEFAULT_OUTPUT = {
@@ -52,6 +81,26 @@ export function shotDuration(shot) {
 
 const isVec3 = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite)
 
+export const WORLD_ANCHOR = Object.freeze({ type: 'world' })
+
+export function isWorldAnchor(anchor) {
+  return !anchor || anchor.type === 'world'
+}
+
+export function sameAnchor(a, b) {
+  if (isWorldAnchor(a) || isWorldAnchor(b)) return isWorldAnchor(a) && isWorldAnchor(b)
+  return a.type === b.type && (a.orient ?? 'follow') === (b.orient ?? 'follow') && ANCHOR_TYPES[a.type].every(f => a[f] === b[f])
+}
+
+// Returns a description of what is wrong with an anchor, or null.
+function anchorProblem(anchor) {
+  if (anchor === undefined || anchor === null) return null
+  if (typeof anchor !== 'object' || !(anchor.type in ANCHOR_TYPES)) return `unknown anchor type ${JSON.stringify(anchor?.type)}`
+  for (const field of ANCHOR_TYPES[anchor.type]) if (!Number.isFinite(anchor[field])) return `anchor "${anchor.type}" needs a numeric "${field}"`
+  if (anchor.orient !== undefined && !ANCHOR_ORIENTS.includes(anchor.orient)) return `anchor orient must be one of ${ANCHOR_ORIENTS.join(', ')}`
+  return null
+}
+
 // Throws an Error describing the first problem found; returns the (normalised) shot otherwise.
 export function validateShot(shot) {
   const fail = (msg) => { throw new Error(`Invalid shot file: ${msg}`) }
@@ -67,6 +116,10 @@ export function validateShot(shot) {
     if (!Number.isFinite(k.time)) fail(`keyframe ${i} has no time`)
     for (const field of ['position', 'target', 'up']) if (!isVec3(k[field])) fail(`keyframe ${i} "${field}" must be [x, y, z]`)
     if (i > 0 && k.time < keyframes[i - 1].time) fail(`keyframe ${i} is earlier than keyframe ${i - 1}`)
+    const problem = anchorProblem(k.anchor) ?? anchorProblem(k.lookAt)
+    if (problem) fail(`keyframe ${i}: ${problem}`)
+    if (k.speed !== undefined && !(Number.isFinite(k.speed) && k.speed >= 0)) fail(`keyframe ${i} "speed" must be a number >= 0`)
+    if (k.motion !== undefined && !MOTIONS.includes(k.motion)) fail(`keyframe ${i} "motion" must be one of ${MOTIONS.join(', ')}`)
   })
   if (!['smooth', 'linear'].includes(shot.camera.interpolation ?? 'smooth')) fail('"camera.interpolation" must be "smooth" or "linear"')
   shot.camera.interpolation ??= 'smooth'
