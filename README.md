@@ -49,6 +49,7 @@ Open the URL Vite prints (usually http://localhost:5173/). Useful URL parameters
 | `?preset=<id>` | Load a scene preset, e.g. `?preset=toOrbitFromMoon`. The **Scene → Preset** dropdown does the same. |
 | `?enableVR=true` | Enable WebXR (shows an "Enter VR" button). |
 | `?planetAssets=earth,hawaii` | Override which terrain tile sets are streamed. |
+| `?earthTiles=earth_hires` | Use the Earth's high-resolution global tile set (see [docs/ASSETS.md](docs/ASSETS.md)), if it has been baked. |
 | `?quality=auto\|high\|balanced\|low` | Graphics quality (see below). Without it, the last choice is remembered. |
 
 ### Graphics quality

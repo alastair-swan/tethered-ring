@@ -5,6 +5,7 @@ import { App } from './app/App.js'
 //   ?preset=<id>      scene preset to load (see src/presets/presets.js)
 //   ?enableVR=true    enable WebXR
 //   ?planetAssets=a,b override the planet tile sets to stream
+//   ?earthTiles=<name> the Earth's global tile set (earth or earth_hires)
 //   ?quality=auto|high|balanced|low  graphics quality (otherwise the last choice, default auto)
 const url = new URL(window.location.href)
 const app = new App(document.querySelector('#simContainer'), {

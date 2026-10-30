@@ -46,16 +46,25 @@ export const REGIONAL_BAKES = {
   moon: ['moon_tranquillitatis', 'moon_korolev'],
 };
 
+// The Earth's global tile set (a folder under assets/): 'earth', or 'earth_hires', baked by
+// tools/earth_hires.py from the planet source data (Blue Marble at every level, GMTED/GEBCO heights; see
+// docs/ASSETS.md). ?earthTiles=<name> picks one for a page load.
+export const EARTH_BASE_TILES = 'earth';
+
+function earthBaseTiles() {
+  if (typeof window === 'undefined' || !window.location) return EARTH_BASE_TILES;
+  return new URLSearchParams(window.location.search).get('earthTiles')?.trim() || EARTH_BASE_TILES;
+}
+
 /**
  * Baked asset sets for a body (names of folders under assets/): its global set, then its regional
- * bakes. Earth -> ['earth', ...], Moon -> ['moon', ...], anything else -> [] (flat colour).
+ * bakes. Earth -> [EARTH_BASE_TILES, ...], Moon -> ['moon', ...], anything else -> [] (flat colour).
  */
 export function defaultPlanetAssets(planetSpec) {
   const body = bodyKey(planetSpec);
   switch (body) {
-    case 'earth':
-    case 'moon':
-      return [body, ...REGIONAL_BAKES[body]];
+    case 'earth': return [earthBaseTiles(), ...REGIONAL_BAKES.earth];
+    case 'moon': return [body, ...REGIONAL_BAKES.moon];
     default: return [];
   }
 }

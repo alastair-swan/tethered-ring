@@ -8,8 +8,8 @@ import { PixelLOD } from '../scene/PixelLOD.js';
 // many tiles that finish loading together at start-up were all uploaded in one frame's render.
 const TILE_UPLOAD_BUDGET_MS = 4;
 
-// The base tile sets (assets/earth, assets/moon) have every tile through this LOD; regional overlays only
-// add tiles below it (BASE_FULL_COVERAGE_LOD in tools/adaptive_lod.py).
+// The base tile sets (assets/earth, assets/earth_hires, assets/moon) have every tile through this LOD;
+// regional overlays only add tiles below it (BASE_FULL_COVERAGE_LOD in tools/adaptive_lod.py).
 const BASE_FULL_COVERAGE_LOD = 3;
 
 // =============================================================================
@@ -768,13 +768,17 @@ export class CubedSpherePlanetRenderer {
         let count = 0;
         const mergeStart = performance.now();
         if (data.tiles) {
+          // An overlay's tiles above overlayMinLod are left out where the base has its own, so from
+          // further out the globe is the base's one unbroken dataset. The base is complete through
+          // BASE_FULL_COVERAGE_LOD, so an overlay's tiles there would only replace the base's imagery over
+          // a large area (a quarter of a cube face at LOD 1) with its own: older bakes include such a chain
+          // of tiles down to their area (tools/adaptive_lod.py now leaves them out). A base set can name a
+          // deeper level in its manifest (assets/earth_hires: the level its regional areas are covered to,
+          // plus one; see tools/earth_hires.py).
+          const overlayMinLod = this.manifest?.overlayMinLod ?? BASE_FULL_COVERAGE_LOD + 1;
           for (const [k, v] of Object.entries(data.tiles)) {
-            // The base is complete through BASE_FULL_COVERAGE_LOD, so an overlay's tiles there would
-            // only replace the base's imagery over a large area (a quarter of a cube face at LOD 1) with
-            // its own: older bakes include such a chain of tiles down to their area (tools/adaptive_lod.py
-            // now leaves them out).
             const lod = Number(k.split('/')[1]);
-            if (lod <= BASE_FULL_COVERAGE_LOD && this.manifestTileMap.has(k) && !this.tileSourceMap.has(k)) continue;
+            if (lod < overlayMinLod && this.manifestTileMap.has(k) && !this.tileSourceMap.has(k)) continue;
             this.manifestTileMap.set(k, v);
             this.tileSourceMap.set(k, source);
             count += 1;
