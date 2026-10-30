@@ -38,12 +38,12 @@ import { PROFILE, outAndBack, leaving, arriving, smootherstep } from './grappler
 // lets go only once its neighbour has landed on the new lattice's flight, and the old and new lattices
 // meet at one break. (Either lattice keeps every grappler within reach of a flight, so being on the old
 // one for a while costs at most a run.) The alignment is there to bring the runs down to the fewest the
-// screw allows at the fast end, so it changes at most once: the alignment with the fewest runs and free
-// grapplers over the last FINAL of the run is the final one; the best over the rest of the run is the
-// first; and if they differ, it changes at the earliest time from which the final one is at least as
-// good to the end (judged every DECISION s), but not while the last change of lattice is still passing
-// along the nut. Where the flights under the nut change but the lattice spacing does not, the lattice
-// keeps its alignment if it can.
+// screw allows at the fast end, as early as it can: the alignment with the fewest runs and free
+// grapplers over the last FINAL of each period of one lattice spacing is the final one, and the lattice
+// takes it where the spacing changes (every grappler moves then anyway). Where the flights under the nut
+// change but the spacing does not, it keeps the alignment it has, and changes it (once) to the final
+// one so as to have reached the whole nut by the earliest time from which that is at least as good to
+// the end (judged every DECISION s), but not while the last change of lattice is still passing along it.
 //
 // Everything is evaluated on a grid of GRID s (the alignment on one of COARSE s) and remembered; that is
 // only a cache: each value is a pure function of its time.
@@ -188,7 +188,8 @@ export class GrapplerLatticePlan {
 
   // The alignments (offsets, turns) over a period of one lattice spacing, and when it changes from the
   // first to the final one (see the top of this file): { first, final, change (s) }. It starts with the
-  // alignment the lattice had just before, where that had the same spacing and is one of these.
+  // alignment the lattice had just before, where that had the same spacing and is one of these, and
+  // otherwise (every grappler moves anyway) with the final one.
   alignment(period) {
     let plan = this._alignments.get(period.start)
     if (plan) return plan
@@ -212,14 +213,15 @@ export class GrapplerLatticePlan {
       // (Where the lattice spacing changes too, every grappler moves anyway: no need to carry it on.)
       const before = period.start > 0 ? this.latticeAt(period.start - 1) : null
       const carried = before && before.step === step ? offsets.findIndex(o => Math.abs(wrap(o - before.offset, step)) < 1e-9) : -1
-      const first = carried >= 0 ? carried : finalFrom > 0 ? best(0, finalFrom) : final
+      const first = carried >= 0 ? carried : final
       let change = Infinity
       if (first !== final) {
         let from = times.length
         while (from > 0 && costs[final][from - 1] <= costs[first][from - 1]) from--
-        change = from < times.length ? times[from] : times[times.length - 1]
-        // (Not while the last change of lattice is still passing along the nut.)
-        change = Math.max(change, startTime + this.delay * this.samplesAt(startTime).length)
+        // Starting a pass's time before that, so that it has reached the whole nut by then; but not while
+        // the last change of lattice is still passing along the nut.
+        const pass = this.delay * this.samplesAt(startTime).length
+        change = Math.max((from < times.length ? times[from] : times[times.length - 1]) - pass, startTime + pass)
       }
       plan = { first: offsets[first], final: offsets[final], change }
     }
