@@ -251,8 +251,9 @@ azimuthal grid per pole (512 px, out to 36 degrees from the equator): `north.bin
 each) and `manifest.json`.
 
 At run time `src/planet/seaIce.js` blends the two months either side of the simulated date and the sea
-surface draws the ice over the water (opaque, matte), broken into floes by noise near its edge; it is drawn
-only where the terrain is below sea level, so it stops at the coast. **Rendering → showSeaIce** turns it
+surface draws the ice over the water (opaque, matte), broken into floes by noise near its edge. It is also
+drawn on the ground below sea level and over the first 40 m above it, fading out, so it covers the ragged
+edge of the sea surface and runs a little way onto the shore. **Rendering → showSeaIce** turns it
 off. Without the data (not built, or not pulled from Git LFS) there is no ice.
 
 PowerShell:

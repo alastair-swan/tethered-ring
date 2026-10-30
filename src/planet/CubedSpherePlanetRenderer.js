@@ -98,6 +98,8 @@ const DEG2RAD = Math.PI / 180;
 // coastline, and its colour before a tile's imagery has loaded.
 const WATER_OPACITY = 0.12; // looking straight into it (more at grazing angles: see seaNoise.js)
 const WATER_SHALLOWS_DEPTH = 30;
+// Sea ice on the ground fades out over this height above sea level (m; see _configureSeafloor).
+const SEA_ICE_SHORE_HEIGHT = 40;
 const WATER_FALLBACK_COLOR = 0x0b2a3a; // (dark, like the imagery's ocean, so it is not taken for land)
 // Imagery luminance (linear) over which a pixel counts as land rather than sea (fade between the two).
 const WATER_LAND_LUMINANCE = ['0.06', '0.18'];
@@ -2121,24 +2123,35 @@ material.specularStrength *= 1.0 - seaIce; // ice is matte: no sun glint`)
   // variation, with mild fractal noise (seaNoise.js), blending in over the first SEAFLOOR_BLEND_DEPTH
   // metres below sea level. The altitude is computed per vertex from the tile-local position plus the
   // tile centre (good to ~1 m in float32).
+  //
+  // Sea ice (seaIce.js) is also drawn on the ground, fully below sea level and fading out over the first
+  // SEA_ICE_SHORE_HEIGHT metres above it, so it reaches the shore where the sea surface's edge is
+  // ragged (coarse tiles' coastal triangles, and the cut where the imagery shows land).
   _configureSeafloor(material, tile) {
     const previous = material.onBeforeCompile;
     const previousKey = material.customProgramCacheKey;
     const offsets = noiseOffsets(tile.center, SEAFLOOR_FREQS);
+    const iceOffsets = noiseOffsets(tile.center, SEA_ICE_FREQUENCIES);
+    const invA2 = (1 / (this.a * this.a)).toExponential(10);
+    const invB2 = (1 / (this.b * this.b)).toExponential(10);
     material.onBeforeCompile = (shader, renderer) => {
       if (previous) previous.call(material, shader, renderer);
       shader.uniforms.seafloorView = this.seafloorView;
       shader.uniforms.seafloorTileCenter = { value: tile.center };
       shader.uniforms.seafloorOffset = { value: offsets };
+      shader.uniforms.seaIceOffset = { value: iceOffsets };
+      Object.assign(shader.uniforms, seaIceUniforms);
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
 uniform vec3 seafloorTileCenter;
 varying float vSeafloorAltitude;
-varying vec3 vSeafloorLocal;`)
+varying vec3 vSeafloorLocal;
+varying vec3 vSeaIceNormal;`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>
 vSeafloorLocal = transformed;
 {
   vec3 p = transformed + seafloorTileCenter;
+  vSeaIceNormal = p * vec3(${invA2}, ${invB2}, ${invA2});
   float r = length(p);
   vec3 d = p / r;
   float surface = 1.0 / sqrt((d.x * d.x + d.z * d.z) / ${(this.a * this.a).toExponential(10)} + d.y * d.y / ${(this.b * this.b).toExponential(10)});
@@ -2149,7 +2162,10 @@ vSeafloorLocal = transformed;
 uniform float seafloorView;
 varying float vSeafloorAltitude;
 varying vec3 vSeafloorLocal;
-${fbmGlsl('seafloor', SEAFLOOR_FREQS)}`)
+varying vec3 vSeaIceNormal;
+${fbmGlsl('seafloor', SEAFLOOR_FREQS)}
+${fbmGlsl('seaIce', SEA_ICE_FREQUENCIES)}
+${seaIceGlsl}`)
         .replace('#include <map_fragment>', `#include <map_fragment>
 if (seafloorView > 0.0 && vSeafloorAltitude < 0.0) {
   float luma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
@@ -2158,6 +2174,15 @@ if (seafloorView > 0.0 && vSeafloorAltitude < 0.0) {
     * (1.0 + ${SEAFLOOR_CONTRAST.toFixed(2)} * mottle) * vec3(1.0 + 0.08 * mottle, 1.0, 1.0 - 0.08 * mottle);
   float amount = seafloorView * clamp(-vSeafloorAltitude / ${SEAFLOOR_BLEND_DEPTH.toFixed(1)}, 0.0, 1.0);
   diffuseColor.rgb = mix(diffuseColor.rgb, sediment, amount);
+}
+if (seafloorView < 1.0 && vSeafloorAltitude < ${SEA_ICE_SHORE_HEIGHT.toFixed(1)}) {
+  float concentration = seaIceConcentration(normalize(vSeaIceNormal));
+  if (concentration > 0.0) {
+    float viewDistance = length(vViewPosition);
+    vec4 ice = seaIceLook(concentration, seaIceFbm(vSeafloorLocal, viewDistance), viewDistance);
+    float shore = 1.0 - smoothstep(0.0, ${SEA_ICE_SHORE_HEIGHT.toFixed(1)}, vSeafloorAltitude);
+    diffuseColor.rgb = mix(diffuseColor.rgb, ice.rgb, ice.a * shore * (1.0 - seafloorView));
+  }
 }`);
     };
     material.customProgramCacheKey = () => (previousKey ? previousKey.call(material) : '') + '|seafloor';
