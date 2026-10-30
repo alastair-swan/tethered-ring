@@ -26,6 +26,12 @@ import { seaIceConcentrationAt } from '../planet/seaIce.js'
 // Boats are drawn within SPAWN_RADIUS of the camera's ground point while the camera is below
 // MAX_ALTITUDE (further away they would be under a pixel), with instanced meshes placed relative to an
 // origin near the camera (planet coordinates are too large for float32).
+//
+// They cast and receive shadows (the sails on the deck and on each other) from the sun's local shadows
+// (Lighting.enableLocalShadows), centred on the boat nearest the camera (shadowFocus). three.js looks a
+// shadow up from the float32 world position, which is only good to ~0.5 m this far from the planet's
+// centre, so the boats' materials look it up from their position relative to the boats' origin instead,
+// through boatShadowMatrix (the light's shadow matrix times the group's world matrix, in float64).
 
 const CELL_DEG = 0.02
 const CANDIDATES = 4
@@ -42,6 +48,8 @@ const MODEL_LENGTH = 8.5
 const ANCHORED = { near: 0.3, mid: 0, off: 0 }
 const SAILING = { near: 0.35, mid: 0.15, off: 0.01 }
 const KITE_CHANCE = 0.35
+// The shadows' focus is the nearest boat within this distance of the camera's ground point (m).
+const SHADOW_FOCUS_RANGE = 3000
 
 const KNOT = 0.514444
 // Hull colours (sRGB) and their weights: mostly white.
@@ -126,6 +134,24 @@ function mirrored(geometry) {
   return g
 }
 
+const boatShadowMatrix = { value: new THREE.Matrix4() }
+const SHADOW_COORD = 'vDirectionalShadowCoord[ i ] = directionalShadowMatrix[ i ] * shadowWorldPosition;'
+if (!THREE.ShaderChunk.shadowmap_vertex.includes(SHADOW_COORD)) console.warn('[sailboats] three.js shadowmap_vertex changed: boat shadows will be imprecise')
+
+// Has a boat material look its shadow up from its position relative to the boats' origin.
+function withLocalShadows(material) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.boatShadowMatrix = boatShadowMatrix
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform mat4 boatShadowMatrix;')
+      .replace('#include <shadowmap_vertex>', THREE.ShaderChunk.shadowmap_vertex.replace(SHADOW_COORD,
+        'vDirectionalShadowCoord[ i ] = boatShadowMatrix * ( instanceMatrix * vec4( transformed, 1.0 ) )' +
+        ' + directionalShadowMatrix[ i ] * vec4( shadowWorldNormal * directionalLightShadows[ i ].shadowNormalBias, 0.0 );'))
+  }
+  material.customProgramCacheKey = () => 'sailboatLocalShadows'
+  return material
+}
+
 function spinnakerTexture(bands) {
   const canvas = document.createElement('canvas')
   canvas.width = 8
@@ -156,8 +182,16 @@ export class Sailboats {
     this.active = []
     this.lastRefresh = null
     this.meshes = null
+    this.shadowLight = null      // see setShadowLight
+    this.shadowFocus = null      // the nearest boat (world axes), or null
+    this._nearest = new THREE.Vector3()
     new OBJLoader().loadAsync(url).then((object) => this._build(object))
       .catch((error) => console.warn('[sailboats] model failed to load', error))
+  }
+
+  /** The light whose shadows the boats cast and receive (Lighting.enableLocalShadows). */
+  setShadowLight(light) {
+    this.shadowLight = light
   }
 
   setVisible(visible) {
@@ -178,14 +212,23 @@ export class Sailboats {
     const angle = Math.atan(-p.getX(aft) / (p.getZ(aft) - pivotZ))
     boom.translate(0, 0, -pivotZ).rotateY(angle).translate(0, 0, pivotZ)
 
-    const hull = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.45 })
-    const metal = new THREE.MeshStandardMaterial({ color: 0xb8bcc0, roughness: 0.35, metalness: 0.6 })
-    const sail = new THREE.MeshStandardMaterial({ color: 0xf2f0ea, roughness: 0.85, side: THREE.DoubleSide })
+    const hull = withLocalShadows(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.45 }))
+    const metal = withLocalShadows(new THREE.MeshStandardMaterial({ color: 0xb8bcc0, roughness: 0.35, metalness: 0.6 }))
+    // Sailcloth: a little sheen, so the sails' curve shows; the jib a slightly different cloth from the
+    // main, as it often is, so the two can be told apart where they overlap.
+    const main = withLocalShadows(new THREE.MeshStandardMaterial({ color: 0xf0eee8, roughness: 0.6, side: THREE.DoubleSide }))
+    const jib = withLocalShadows(new THREE.MeshStandardMaterial({ color: 0xdedacf, roughness: 0.6, side: THREE.DoubleSide }))
+    const setShadowMatrix = () => {
+      if (this.shadowLight) boatShadowMatrix.value.multiplyMatrices(this.shadowLight.shadow.matrix, this.group.matrixWorld)
+    }
     const mesh = (geometry, material, name) => {
       const m = new THREE.InstancedMesh(geometry, material, MAX_BOATS)
       m.name = name
       m.count = 0
       m.frustumCulled = false
+      m.castShadow = true
+      m.receiveShadow = true
+      m.onBeforeRender = setShadowMatrix
       m.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
       this.group.add(m)
       return m
@@ -196,10 +239,10 @@ export class Sailboats {
       mast: mesh(parts.Mast, metal, 'sailboatMast'),
       boomCentred: mesh(boom, metal, 'sailboatBoom'),
       boom: pair(parts.Boom, metal, 'sailboatBoomOut'),
-      main: pair(parts.Mainsail, sail, 'sailboatMainsail'),
-      jib: pair(parts.Jib, sail, 'sailboatJib'),
-      kites: SPINNAKERS.map((bands, i) => pair(parts.Spinnaker,
-        new THREE.MeshStandardMaterial({ map: spinnakerTexture(bands), roughness: 0.8, side: THREE.DoubleSide }), `sailboatSpinnaker${i}`)),
+      main: pair(parts.Mainsail, main, 'sailboatMainsail'),
+      jib: pair(parts.Jib, jib, 'sailboatJib'),
+      kites: SPINNAKERS.map((bands, i) => pair(parts.Spinnaker, withLocalShadows(
+        new THREE.MeshStandardMaterial({ map: spinnakerTexture(bands), roughness: 0.6, side: THREE.DoubleSide })), `sailboatSpinnaker${i}`)),
     }
     this.meshes.hull.setColorAt(0, new THREE.Color())   // creates instanceColor
   }
@@ -413,7 +456,10 @@ export class Sailboats {
         // The instances are placed relative to the point below the camera.
         this._point(geo.lat, geo.lon, this.group.position)
       }
-      this._placeBoats(t, add, geo)
+      this.shadowFocus = this._placeBoats(t, add, geo) ? this.group.localToWorld(this._nearest.clone()) : null
+    }
+    else {
+      this.shadowFocus = null
     }
     for (const m of this._allMeshes()) {
       m.count = counts.get(m) ?? 0
@@ -431,13 +477,14 @@ export class Sailboats {
     return [m.hull, m.mast, m.boomCentred, ...m.boom, ...m.main, ...m.jib, ...m.kites.flat()]
   }
 
+  // Places the boats; returns whether one is within SHADOW_FOCUS_RANGE (it is then in this._nearest).
   _placeBoats(t, add, camera) {
     const m = this.meshes
-    let n = 0
+    let n = 0, nearest = SHADOW_FOCUS_RANGE * SHADOW_FOCUS_RANGE, found = false
     for (const cell of this.active) {
       if (!cell.boats) continue
       for (const boat of cell.boats) {
-        if (n >= MAX_BOATS) return
+        if (n >= MAX_BOATS) return found
         let lat = boat.lat, lon = boat.lon, heading = boat.heading, heel = 0, windFromPort = true, kite = false
         if (!boat.anchored) {
           const [east, north, psi] = this._alongTrack(boat.track, t)
@@ -450,9 +497,15 @@ export class Sailboats {
           heel = heelFor(beta, boat.top * polar(beta), boat.heelK) * (windFromPort ? 1 : -1)
         }
         const [dEast, dNorth] = this._metresBetween(camera, { lat, lon })
-        if (dEast * dEast + dNorth * dNorth > SPAWN_RADIUS * SPAWN_RADIUS) continue
+        const d2 = dEast * dEast + dNorth * dNorth
+        if (d2 > SPAWN_RADIUS * SPAWN_RADIUS) continue
         if (seaIceConcentrationAt(lat, lon) > 0.15) continue
         this._boatMatrix(lat, lon, heading, heel, boat.scale, _matrix)
+        if (d2 < nearest) {
+          nearest = d2
+          found = true
+          this._nearest.setFromMatrixPosition(_matrix)
+        }
         m.hull.setColorAt(add(m.hull, _matrix), boat.color)
         add(m.mast, _matrix)
         const side = windFromPort ? 0 : 1
@@ -467,6 +520,7 @@ export class Sailboats {
         n++
       }
     }
+    return found
   }
 
   // The model's matrix for a boat at (lat, lon) with `heading` (radians clockwise from north), heeled by

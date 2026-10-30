@@ -223,6 +223,7 @@ export class App {
     if (this.planetSpec.name === 'Earth' && this.planetSpec.hasOcean) {
       this.sailboats = new Sailboats(this.planet, this.planetCoordSys, this.planetSpec.ellipsoid)
       this.sailboats.setVisible(d.showSailboats.value)
+      if (this.lighting.enableLocalShadows()) this.sailboats.setShadowLight(this.lighting.sunLight)
     }
     this.planet.setAtmosphereVisible(d.showEarthsAtmosphere.value)
     this.ocean = null
@@ -688,6 +689,7 @@ export class App {
     this.camera.update(t, dt)
     this.planet.update(this.camera3d)
     this.sailboats?.update(t, this.camera3d)
+    if (this.sailboats?.shadowFocus) this.lighting.setLocalShadowFocus(this.sailboats.shadowFocus)
     // The water surface follows the camera; under it the view switches to the underwater look (see
     // render()), with the evacuated tube kept dry.
     this.ocean?.update(this.camera3d, (point, maxDistance) => this.launchSystem?.tubeNear(point, maxDistance) ?? null)
