@@ -19,8 +19,9 @@ import { PROFILE, outAndBack, leaving, arriving, smootherstep } from './grappler
 //
 // Its motion. A grappler lets go only where its lattice flight changes (the flight drifts past half a
 // step from the middle, or a change of lattice reaches it), half a hop's time before, and knows then
-// where it is going: the flight it has next for at least a hop's time (shorter ones are passed over),
-// landing half a hop's time after the change. If no neighbour has that flight when it lands, it would be
+// where it is going: the flight it has next for long enough to land on and grip for at least a hop's
+// time (shorter stretches are passed over), landing half a hop's time after the change. Where that is the
+// flight it is on, and the flight stays within its travel in between, it keeps holding it instead. If no neighbour has that flight when it lands, it would be
 // alone on it (two run ends for one grappler's grip): it parks instead, and lands on that flight when a
 // neighbour does, if that leaves it time before it moves on. Once gripping it lets go only where its own
 // lattice flight changes, whatever its neighbours do.
@@ -131,6 +132,7 @@ export class GrapplerLatticePlan {
     this._starts = []
     this._ends = []
     this._landings = []
+    this._spans = []
     // Half a hop's time, in grid steps.
     this.half = Math.max(1, Math.round(switchoverTime / 2 / GRID))
     // Between one grappler and the next taking up a change of lattice (s): a hop, and a little.
@@ -222,10 +224,10 @@ export class GrapplerLatticePlan {
     return { start, end, value }
   }
 
-  // A stretch lasting at least a hop's time (or at either end of the launch): one the grappler goes to.
-  // Shorter ones are passed over: the grappler goes straight on to the next lasting one.
+  // A stretch long enough to go to: a hop to land on it and as long again gripping it (or at either end
+  // of the launch). Shorter ones are passed over: the grappler goes straight on to the next lasting one.
   lasting(segment) {
-    return segment.end - segment.start >= 2 * this.half || segment.start === 0 || segment.end > this.lastStep
+    return segment.end - segment.start >= 4 * this.half || segment.start === 0 || segment.end > this.lastStep
   }
 
   // The lasting stretch before (or after) `segment`, or null.
@@ -245,60 +247,109 @@ export class GrapplerLatticePlan {
     return null
   }
 
+  // Whether grappler i can hold the flight `value` at grid step k: it may grip, and the flight is within
+  // its travel.
+  reachable(i, value, k) {
+    const s = this.samplesAt(Math.min(Math.max(0, k), this.lastStep) * GRID)[i]
+    return s.engageable && Math.abs(s.rate * s.n) <= this.fastestDrift && Math.abs(wrap((s.phase + 0.5) / s.n - value, 1)) <= this.holdLimit + 1e-9
+  }
+
+  // The span over which grappler i holds the flight of its lasting stretch `segment` ({ start, end,
+  // value }, grid steps): with the lasting stretches either side that have the same flight joined on,
+  // where that flight stays within its travel in between (it keeps holding it, rather than going away and
+  // coming back to it).
+  span(i, segment) {
+    const memo = (this._spans[i] ??= new Map())
+    let span = memo.get(segment.start)
+    if (span) return span
+    const value = segment.value
+    const holds = (from, to) => value !== null && Array.from({ length: to - from }, (_, j) => from + j).every(k => this.reachable(i, value, k))
+    let first = segment, last = segment
+    for (let before = this.previousLasting(i, first); before && same(before.value, value) && holds(before.end, first.start); before = this.previousLasting(i, first)) first = before
+    for (let after = this.nextLasting(i, last); after && same(after.value, value) && holds(last.end, after.start); after = this.nextLasting(i, last)) last = after
+    span = { start: first.start, end: last.end, value, first, last }
+    memo.set(segment.start, span)
+    return span
+  }
+
+  // The spans before and after `span`, or null.
+  previousSpan(i, span) {
+    const s = this.previousLasting(i, span.first)
+    return s ? this.span(i, s) : null
+  }
+
+  nextSpan(i, span) {
+    const s = this.nextLasting(i, span.last)
+    return s ? this.span(i, s) : null
+  }
+
   // Whether a neighbour of grappler i has the flight `value` at grid step k.
   joined(i, value, k) {
     return same(this.raw(i - 1, k), value) || same(this.raw(i + 1, k), value)
   }
 
-  // When (grid step) grappler i is on the flight of its lasting stretch `segment`: half a hop after the
-  // change to it, if a neighbour is on it then; otherwise (alone, it parks) a hop after a neighbour joins
-  // it, if that leaves it time before it lets go again; Infinity if it is never on it (or it is free).
-  landing(i, segment) {
+  // When (grid step) grappler i is on the flight of its span: half a hop after the change to it, if a
+  // neighbour is on it then; otherwise (alone, it parks) a hop after a neighbour joins it, if that leaves
+  // it time before it lets go again; Infinity if it is never on it (or it is free).
+  landing(i, span) {
     const memo = (this._landings[i] ??= new Map())
-    let landing = memo.get(segment.start)
+    let landing = memo.get(span.start)
     if (landing !== undefined) return landing
     landing = Infinity
-    if (segment.value !== null) {
-      const direct = segment.start + this.half
-      if (segment.start === 0 ? false : this.joined(i, segment.value, direct)) landing = direct
+    if (span.value !== null) {
+      const direct = span.start + this.half
+      if (span.start === 0 ? false : this.joined(i, span.value, direct)) landing = direct
       else {
-        for (let k = direct; k + 2 * this.half <= segment.end - this.half; k++) {
-          if (this.joined(i, segment.value, k)) { landing = k + 2 * this.half; break }
+        for (let k = direct; k + 2 * this.half <= span.end - this.half; k++) {
+          if (this.joined(i, span.value, k)) { landing = k + 2 * this.half; break }
         }
       }
     }
-    memo.set(segment.start, landing)
+    memo.set(span.start, landing)
     return landing
   }
 
   // What grappler i is doing at grid step k: { hold: flight } (gripping it), { park: true }, or { hop:
   // [from, to] (flights, or null for parked), start, end (grid steps) }. It lets go only where its
-  // lattice flight changes (half a hop before), and knows then where it is going: the flight of the next
-  // lasting stretch (passing over shorter ones), or parked if it would be alone there (see landing).
+  // lattice flight changes (half a hop before), and knows then where it is going: the flight of its next
+  // span (passing over short stretches), or parked if it would be alone there (see landing).
   motion(i, k) {
     const h = this.half, here = this.segment(i, k)
-    const current = this.lasting(here) ? here : this.previousLasting(i, here)
-    if (!current) return { park: true }
-    const landing = this.landing(i, current)
-    // Where it is at the end of a lasting stretch (and so where a hop from it starts).
-    const heldAtEnd = (s) => this.landing(i, s) <= s.end - h ? s.value : null
-    // Where a hop to a lasting stretch goes: its flight, if the grappler lands on it straight away.
-    const target = (s) => this.landing(i, s) === s.start + h ? s.value : null
-    const previous = this.previousLasting(i, current)
-    if (current === here && previous && k < current.start + h) {
-      return this.hop(heldAtEnd(previous), target(current), previous.end - h, current.start + h)
+    // The span it is in or has just left (and if left, the one it goes to).
+    const lastingHere = this.lasting(here) ? here : this.previousLasting(i, here)
+    let current = lastingHere ? this.span(i, lastingHere) : null
+    if (current && k >= current.end) {
+      const next = this.nextSpan(i, current)
+      return next ? this.hop(this.heldAtEnd(i, current), this.target(i, next), current.end - h, next.start + h) : { park: true }
     }
-    const next = this.nextLasting(i, current)
-    if (next && k >= current.end - h) return this.hop(heldAtEnd(current), target(next), current.end - h, next.start + h)
-    // Within its stretch: on its flight, or parked and joining it when a neighbour does.
-    if (k >= landing) return { hold: current.value }
+    if (!current) {
+      const next = this.nextLasting(i, here)
+      if (!next) return { park: true }
+      current = this.span(i, next)
+    }
+    const previous = this.previousSpan(i, current)
+    if (previous && k < current.start + h) return this.hop(this.heldAtEnd(i, previous), this.target(i, current), previous.end - h, current.start + h)
+    const next = this.nextSpan(i, current)
+    if (next && k >= current.end - h) return this.hop(this.heldAtEnd(i, current), this.target(i, next), current.end - h, next.start + h)
+    // Within its span: on its flight, or parked and joining it when a neighbour does.
+    const landing = this.landing(i, current)
+    if (k >= landing) return current.value === null ? { park: true } : { hold: current.value }
     if (landing !== Infinity && k >= landing - 2 * h) return this.hop(null, current.value, landing - 2 * h, landing)
     return { park: true }
   }
 
+  // Where grappler i is at the end of a span (and so where a hop from it starts).
+  heldAtEnd(i, span) {
+    return this.landing(i, span) <= span.end - this.half ? span.value : null
+  }
+
+  // Where a hop to a span goes: its flight, if the grappler lands on it straight away (else it parks).
+  target(i, span) {
+    return this.landing(i, span) === span.start + this.half ? span.value : null
+  }
+
   hop(from, to, start, end) {
     if (from === null && to === null) return { park: true }
-    if (same(from, to)) return { hold: from }
     return { hop: [from, to], start, end }
   }
 
