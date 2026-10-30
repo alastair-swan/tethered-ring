@@ -1801,15 +1801,19 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     // CDLOD edge morph: where an edge faces a coarser neighbor, collapse the in-between
     // boundary vertices onto the segment between the coarse tile's shared vertices so the
     // fine edge matches the coarse vertex spacing (removes T-junction cracks). Handles
-    // multi-level differences via a per-edge step of 2^(levelDiff).
+    // multi-level differences via a per-edge step of 2^(levelDiff). The sea surface's edges (and its
+    // depths) are collapsed the same way, or the sea would tear open along them.
     const steps = tile.edgeSteps;
     if (steps[0] > 1 || steps[1] > 1 || steps[2] > 1 || steps[3] > 1) {
       const idx = (x, y) => y * (seg + 1) + x;
       const lerp = (i, a, b, t) => {
-        const i3 = i * 3, a3 = a * 3, b3 = b * 3;
-        positions[i3] = positions[a3] + (positions[b3] - positions[a3]) * t;
-        positions[i3 + 1] = positions[a3 + 1] + (positions[b3 + 1] - positions[a3 + 1]) * t;
-        positions[i3 + 2] = positions[a3 + 2] + (positions[b3 + 2] - positions[a3 + 2]) * t;
+        for (const p of seaPositions ? [positions, seaPositions] : [positions]) {
+          const i3 = i * 3, a3 = a * 3, b3 = b * 3;
+          p[i3] = p[a3] + (p[b3] - p[a3]) * t;
+          p[i3 + 1] = p[a3 + 1] + (p[b3 + 1] - p[a3 + 1]) * t;
+          p[i3 + 2] = p[a3 + 2] + (p[b3 + 2] - p[a3 + 2]) * t;
+        }
+        if (heights) heights[i] = heights[a] + (heights[b] - heights[a]) * t;
       };
       const morphEdge = (step, get) => {
         let s = Math.min(step, seg);
