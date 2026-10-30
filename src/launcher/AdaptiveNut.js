@@ -130,6 +130,19 @@ class InstancedParts extends THREE.Group {
 const _white = new THREE.Color(1, 1, 1)
 const _hidden = new THREE.Matrix4().makeScale(0, 0, 0)
 
+// The slant of a pad shape's length (radians): from round the screw (its local x) towards along it (y),
+// from the centre of one end to the other's, within (-pi/2, pi/2]. A pad gripping a flight follows its
+// helix; parked, or hopping, it is turned back by this to line up with its actuators.
+function padSlant(geometry) {
+  const pos = geometry.attributes.position
+  let dx = 0, dy = 0
+  for (let k = 0; k < 4; k++) { dx += pos.getX(k + 4) - pos.getX(k); dy += pos.getY(k + 4) - pos.getY(k) }
+  let slant = Math.atan2(dy, dx)
+  if (slant > Math.PI / 2) slant -= Math.PI
+  if (slant <= -Math.PI / 2) slant += Math.PI
+  return slant
+}
+
 export class adaptiveNutModel {
   constructor(dParamWithUnits, myScene, unallocatedModelsList) {
     const p = (name) => dParamWithUnits[name].value
@@ -197,6 +210,7 @@ export class adaptiveNutModel {
       pads.padGeometryIds = []
       for (let i = 0; i < numGrapplers; i++) pads.padGeometryIds[i] = pads.addGeometry(templatePads[i].clone())
       for (let i = 0; i < numGrapplers; i++) pads.padGeometryIds[numGrapplers + i] = pads.addGeometry(mirrorGeometryX(templatePads[i]))
+      pads.slants = templatePads.map(padSlant)
       pads.instanceIds = []
       for (let i = 0; i < numGrapplers; i++) {
         for (let row = 0; row < GRAPPLER_ROWS.length; row++) {
@@ -520,6 +534,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
         const mirrored = mirrorGeometryX(geometry)
         // setGeometryAt takes its own copy.
         g.pads.setGeometryAt(g.pads.padGeometryIds[i], geometry)
+        g.pads.slants[i] = padSlant(geometry)
         g.pads.setGeometryAt(g.pads.padGeometryIds[g.numGrapplers + i], mirrored)
         geometry.dispose()
         mirrored.dispose()
@@ -542,7 +557,8 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
         // flights, untwist, move round, twist to the new flight, lower, attach.
         padLiftActuation = pose.lift * v.padLiftActuation
         padRadialActuation = pose.raise * v.padRadialActuation
-        padTwistActuation = pose.neutral * Math.atan(threadPitch)
+        // (Untwisted: turned back by its shape's slant, so that it lines up with its actuators.)
+        padTwistActuation = -pose.neutral * g.pads.slants[grapplerIndex]
         const grapplerScrewAngle = Math.atan(threadPitch)
         padLiftActuationThetaComponent = padLiftActuation * Math.sin(grapplerScrewAngle)
         padLiftActuationYComponent = padLiftActuation * Math.cos(grapplerScrewAngle)
