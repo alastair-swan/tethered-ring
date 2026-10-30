@@ -20,7 +20,7 @@ function nut({ count, phase, n = () => 4, end = 40 }) {
   }
   return { sampleAt, g, end }
 }
-const planFor = (setup, holdLimit) => new GrapplerLatticePlan(setup.sampleAt, setup.end, { holdLimit, switchoverTime, fastestDrift })
+const planFor = (setup, holdLimit, options = {}) => new GrapplerLatticePlan(setup.sampleAt, setup.end, { holdLimit, switchoverTime, fastestDrift, ...options })
 // Runs (neighbours holding the same flight), and grapplers free, at grid step k.
 function runsAndFree(plan, k) {
   const a = plan.arrangementAt(k)
@@ -101,7 +101,7 @@ test('a change of lattice passes along the nut one grappler at a time', () => {
   // than they can hop one after another, and with travel of exactly one lattice step they cannot wait.)
   const count = 32
   const setup = nut({ count, phase: (i, t) => 0.04 * i + 0.5 * Math.min(1, Math.max(0, (t - 10) / 40)), end: 90 })
-  const plan = planFor(setup, 0.25)
+  const plan = planFor(setup, 0.25, { lowSpeed: false })
   assert.equal(plan.latticeAt(0).step, 0.5)   // every second flight: two alignments
   let hops = 0
   // (From after the first landings: every grappler here may grip from the launch.)
@@ -136,6 +136,25 @@ test('a grappler never lets go only to take the same flight again', () => {
     for (let j = 2; j < spans.length; j++) {
       if (spans[j] !== null) assert.notEqual(spans[j - 2], spans[j], `grappler ${i} let go of ${spans[j]} and took it again`)
     }
+  }
+})
+
+test('from low speed to high, the count engaged never falls below what it has been guaranteed', () => {
+  // A nut speeding up: the phase difference between neighbours, and the drift, falling over the run.
+  const count = 24
+  const setup = nut({ count, phase: (i, t) => 0.9 * i / (1 + 0.3 * t) + 2 * Math.log(1 + 0.3 * t), end: 40 })
+  const plan = planFor(setup, 0.125)
+  const engaged = (k) => Array.from({ length: count }, (_, i) => plan.flightAt(i, k)).filter(f => f !== null).length
+  const K = Math.floor(40 * 30), first = Array.from({ length: K }, (_, k) => k).find(k => engaged(k) > 0)
+  assert.ok(first !== undefined)
+  // Once one is engaged, at least one always is.
+  for (let k = first; k < K; k++) assert.ok(engaged(k) >= 1, `none engaged at ${(k / 30).toFixed(2)} s`)
+  // And from the handover on, never fewer than the low-speed rules kept engaged over the hop before it.
+  const { handover } = plan.lowSpeed
+  if (handover < K) {
+    let guarantee = Infinity
+    for (let k = handover - 2 * plan.half; k <= handover; k++) guarantee = Math.min(guarantee, engaged(k))
+    for (let k = handover; k < K; k++) assert.ok(engaged(k) >= guarantee, `${engaged(k)} engaged at ${(k / 30).toFixed(2)} s, below ${guarantee}`)
   }
 })
 

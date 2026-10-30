@@ -1,8 +1,12 @@
 import { PROFILE, outAndBack, leaving, arriving, smootherstep } from './grapplerSwitchover.js'
+import { lowSpeedGrips } from './grapplerLowSpeed.js'
 
 // Which flight of the screw each of the adaptive nut's grapplers grips, and how it moves between them,
 // as a pure function of the time since the nut's launch: no history, so the same time always gives the
 // same answer (shots replay the same on any machine, and any moment can be shown without working up to it).
+// At low speed the grips are chained in layers instead (grapplerLowSpeed.js), until the lattice below can
+// keep up the count engaged they guarantee; each grappler then joins the lattice when its last grip from
+// them ends.
 //
 // Grapplers along the nut see the thread at different phases, drifting as the nut speeds up. A run of
 // neighbours gripping one flight is held by the magnetic coupling all along it, and eddy currents are
@@ -123,8 +127,10 @@ export class GrapplerLatticePlan {
   // sampleAt(time since launch) -> per grappler samples (see latticeArrangement). end: when the nut
   // leaves the screws. holdLimit: each grappler's travel either side of the middle (turns).
   // switchoverTime: how long a hop takes (s). fastestDrift: the fastest the flights may drift past a
-  // grappler for it to grip them (cycles/s).
-  constructor(sampleAt, end, { holdLimit, switchoverTime, fastestDrift }) {
+  // grappler for it to grip them (cycles/s). lowSpeed: false leaves out the low-speed grips (the lattice
+  // from the launch).
+  constructor(sampleAt, end, { holdLimit, switchoverTime, fastestDrift, lowSpeed = true }) {
+    this.useLowSpeed = lowSpeed
     this.sampleAt = sampleAt
     this.end = end
     this.holdLimit = holdLimit
@@ -371,11 +377,56 @@ export class GrapplerLatticePlan {
     return landing
   }
 
+  get grid() {
+    return GRID
+  }
+
+  // The low-speed grips, and when each grappler joins the lattice (see grapplerLowSpeed.js).
+  get lowSpeed() {
+    const N = this.samplesAt(0).length
+    return (this._lowSpeed ??= this.useLowSpeed ? lowSpeedGrips(this)
+      : { handover: 0, grips: Array.from({ length: N }, () => []), joins: new Array(N).fill(0) })
+  }
+
   // What grappler i is doing at grid step k: { hold: flight } (gripping it), { park: true }, or { hop:
+  // [from, to] (flights, or null for parked), start, end (grid steps) }: by the low-speed grips until it
+  // joins the lattice, then by the lattice.
+  motion(i, k) {
+    const { grips, joins } = this.lowSpeed, join = joins[i], hop = 2 * this.half
+    if (k < join) return this.lowSpeedMotion(grips[i], k)
+    const m = this.latticeMotion(i, k)
+    // Joining: from where its last grip from the layers leaves it.
+    const last = grips[i].find(g => g.to === join - 1)
+    const from = last ? last.flight : null
+    // (A lattice hop starting from the join on is the lattice's own; one already under way, and holding or
+    // parking within a hop of the join, start from the join instead, from where it is.)
+    if (m.hop) return m.start >= join ? m : this.hop(from, m.hop[1], join, Math.max(m.end, join + hop))
+    if (k >= join + hop) return m
+    if (m.hold !== undefined) return same(m.hold, from) ? m : this.hop(from, m.hold, join, join + hop)
+    return from === null ? m : this.hop(from, null, join, join + hop)
+  }
+
+  // Motion from a grappler's low-speed grips (in time order): on its flight in a grip; between two a hop's
+  // time or less apart, a hop from one to the other; otherwise letting go to park, parked, and landing.
+  lowSpeedMotion(grips, k) {
+    const hop = 2 * this.half
+    let previous = null, next = null
+    for (const g of grips) {
+      if (g.from <= k && k <= g.to) return { hold: g.flight }
+      if (g.to < k) previous = g
+      else if (g.from > k && !next) next = g
+    }
+    if (previous && next && next.from - previous.to - 1 <= 2 * hop) return this.hop(previous.flight, next.flight, previous.to + 1, next.from)
+    if (previous && k <= previous.to + hop) return this.hop(previous.flight, null, previous.to + 1, previous.to + 1 + hop)
+    if (next && k >= next.from - hop) return this.hop(null, next.flight, next.from - hop, next.from)
+    return { park: true }
+  }
+
+  // The lattice's motion for grappler i at grid step k: { hold: flight } (gripping it), { park: true }, or { hop:
   // [from, to] (flights, or null for parked), start, end (grid steps) }. It lets go only where its
   // lattice flight changes (half a hop before), and knows then where it is going: the flight of its next
   // span (passing over short stretches), or parked if it would be alone there (see landing).
-  motion(i, k) {
+  latticeMotion(i, k) {
     const h = this.half, here = this.segment(i, k)
     // The span it is in or has just left (and if left, the one it goes to).
     const lastingHere = this.lasting(here) ? here : this.previousLasting(i, here)
@@ -418,6 +469,28 @@ export class GrapplerLatticePlan {
   // The flight grappler i grips at grid step k (null: free, parked or hopping).
   flightAt(i, k) {
     return this.motion(i, k).hold ?? null
+  }
+
+  // The stretches [from, to] (grid steps) over which grappler i grips by the lattice alone, over the whole
+  // run: walking its spans once (as latticeMotion has it holding: from landing on its span's flight, until
+  // half a hop before the change after it).
+  latticeHolds(i) {
+    const h = this.half, out = []
+    const first = this.segment(i, 0)
+    const start = this.lasting(first) ? first : this.nextLasting(i, first)
+    for (let span = start ? this.span(i, start) : null, previous = null; span; previous = span, span = this.nextSpan(i, span)) {
+      const landing = this.landing(i, span)
+      if (span.value === null || landing === Infinity) continue
+      const next = this.nextSpan(i, span)
+      const from = Math.max(landing, previous ? span.start + h : 0), to = next ? span.end - h - 1 : this.lastStep
+      if (to >= from) out.push([from, to])
+    }
+    return out
+  }
+
+  // The flight grappler i grips at grid step k by the lattice alone.
+  latticeFlightAt(i, k) {
+    return this.latticeMotion(i, k).hold ?? null
   }
 
   // The pose of grappler i at `time` since launch. g: its placement info now (see effectivePhase;
