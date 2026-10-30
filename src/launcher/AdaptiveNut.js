@@ -5,8 +5,7 @@ import * as tram from '../utils/tram.js'
 import { quaternionFromFrame } from '../curves/SuperCurves.js'
 import { MovingVirtualObject, curveFrameAtTime, parameterSignature } from './VirtualObject.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
-import { scheduledGrapplerPose } from './grapplerSwitchover.js'
-import { GrapplerSchedule, effectivePhase } from './grapplerSchedule.js'
+import { GrapplerLatticePlan, effectivePhase } from './grapplerLattice.js'
 
 const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
 const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
@@ -57,10 +56,8 @@ function mirrorGeometryX(geometry) {
 }
 
 // A set of parts drawn as one InstancedMesh per shape, addressed like a BatchedMesh (addGeometry,
-// addInstance, setMatrixAt, setVisibleAt, setColorAt, setGeometryAt). This was a BatchedMesh, but that
-// finds each part's matrix by its draw number, which some GPUs and drivers get wrong: on Windows with
-// Direct3D 11 (ANGLE on an Intel Arc), the pads were sometimes drawn at each other's places, so the
-// whole set seemed to turn half a turn about the screw or to mirror.
+// addInstance, setMatrixAt, setVisibleAt, setColorAt, setGeometryAt). (Instanced meshes are plain
+// WebGL, where a BatchedMesh depends on its draw number to find each part's matrix.)
 class InstancedParts extends THREE.Group {
   constructor(material, { colors = false } = {}) {
     super()
@@ -337,8 +334,6 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     v.launcherMassDriverScrewUpwardsOffset = p('launcherMassDriverScrewUpwardsOffset')
     v.padLiftActuation = p('adaptiveNutGrapplerPadLiftAwayDistance')
     v.switchoverTime = p('adaptiveNutGrapplerSwitchoverTime')
-    v.maxLead = p('adaptiveNutMaxLead')
-    v.maxLeadAcceleration = p('adaptiveNutMaxLeadAcceleration') * p('launcherMassDriverForwardAcceleration')
     const r1 = v.launcherMassDriverScrewThreadRadius
     const r2 = v.launcherMassDriverScrewShaftOuterRadius
     v.padRadialActuation = (r1 - r2) * (1 + p('adaptiveNutGrapplerClearanceFactor'))
@@ -349,22 +344,22 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
 
     v.isDynamic = true
     v.hasChanged = true
-    v.schedules = new Map()   // launch turn -> GrapplerSchedule (made when first needed)
+    v.plans = new Map()   // launch turn -> GrapplerLatticePlan (made when first needed)
   }
 
-  // Which flight each grappler grips, and when (grapplerSchedule.js), for a nut launched when the screw's
-  // turn is launchTurn (rotations): the same for every such launch.
-  static gripSchedule(launchTurn) {
+  // Which flight each grappler grips, and how it moves between them (grapplerLattice.js), for a nut
+  // launched when the screw's turn is launchTurn (rotations): the same for every such launch.
+  static gripPlan(launchTurn) {
     const v = virtualAdaptiveNut
     const key = launchTurn.toFixed(6)
-    if (v.schedules.has(key)) return v.schedules.get(key)
+    if (v.plans.has(key)) return v.plans.get(key)
     const a = v.launcherMassDriverForwardAcceleration, v0 = v.launcherMassDriver1InitialVelocity
     const N = v.adaptiveNutNumGrapplers
     const first = (v.adaptiveNutBodyLength - v.adaptiveNutGrapplerLength) / 2, spacing = N > 0 ? v.adaptiveNutGrapplerLength / N : 0
     const distanceAt = (t) => v0 * t + a * t * t / 2
     const end = (a > 0) ? (-v0 + Math.sqrt(v0 * v0 + 2 * a * v.launcherMassDriverLength)) / a : v.launcherMassDriverLength / Math.max(1, v0)
-    const sampleAt = (t, lead) => {
-      const distance = distanceAt(t) + lead
+    const sampleAt = (t) => {
+      const distance = distanceAt(t)
       const info = new SledGrapplerPlacementInfo(
         v.launcherMassDriverScrewShaftOuterRadius, v.launcherMassDriverScrewThreadRadius, v.launcherMassDriverScrewThreadThickness,
         v.threadLayout.startsAt, v.screwRevolutionsPerSecond, a, v0, v.initialDistance, distance, v.adaptiveNutGrapplerLength, N,
@@ -379,30 +374,13 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
       }
       return out
     }
-    const tipSpeed = Math.max(1, 2 * Math.PI * v.launcherMassDriverScrewThreadRadius * v.screwRevolutionsPerSecond)
-    const schedule = new GrapplerSchedule(sampleAt, end, {
+    const plan = new GrapplerLatticePlan(sampleAt, end, {
       holdLimit: v.adaptiveNutGrapplerMaxRangeOfMotion, switchoverTime: v.switchoverTime,
-      // Eddy-current losses at a gap grow with the speed of the pads over the flights: the screw's tip
-      // speed and the nut's speed together (about sqrt(2) times the tip speed at low speed).
-      gapCost: (t) => (tipSpeed ** 2 + (v0 + a * t) ** 2) / (2 * tipSpeed ** 2),
-      maxLead: N > 0 ? v.maxLead : 0, maxLeadAcceleration: N > 0 ? v.maxLeadAcceleration : 0,
+      // (A grappler cannot land on flights drifting past faster than this: cycles/s.)
+      fastestDrift: 0.8 / v.switchoverTime,
     })
-    v.schedules.set(key, schedule)
-    return schedule
-  }
-
-  // How much later along its trajectory (s) a nut, sled and vehicle launched at timeLaunched are `deltaT`
-  // after their launch, for the nut's lead (see grapplerSchedule.js): they run together, ahead of or
-  // behind where the forward acceleration alone would put them.
-  static leadTime(timeLaunched, deltaT) {
-    const v = virtualAdaptiveNut
-    if (!v.schedules || !v.threadLayout || !(v.maxLeadAcceleration > 0) || !(v.maxLead > 0) || !(v.adaptiveNutNumGrapplers > 0)) return 0
-    const rps = v.screwRevolutionsPerSecond
-    const lead = v.gripSchedule((((timeLaunched * rps) % 1) + 1) % 1).leadAt(deltaT)
-    if (lead === 0) return 0
-    const a = v.launcherMassDriverForwardAcceleration, speed = v.launcherMassDriver1InitialVelocity + a * deltaT
-    // The time at which distanceAt (gripSchedule) is `lead` further on.
-    return a > 0 ? (-speed + Math.sqrt(Math.max(0, speed * speed + 2 * a * lead))) / a : lead / Math.max(1, speed)
+    v.plans.set(key, plan)
+    return plan
   }
 
   // Distance from the start of mass driver 1 to the back of the nut, `deltaT` after launch.
@@ -417,7 +395,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
 
   frameAt(refFrame, deltaT) {
     const v = virtualAdaptiveNut
-    const f = curveFrameAtTime(refFrame.curve, deltaT + v.leadTime(this.timeLaunched, deltaT), false)
+    const f = curveFrameAtTime(refFrame.curve, deltaT, false)
     const forward = f.forward
     const upward = f.upward
     const rightward = new THREE.Vector3().crossVectors(forward, upward)
@@ -501,18 +479,18 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     const speed = Math.sqrt(Math.max(1, initialVelocity**2 + 2 * acceleration * Math.max(0, distanceToSledAft)))
     const info = makeInfo(distanceToSledAft, additionalRotation)
     info.nutSpeed = speed
-    const schedule = v.gripSchedule((((this.timeLaunched * screwRevolutionsPerSecond) % 1) + 1) % 1)
+    const plan = v.gripPlan((((this.timeLaunched * screwRevolutionsPerSecond) % 1) + 1) % 1)
     const grapplerOffset = []
     const grapplerPoses = []
     const grapplerThreadPitch = []
     const grapplerThreadStarts = []
     for (let i = 0, grapplerDistance = firstGrapplerDistance; i<numGrapplers; i++, grapplerDistance += grapplerSpacing) {
       info.generatePlacementInfo(grapplerDistance, v.adaptiveNutGrapplerRangeFactor)
-      // Which flight it grips, or where it is in a hop between them (grapplerSchedule.js,
-      // grapplerSwitchover.js); off the screws, parked.
+      // Which flight it grips, or where it is in a hop between them (grapplerLattice.js); off the
+      // screws, parked.
       info.alpha = followingAngle(info)
       grapplerPoses[i] = onScrews
-        ? scheduledGrapplerPose(schedule, i, deltaT, info, v.switchoverTime, {})
+        ? plan.pose(i, deltaT, info)
         : { lift: 1, raise: 1, neutral: 1, alpha: 0, attached: false }
       grapplerOffset[i] = info.offset
       grapplerThreadPitch[i] = info.threadPitch
