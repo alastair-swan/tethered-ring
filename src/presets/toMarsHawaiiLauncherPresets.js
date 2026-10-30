@@ -213,25 +213,25 @@ export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['planet2RequireKtx2'] = false
   nonGUIParams['planet2StartupChart'] = true
 
-  // Bright reference marker centered 200 m above Chimborazo's 6,263 m summit.
-  nonGUIParams['debugGeodeticMarkers'] = [
-    {
-      name: 'Chimborazo peak',
-      lat: -1.4693,
-      lon: -78.8171,
-      altitude: 6263,
-      radius: 100,
-      color: 0xff00ff
-    },
-    {
-      name: 'Mauna Kea peak',
-      lat: 19.8207,
-      lon: -155.4680,
-      altitude: 10405,
-      radius: 5000,
-      color: 0x00ffff
-    }
-  ]
+  // Debug: bright reference markers. Uncomment to check terrain alignment. Marker centered 200 m above Chimborazo's 6,263 m summit.
+  // nonGUIParams['debugGeodeticMarkers'] = [
+  //   {
+  //     name: 'Chimborazo peak',
+  //     lat: -1.4693,
+  //     lon: -78.8171,
+  //     altitude: 6263,
+  //     radius: 100,
+  //     color: 0xff00ff
+  //   },
+  //   {
+  //     name: 'Mauna Kea peak',
+  //     lat: 19.8207,
+  //     lon: -155.4680,
+  //     altitude: 10405,
+  //     radius: 5000,
+  //     color: 0x00ffff
+  //   }
+  // ]
 
   // Keep base LOD responsive while still allowing detail refinement.
   nonGUIParams['tileSegments'] = 24
