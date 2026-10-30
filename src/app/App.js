@@ -22,7 +22,7 @@ import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
 
 // The Earth's global tile sets the A/B control switches between (folders under assets/; see docs/ASSETS.md).
-const EARTH_TILE_SETS = { 'Original (earth)': 'earth', 'New: Blue Marble, GMTED/GEBCO (earth_hires)': 'earth_hires' }
+const EARTH_TILE_SETS = { 'Blue Marble, GMTED/GEBCO (earth_hires)': 'earth_hires', 'Original (earth)': 'earth' }
 import { AerialPerspective } from '../planet/aerialPerspective.js'
 import { RingAssembly } from './RingAssembly.js'
 import { transitSystem } from '../transit/transitsystems.js'
@@ -418,9 +418,9 @@ export class App {
     sceneFolder.add(qualityChoice, 'quality', qualityOptions).name('Graphics quality').onChange((mode) => this.quality.setMode(mode))
     // Temporary: compares the Earth's two global tile sets from the same view (T switches too).
     if (this.planetSpec.name === 'Earth') {
-      this.earthTilesChoice = { tiles: this.planet.baseTiles }
-      this.earthTilesController = sceneFolder.add(this.earthTilesChoice, 'tiles', EARTH_TILE_SETS).name('Earth imagery (A/B, T)')
-        .onChange((name) => this.setEarthTiles(name))
+      const planet = this.planet, app = this
+      const choice = { get tiles() { return planet.baseTiles }, set tiles(name) { app.setEarthTiles(name) } }
+      sceneFolder.add(choice, 'tiles', EARTH_TILE_SETS).name('Earth imagery (A/B, T)').listen()
     }
     const actions = {
       downloadSpecs: () => this.downloadSpecs(),
@@ -594,10 +594,6 @@ export class App {
   setEarthTiles(name) {
     if (this.planetSpec.name !== 'Earth') return
     this.planet.setBaseTiles(name)
-    if (this.earthTilesChoice) {
-      this.earthTilesChoice.tiles = this.planet.baseTiles
-      this.earthTilesController.updateDisplay()
-    }
     console.info(`[planet] Earth imagery: ${this.planet.baseTiles}`)
   }
 

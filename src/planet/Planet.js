@@ -49,7 +49,11 @@ export const REGIONAL_BAKES = {
 // The Earth's global tile set (a folder under assets/): 'earth', or 'earth_hires', baked by
 // tools/earth_hires.py from the planet source data (Blue Marble at every level, GMTED/GEBCO heights; see
 // docs/ASSETS.md). ?earthTiles=<name> picks one for a page load.
-export const EARTH_BASE_TILES = 'earth';
+export const EARTH_BASE_TILES = 'earth_hires';
+
+// A global tile set to use instead of one that is not on this machine (not baked, or not pulled from Git
+// LFS): assets/earth_hires falls back to assets/earth.
+const BASE_TILE_FALLBACKS = { earth_hires: 'earth' };
 
 function earthBaseTiles() {
   if (typeof window === 'undefined' || !window.location) return EARTH_BASE_TILES;
@@ -282,8 +286,21 @@ export class Planet {
     const group = new THREE.Group();
     group.name = `planetTiles:${assetNames[0] ?? 'none'}`;
     this.surface.add(group);
-    const lod = new CubedSpherePlanetRenderer({ ...this.rendererOptions, group, assets: assetNames.map(assetFromName) });
-    this.renderers.set(assetNames[0], lod);
+    const base = assetNames[0];
+    const lod = new CubedSpherePlanetRenderer({
+      ...this.rendererOptions,
+      group,
+      assets: assetNames.map(assetFromName),
+      onAssetsLoaded: (loaded) => {
+        this.rendererOptions.onAssetsLoaded(loaded);
+        const fallback = BASE_TILE_FALLBACKS[base];
+        if (fallback && this.lod === lod && !loaded.some(({ name }) => name === base)) {
+          console.warn(`[planet] "${base}" is not on this machine (or not pulled from Git LFS): using "${fallback}"`);
+          this.setBaseTiles(fallback);
+        }
+      },
+    });
+    this.renderers.set(base, lod);
     return lod;
   }
 
