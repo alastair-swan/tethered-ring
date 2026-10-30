@@ -4,12 +4,11 @@ import atmosphereVertexShader from '../shaders/atmosphere.vert.glsl?raw';
 import atmosphereFragmentShader from '../shaders/atmosphere.frag.glsl?raw';
 import './aerialPerspective.js'; // registers <atmosphere_common>
 
-// The atmosphere shell is a sphere of the equatorial radius scaled by this
-// factor (and flattened like the planet). 1.1 / 1.05 reproduces the old look,
-// which scaled by 1.1 and then divided by w = 1.05 in the vertex shader.
-// Top of the atmosphere shell above sea level (m): above it the air is negligible (see
-// atmosphere.frag.glsl).
-const ATMOSPHERE_HEIGHT = 60000;
+// Top of the atmosphere shell above sea level (m), where the sky's scattering stops. High enough that
+// the air left above it would not show: a line of sight grazing the top crosses ~1100 km of air at
+// 4e-6 of sea-level density, under a level of brightness. (At 60 km a grazing line still met ~1%
+// optical depth, and the sky ended in a visible edge.)
+const ATMOSPHERE_HEIGHT = 100000;
 // Exposure of the scattered light (sky and haze): 1 within the air, falling to SPACE_EXPOSURE as the
 // camera climbs from EXPOSURE_FADE[0] to EXPOSURE_FADE[1] above the sea. Within the air the sky fills
 // the view and its brightness is compressed (1 - exp(-light)); from space, at full exposure, the limb
