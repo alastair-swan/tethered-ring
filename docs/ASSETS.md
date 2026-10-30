@@ -190,6 +190,54 @@ python3 -m venv .venv
 .venv/bin/python -m tools.sources.build_elevation
 ```
 
+### The high-resolution global Earth tiles (`assets/earth_hires`)
+
+`tools/earth_hires.py` bakes a global Earth tile set from the COGs above, beside `assets/earth` (which it
+leaves alone), in the same format and height range, so the regional bakes still stack on top of it:
+
+- Colour is Blue Marble alone, at every level, so the globe seen from space is one unbroken dataset.
+  Heights are the GMTED/GEBCO elevation; the ocean mask gives each tile its `landFraction`.
+- The grids are sampled as pixel-is-area and wrap across 180 degrees (the bake of `assets/earth` was
+  half a source pixel out at either end and clamped at the meridian). Each level samples the COG
+  overview that matches its sample spacing, so coarse tiles are not aliased; every tile of a level uses
+  the same one, so neighbouring height tiles share their edge samples exactly, as the renderer needs.
+- Tiles: everything through LOD 3, land to LOD 6, rough terrain and its surroundings to LOD 7 (Blue
+  Marble's full resolution), and the regional bakes' areas to LOD 6: about 35,000 tiles, 3.3 GB.
+- Its manifest's `overlayMinLod` (7) keeps the regional bakes' coarser tiles out, so they appear only
+  close up (below a few hundred km) and the globe is all Blue Marble from further out.
+
+It needs the COGs `blue_marble_15s.tif`, `elevation_7.5s.tif` and `ocean_mask_7.5s.tif` in
+`additional_earth_imagery/sources/` (`--sources DIR` for another folder) and `toktx`. The overview levels it
+samples are exported once to `.cache/earth_hires/` (about 20 GB). On 16 cores it takes about 20 minutes.
+
+PowerShell:
+
+```powershell
+.venv\Scripts\python -m tools.earth_hires --estimate   # the tile plan and its size
+.venv\Scripts\python -m tools.earth_hires --jobs 16    # bake assets/earth_hires
+```
+
+POSIX shells:
+
+```sh
+.venv/bin/python -m tools.earth_hires --estimate
+.venv/bin/python -m tools.earth_hires --jobs 16
+```
+
+`--land-lod`, `--mountain-lod`, `--regional-lod`, `--percentile` and `--dilate` change the plan, and
+`--resume` finishes an interrupted bake. To use the tiles, open any scene with `?earthTiles=earth_hires`;
+to make them the default, set `EARTH_BASE_TILES` in `src/planet/Planet.js` to `'earth_hires'`. They are
+not in Git LFS until they are committed and uploaded (see below).
+
+Not done yet:
+
+- The ocean mask only gives `landFraction`. The renderer still draws the sea (and its fog) wherever the
+  terrain is below 0 m, so the Caspian, the Dead Sea and other land below sea level are flooded to sea
+  level, as they are with `assets/earth`. Using the mask needs a renderer change (and a way to carry it
+  in the tiles).
+- The regional bakes' outer tiles were baked against `assets/earth`'s Blue Marble sampling; where they meet
+  `assets/earth_hires` the imagery can differ by up to half a Blue Marble pixel (about 230 m).
+
 ### Credits and licences
 
 | Source | Credit | Licence |
