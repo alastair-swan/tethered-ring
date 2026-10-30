@@ -23,7 +23,9 @@ const wrap = (x, m) => x - m * Math.floor(x / m + 0.5)
 
 // plan: the GrapplerLatticePlan. Returns { handover (grid step), grips: per grappler, its grips from the
 // layers in time order [{ flight (angle, turns), from, to } (grid steps)], joins: per grappler, the grid
-// step from which it follows the lattice }.
+// step from which it follows the lattice, guarantee: per grid step, the count engaged guaranteed from
+// then on (the layers established by then; from the handover, what the lattice takes over), never
+// falling }.
 export function lowSpeedGrips(plan) {
   const K = plan.lastStep, hop = 2 * plan.half, N = plan.samplesAt(0).length
   // Opportunities: per grappler, the stretches [from, to] over which a flight is within its travel (and it
@@ -57,7 +59,7 @@ export function lowSpeedGrips(plan) {
   // The layers, built to an horizon that grows until the handover is found within it.
   for (let horizon = Math.min(K, Math.round(10 / plan.grid)); ; horizon = Math.min(K, horizon * 2)) {
     const result = layersTo(horizon, opportunities, landable, N, K, hop, fewestFrom)
-    if (result || horizon >= K) return result ?? { handover: K + 1, grips: result?.grips ?? Array.from({ length: N }, () => []), joins: new Array(N).fill(K + 1) }
+    if (result || horizon >= K) return result ?? { handover: K + 1, grips: Array.from({ length: N }, () => []), joins: new Array(N).fill(K + 1), guarantee: new Int16Array(K + 1) }
   }
 }
 
@@ -106,11 +108,11 @@ function layersTo(horizon, opportunities, landable, N, K, hop, fewestFrom) {
   }
   // The layers' guarantee at grid step k: the fewest they have had engaged over the last hop's time. The
   // handover: the earliest k where the lattice keeps at least that from then on.
-  let handover = -1
+  let handover = -1, handed = 0
   for (let k = hop; k < horizon; k++) {
     let guarantee = Infinity
     for (let j = k - hop; j <= k; j++) guarantee = Math.min(guarantee, engaged[j])
-    if (guarantee > 0 && fewestFrom[k] >= guarantee) { handover = k; break }
+    if (guarantee > 0 && fewestFrom[k] >= guarantee) { handover = k; handed = guarantee; break }
   }
   if (handover < 0) return null
   const until = handover + 2 * hop
@@ -118,5 +120,19 @@ function layersTo(horizon, opportunities, landable, N, K, hop, fewestFrom) {
   for (const chain of chains) for (const g of chain) if (g.from < until) grips[g.i].push(g)
   grips.forEach(list => list.sort((a, b) => a.from - b.from))
   const joins = grips.map(list => Math.max(handover, ...list.filter(g => g.to >= handover).map(g => g.to + 1)))
-  return { handover, grips, joins }
+  // The guarantee: before the handover, the layers established (each from where its chain last starts
+  // without a break, to the handover); from it, what the lattice takes over.
+  const guarantee = new Int16Array(K + 1)
+  for (const chain of chains) {
+    let established = null
+    for (let j = 0; j < chain.length; j++) {
+      if (chain[j].from > handover) break
+      if (j === 0 || chain[j].from > chain[j - 1].to) established = chain[j].from
+    }
+    const reaches = chain.some(g => g.from <= handover && g.to >= handover)
+    if (reaches && established !== null) for (let k = established; k < handover; k++) guarantee[k]++
+  }
+  for (let k = handover; k <= K; k++) guarantee[k] = handed
+  for (let k = 1; k <= K; k++) guarantee[k] = Math.max(guarantee[k], guarantee[k - 1])
+  return { handover, grips, joins, guarantee }
 }
