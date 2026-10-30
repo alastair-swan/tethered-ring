@@ -30,7 +30,7 @@ const HAZE_THIN = 0.05
 
 const camera = { x: 0, y: 0, z: 0, w: 0 }   // xyz: stretched camera (planet centre at the origin, world axes); w: |C'|^2 - top^2
 const pole = { x: 0, y: 1, z: 0, w: 0 }     // xyz: polar axis (world); w: a/b - 1
-const params = { x: 0, y: 0, z: 1, w: 1 }   // y: active; z: a (m)
+const params = { x: 1, y: 0, z: 1, w: 1 }   // x: exposure (see Planet.js); y: active; z: a (m)
 const sun = { x: 0, y: 1, z: 0 }            // direction to the sun (world)
 
 const LIBRARIES = ['basic', 'lambert', 'phong', 'standard', 'physical', 'toon', 'matcap', 'points', 'sprite']
@@ -78,7 +78,7 @@ THREE.ShaderChunk.fog_fragment += `
         vec3 apLight, apTransmittance;
         atmoScatter(apCamera.xyz, apDirStretched, apDir, apT0, apT1, apSun, apParams.z, ${SAMPLES}, apLight, apTransmittance);
         float apOpaque = 1.0 - dot(apTransmittance, vec3(0.2126, 0.7152, 0.0722));
-        apLight *= mix(${HAZE_THIN.toFixed(3)}, 1.0, apOpaque * apOpaque * apOpaque);
+        apLight *= apParams.x * mix(${HAZE_THIN.toFixed(3)}, 1.0, apOpaque * apOpaque * apOpaque);
         vec3 apColor = sRGBTransferEOTF(vec4(gl_FragColor.rgb, 1.0)).rgb * apTransmittance + (1.0 - exp(-apLight));
         gl_FragColor.rgb = sRGBTransferOETF(vec4(apColor, 1.0)).rgb;
       }
@@ -96,6 +96,7 @@ export const AerialPerspective = {
     const u = atmosphereUniforms
     Object.assign(camera, { x: u.atmoCamera.value.x, y: u.atmoCamera.value.y, z: u.atmoCamera.value.z, w: u.atmoCamera.value.w })
     Object.assign(pole, { x: u.atmoPole.value.x, y: u.atmoPole.value.y, z: u.atmoPole.value.z, w: u.atmoPole.value.w })
+    params.x = u.atmoParams.value.y
     params.z = u.atmoParams.value.z
     Object.assign(sun, { x: u.atmoSun.value.x, y: u.atmoSun.value.y, z: u.atmoSun.value.z })
   },

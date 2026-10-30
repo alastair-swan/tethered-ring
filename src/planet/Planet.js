@@ -10,6 +10,13 @@ import './aerialPerspective.js'; // registers <atmosphere_common>
 // Top of the atmosphere shell above sea level (m): above it the air is negligible (see
 // atmosphere.frag.glsl).
 const ATMOSPHERE_HEIGHT = 60000;
+// Exposure of the scattered light (sky and haze): 1 within the air, falling to SPACE_EXPOSURE as the
+// camera climbs from EXPOSURE_FADE[0] to EXPOSURE_FADE[1] above the sea. Within the air the sky fills
+// the view and its brightness is compressed (1 - exp(-light)); from space, at full exposure, the limb
+// would saturate into a band of even brightness that looks lit from within, instead of fading with
+// the air's density.
+const SPACE_EXPOSURE = 0.3;
+const EXPOSURE_FADE = [20000, 200000];
 
 // Flat surface colours used before tiles stream in, and for bodies that have
 // no baked assets at all.
@@ -206,7 +213,7 @@ export class Planet {
     this.atmosphereUniforms = {
       atmoCamera: { value: new THREE.Vector4() },
       atmoPole: { value: new THREE.Vector4() },
-      atmoParams: { value: new THREE.Vector4(0, 0, a, a + ATMOSPHERE_HEIGHT) },
+      atmoParams: { value: new THREE.Vector4(0, 1, a, a + ATMOSPHERE_HEIGHT) },
       atmoSun: { value: new THREE.Vector3(0, 1, 0) },
     };
     this.atmosphere = new THREE.Mesh(
@@ -251,6 +258,8 @@ export class Planet {
     _atmoPole.set(0, 1, 0).applyQuaternion(q);
     u.atmoPole.value.set(_atmoPole.x, _atmoPole.y, _atmoPole.z, k - 1);
     u.atmoParams.value.x = c2 - a * a;
+    const fade = THREE.MathUtils.smoothstep(Math.sqrt(c2) - a, EXPOSURE_FADE[0], EXPOSURE_FADE[1]);
+    u.atmoParams.value.y = THREE.MathUtils.lerp(1, SPACE_EXPOSURE, fade);
     u.atmoSun.value.copy(sunDirection).normalize();
     this.lod.setSunDirection(sunDirection);
   }

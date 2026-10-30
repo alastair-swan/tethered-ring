@@ -14,7 +14,7 @@
 
 uniform vec4 atmoCamera;   // xyz: stretched camera position relative to the planet centre (world axes); w: |C'|^2 - top^2
 uniform vec4 atmoPole;     // xyz: polar axis (world); w: a/b - 1
-uniform vec4 atmoParams;   // x: |C'|^2 - a^2 (ground); z: a (m); w: top radius (m)
+uniform vec4 atmoParams;   // x: |C'|^2 - a^2 (ground); y: exposure; z: a (m); w: top radius (m)
 uniform vec3 atmoSun;      // direction to the sun (world)
 varying vec3 vWorldPosition;
 
@@ -42,6 +42,7 @@ void main() {
 
   vec3 light, transmittance;
   atmoScatter(atmoCamera.xyz, ds, d, t0, t1, atmoSun, atmoParams.z, VIEW_SAMPLES, light, transmittance);
+  light *= atmoParams.y;
   // The sun's disc seen through the air, reddened by it.
   light += sunDisc * ATMO_SUN_INTENSITY * 4.0 * transmittance;
   vec3 color = 1.0 - exp(-light);                         // exposure
