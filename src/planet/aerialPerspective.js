@@ -21,12 +21,6 @@ import './seaDarkening.js' // its fog code first: see below
 THREE.ShaderChunk.atmosphere_common = atmosphereCommon
 
 const SAMPLES = 8
-// The sky's brightness (ATMO_SUN_INTENSITY, with its exposure curve) is set for a sky seen on its own;
-// over directly lit ground the same light swamps it. Through thin air (looking down from space, or at
-// the hills a few kilometres off) the scattered light is scaled by HAZE_THIN; through air that nearly hides
-// what is behind it (the horizon, the ground near the limb) it rises to the sky's own brightness, so
-// the ground fades into the sky without a seam.
-const HAZE_THIN = 0.05
 
 const camera = { x: 0, y: 0, z: 0, w: 0 }   // xyz: stretched camera (planet centre at the origin, world axes); w: |C'|^2 - top^2
 const pole = { x: 0, y: 1, z: 0, w: 0 }     // xyz: polar axis (world); w: a/b - 1
@@ -77,8 +71,7 @@ THREE.ShaderChunk.fog_fragment += `
       if (apT1 > apT0) {
         vec3 apLight, apTransmittance;
         atmoScatter(apCamera.xyz, apDirStretched, apDir, apT0, apT1, apSun, apParams.z, ${SAMPLES}, apLight, apTransmittance);
-        float apOpaque = 1.0 - dot(apTransmittance, vec3(0.2126, 0.7152, 0.0722));
-        apLight *= apParams.x * mix(${HAZE_THIN.toFixed(3)}, 1.0, apOpaque * apOpaque * apOpaque);
+        apLight *= apParams.x * atmoHazeScale(apTransmittance);
         vec3 apColor = sRGBTransferEOTF(vec4(gl_FragColor.rgb, 1.0)).rgb * apTransmittance + (1.0 - exp(-apLight));
         gl_FragColor.rgb = sRGBTransferOETF(vec4(apColor, 1.0)).rgb;
       }

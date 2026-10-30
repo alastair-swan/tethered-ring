@@ -16,6 +16,18 @@ const float ATMO_HEIGHT_R = 8000.0;
 const float ATMO_HEIGHT_M = 1200.0;
 const float ATMO_MIE_G = 0.76;
 const float ATMO_SUN_INTENSITY = 22.0;
+// The haze over the ground (aerialPerspective.js, and the ground the sky draws near the horizon): the
+// sky's brightness, with its exposure curve, is set for a sky seen on its own; over directly lit ground
+// the same light swamps it. Through thin air (looking down from space, or at hills a few kilometres off)
+// the scattered light is scaled by ATMO_HAZE_THIN; through air that nearly hides what is behind (the
+// horizon, the ground near the limb) it rises to the sky's own brightness, so ground and sky meet
+// without a seam.
+const float ATMO_HAZE_THIN = 0.05;
+
+float atmoHazeScale(vec3 transmittance) {
+  float opaque = 1.0 - dot(transmittance, vec3(0.2126, 0.7152, 0.0722));
+  return mix(ATMO_HAZE_THIN, 1.0, opaque * opaque * opaque);
+}
 
 // Stable roots of A t^2 + 2 B t + c = 0 (t0 <= t1); false if there are none.
 bool atmoRoots(float A, float B, float c, out float t0, out float t1) {

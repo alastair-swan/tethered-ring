@@ -2,7 +2,7 @@
 // the top of the shell and the ground), by the model in atmosphereCommon.glsl. The output is the
 // scattered light, and the background (stars, the sun's disc in the sky pass) is dimmed by the air's
 // transmittance. Lines of sight that reach the ground are left to the ground's own haze
-// (aerialPerspective.js).
+// (aerialPerspective.js), except near the horizon (see GRAZING_BAND).
 //
 // Geometry: solved against the ellipsoid by stretching space along the polar axis (atmoPole.w =
 // a/b - 1), which turns it into a sphere of radius a; relative to the camera, with |C'|^2 - r^2 (small
@@ -20,6 +20,13 @@ varying vec3 vWorldPosition;
 
 const float sunCosRadius = 0.999989;           // cos(0.27 degrees)
 const int VIEW_SAMPLES = 16;
+// Lines of sight that reach the sea-level ellipsoid within this far (m) of grazing it. The planet's
+// mesh is drawn over the sky, but towards the horizon its tiles are coarse and their edges are chords
+// that sag below the ellipsoid between vertices (by up to a few kilometres): some lines of sight just
+// below the horizon reach the ellipsoid but pass over the mesh. For these the sky draws the ground
+// itself, as the haze in front of dark sea, so the gaps do not show the black behind the sky.
+const float GRAZING_BAND = 20000.0;
+const vec3 GROUND_COLOR = vec3(0.012, 0.03, 0.05);   // the sea, as seaDarkening.js's dark water
 
 void main() {
   #include <logdepthbuf_fragment>
@@ -34,8 +41,23 @@ void main() {
   float groundDisc = B * B - A * atmoParams.x;
   bool hitsGround = atmoParams.x > 0.0 && B < 0.0 && groundDisc > 0.0;
   // The ground (drawn in front of the shell) hides lines of sight that reach it: skip them early (the
-  // logarithmic depth written by this shader stops the GPU from rejecting them before it runs).
-  if (hitsGround) discard;
+  // logarithmic depth written by this shader stops the GPU from rejecting them before it runs), unless
+  // they pass within GRAZING_BAND of grazing it. The lowest point of the line is at radius r with
+  // r^2 - a^2 = atmoParams.x - B^2 / A, so that is r - a ~ (r^2 - a^2) / 2a.
+  if (hitsGround) {
+    float a = atmoParams.z;
+    if ((atmoParams.x - B * B / A) / (2.0 * a) < -GRAZING_BAND) discard;
+    float g0, g1;
+    atmoRoots(A, B, atmoParams.x, g0, g1);
+    vec3 groundLight, groundTransmittance;
+    atmoScatter(atmoCamera.xyz, ds, d, t0, max(g0, t0), atmoSun, a, VIEW_SAMPLES, groundLight, groundTransmittance);
+    groundLight *= atmoParams.y * atmoHazeScale(groundTransmittance);
+    vec3 hit = atmoCamera.xyz + ds * g0;
+    float lit = smoothstep(-0.1, 0.1, dot(normalize(hit), atmoSun));
+    gl_FragColor = vec4((1.0 - exp(-groundLight)) + groundTransmittance * GROUND_COLOR * lit, 1.0);
+    #include <colorspace_fragment>
+    return;
+  }
   if (t1 <= t0) discard;
   float sunCos = dot(d, atmoSun);
   float sunDisc = smoothstep(sunCosRadius - 0.000004, sunCosRadius, sunCos);
