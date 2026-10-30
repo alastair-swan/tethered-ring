@@ -89,7 +89,7 @@ export function isWorldAnchor(anchor) {
 
 export function sameAnchor(a, b) {
   if (isWorldAnchor(a) || isWorldAnchor(b)) return isWorldAnchor(a) && isWorldAnchor(b)
-  return a.type === b.type && (a.orient ?? 'follow') === (b.orient ?? 'follow') && ANCHOR_TYPES[a.type].every(f => a[f] === b[f])
+  return a.type === b.type && (a.orient ?? 'follow') === (b.orient ?? 'follow') && (ANCHOR_TYPES[a.type] ?? []).every(f => a[f] === b[f])
 }
 
 // Returns a description of what is wrong with an anchor, or null.

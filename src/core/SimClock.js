@@ -39,6 +39,15 @@ export class SimClock {
     this.delta = 0
   }
 
+  // Moves to `time` as one step (forwards or backwards) and returns the step taken. Used when shot
+  // playback, rather than the wall clock, decides the time.
+  moveTo(time) {
+    this.delta = time - this.time
+    this.time = time
+    this._lastWallTime = null
+    return this.delta
+  }
+
   // Switch to fixed-step mode (e.g. 1/60 for a 60 fps recording); pass null to return to real time.
   setFixedStep(step) {
     this.fixedStep = step

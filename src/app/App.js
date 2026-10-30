@@ -35,6 +35,7 @@ import { ILLUSTRATION_SETTINGS } from './illustrationSettings.js'
 import { downloadText, specsCsv } from './exports.js'
 import * as kmlutils from '../export/kmlutils.js'
 import { ShotController } from '../shots/ShotController.js'
+import { ShotSidebar } from '../ui/ShotSidebar.js'
 import cameraPresets from '../data/cameraPresets.json' with { type: 'json' }
 import { placeAtHeightInRingPlane } from '../ring/ringGeometry.js'
 import mountainList from '../data/mountainList.json' with { type: 'json' }
@@ -89,7 +90,7 @@ export class App {
     await this.loadBackgroundImage()
     this.buildGui()
     this.shots = new ShotController(this)
-    this.shots.buildGui(this.gui.gui)
+    this.sidebar = new ShotSidebar(this)
     this.installInput()
     this.quality.apply()
     window.addEventListener('resize', () => this.onResize())
@@ -508,6 +509,7 @@ export class App {
     const r = this.ring
     this.ecv = new tram.elevatorCarVariables(this.planetSpec, this.d, r.crv)
     this.transitSystem.update(this.d, r.refCoordSys, this.specs, false, r.crv, this.planetRadius, r.mainRingCurve, this.clock.time)
+    this.shots?.onSceneChanged()
   }
 
   updateLauncher() {
@@ -515,6 +517,7 @@ export class App {
     const r = this.ring
     this.launchSystem.update(this.d, this.clock.time, this.planetCoordSys, this.planetSpec, r.refCoordSys, r.mainRingCurve, r.crv, this.specs, false, '')
     this.launchSystem.drawLaunchTrajectoryLine(this.d, this.planetCoordSys)
+    this.shots?.onSceneChanged()
   }
 
   recomputeLaunchTrajectory({ curvesOnly = false } = {}) {
@@ -530,6 +533,7 @@ export class App {
     const kml = this.ring.rebuild({ genSpecs, genKMLFile: genKML })
     this.camera.ringAxis.set(0, 1, 0).applyQuaternion(this.ring.ringToPlanetRotation)
     this.updateTransitSystem()
+    this.shots?.onSceneChanged()
     let launcherKml = ''
     if (this.launchSystem) {
       const r = this.ring
@@ -610,8 +614,10 @@ export class App {
 
   frame() {
     if (this.shots.busy) return // a recording/playback loop is driving the frames
-    this.quality.onFrame(performance.now())
-    const dt = this.clock.tick()
+    const now = performance.now()
+    this.quality.onFrame(now)
+    // The shot playhead decides the simulated time (playing, paused, rewinding or scrubbed).
+    const dt = this.shots.tick(now)
     this.step(dt)
     this.render()
   }
@@ -621,6 +627,8 @@ export class App {
     const t = this.clock.time
     const d = this.d
     if (this.vr) this.vr.update()
+    // The shot camera is placed first, so the objects near it get their models in this frame.
+    this.shots.beforeStep()
 
     if (!this.logoTimerDone && t > LOGO_DURATION) {
       this.logoTimerDone = true
@@ -721,6 +729,7 @@ export class App {
 
   render() {
     const renderer = this.renderer
+    this.shots.overlay.update(this.camera3d)
     PixelLOD.beginFrame(renderer.info.render.frame)
     InstancedProxyPool.syncAll(this.camera3d, PixelLOD.viewportHeight)
     this.ring.update()
@@ -801,6 +810,12 @@ export class App {
       width = image.naturalWidth
       height = image.naturalHeight
     }
+    // The shot camera's view is framed like the video (the canvas letterboxes it, see styles.css).
+    const aspect = this.shots?.previewAspect
+    if (aspect) {
+      if (width / height > aspect) width = Math.round(height * aspect)
+      else height = Math.round(width / aspect)
+    }
     this.setRenderSize(width, height)
   }
 
@@ -809,7 +824,7 @@ export class App {
   // ------------------------------------------------------------------------------------------
 
   togglePause() {
-    this.clock.paused = !this.clock.paused
+    this.shots.togglePlay()
   }
 
   orbitPlanetCentre() {

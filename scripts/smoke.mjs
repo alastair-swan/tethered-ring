@@ -4,6 +4,8 @@
 //   npm run smoke -- [--url-params "preset=default"] [--wait 15] [--out smoke.png] [--width 1280 --height 720 --dpr 1]
 //                    [--cpu-throttle 4]   (slow the CPU down 4x, roughly a low-end laptop)
 //                    [--init "<js>"]      (run before the page's own scripts, e.g. to hide a WebGL extension)
+//                    [--steps <file.mjs>] (after the wait: runs the module's default export, an async function
+//                                          given { page, screenshot(name) }, for checks with several steps)
 //
 // Set CHROME_PATH if Chrome/Chromium/Edge is not found automatically.
 import { createServer } from 'vite'
@@ -75,6 +77,20 @@ try {
   await page.goto(url, { waitUntil: 'load', timeout: 120000 })
   await new Promise((r) => setTimeout(r, waitSeconds * 1000))
   if (evalExpr) console.log('eval:', JSON.stringify(await page.evaluate(evalExpr), null, 2))
+  const stepsFile = arg('steps', null)
+  if (stepsFile) {
+    const { pathToFileURL } = await import('node:url')
+    const steps = (await import(pathToFileURL(path.resolve(stepsFile)).href)).default
+    const outBase = out.replace(/\.png$/i, '')
+    await steps({
+      page,
+      screenshot: async (name) => {
+        const file = path.resolve(`${outBase}-${name}.png`)
+        await page.screenshot({ path: file })
+        console.log(`Screenshot: ${file}`)
+      },
+    })
+  }
   await page.screenshot({ path: path.resolve(out) })
   console.log(`Screenshot: ${path.resolve(out)}`)
 } catch (e) {

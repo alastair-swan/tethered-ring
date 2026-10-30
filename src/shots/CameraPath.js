@@ -22,12 +22,22 @@
 // which returns the key's world-space pose *at the current simulation time*; every keyframe the
 // spline needs is resolved at that same moment. Where neighbouring keys share an anchor this is the
 // same as interpolating in the anchor's frame, so a camera keyed to a vehicle rides along with it.
+// A keyframe's tangent only uses neighbours tied to the same objects: a world-fixed neighbour of a
+// keyframe that rides with a rocket would otherwise lend the rocket's ground speed to the spline, and
+// the camera would swing kilometres away between two keyframes that are both close to the rocket.
 //
 // All arithmetic is on plain JS numbers (float64), so world coordinates of ~6.4e6 m keep
 // sub-millimetre precision.
 export const ORBIT_RATIO = 3
 
+import { sameAnchor } from './ShotFormat.js'
+
 const identity = (key) => key
+
+// True when two keyframes are tied to the same objects (so their values can share a tangent).
+function linked(a, b) {
+  return sameAnchor(a.anchor, b.anchor) && sameAnchor(a.lookAt ?? a.anchor, b.lookAt ?? b.anchor)
+}
 
 function lerp3(a, b, u) {
   return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u]
@@ -61,12 +71,13 @@ function tangent(va, vb, vc, ta, tb, tc, dims) {
 }
 
 // One spline segment over four (possibly null at the ends) values of `dims` components.
-// ease1/ease2: zero tangent at the segment's start/end.
-function hermite(v0, v1, v2, v3, t0, t1, t2, t3, t, ease1, ease2, dims) {
+// ease1/ease2: zero tangent at the segment's start/end. link01/link12/link23: whether neighbouring
+// values may share a tangent (see linked()).
+function hermite(v0, v1, v2, v3, t0, t1, t2, t3, t, ease1, ease2, [link01, link12, link23], dims) {
   const L = t2 - t1
   if (!(L > 0)) return v1.slice()
-  const m1 = ease1 ? new Array(dims).fill(0) : tangent(v0, v1, v2, t0, t1, t2, dims)
-  const m2 = ease2 ? new Array(dims).fill(0) : tangent(v1, v2, v3, t1, t2, t3, dims)
+  const m1 = ease1 ? new Array(dims).fill(0) : tangent(link01 ? v0 : null, v1, link12 ? v2 : null, t0, t1, t2, dims)
+  const m2 = ease2 ? new Array(dims).fill(0) : tangent(link12 ? v1 : null, v2, link23 ? v3 : null, t1, t2, t3, dims)
   const s = (t - t1) / L
   const s2 = s * s
   const s3 = s2 * s
@@ -150,7 +161,8 @@ export function sampleCameraPath(camera, t, resolve = identity) {
   const t3 = k3?.time ?? 0
   const e1 = !!k1.ease
   const e2 = !!k2.ease
-  const spline = (pick, dims, at = t) => hermite(r0 && pick(r0, k0), pick(r1, k1), pick(r2, k2), r3 && pick(r3, k3), t0, k1.time, k2.time, t3, at, e1, e2, dims)
+  const links = [!!k0 && linked(k0, k1), linked(k1, k2), !!k3 && linked(k2, k3)]
+  const spline = (pick, dims, at = t) => hermite(r0 && pick(r0, k0), pick(r1, k1), pick(r2, k2), r3 && pick(r3, k3), t0, k1.time, k2.time, t3, at, e1, e2, links, dims)
 
   const up = normalize3(spline(r => r.up, 3), r1.up)
   const fov = Math.min(170, Math.max(0.01, spline((r, k) => [k.fov ?? fov1], 1)[0]))

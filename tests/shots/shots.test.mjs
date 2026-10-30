@@ -118,3 +118,15 @@ test('version 1 shots still load, and anchors are validated', () => {
   shot.camera.keyframes[0].anchor = { type: 'spaceship', launchIndex: 1 }
   assert.throws(() => validateShot(shot), /anchor type/)
 })
+
+test('a world-fixed neighbour does not swing a camera riding with an object', () => {
+  // The object moves 10 km/s along x; three keyframes ride 30 m behind it, after a world-fixed one.
+  const ride = (time) => ({ time, position: [-30, 5, 0], target: [0, 0, 0], up: [0, 1, 0], fov: 45, anchor: { type: 'thing' } })
+  const keys = [{ time: 0, position: [0, 1e5, 0], target: [0, 0, 0], up: [0, 1, 0], fov: 45 }, ride(9), ride(16), ride(24)]
+  for (const t of [10, 12.5, 15, 20]) {
+    const objectX = 1e4 * t
+    const resolve = (k) => (k.anchor ? { ...k, position: [k.position[0] + objectX, k.position[1], k.position[2]], target: [objectX, 0, 0] } : k)
+    const p = sampleCameraPath({ interpolation: 'smooth', keyframes: keys }, t, resolve)
+    assert.ok(Math.hypot(p.position[0] - objectX, p.position[1], p.position[2]) < 31, `t=${t}: ${p.position[0] - objectX}`)
+  }
+})
