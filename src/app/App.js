@@ -20,6 +20,7 @@ import { StructureLines } from '../scene/structureLines.js'
 import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
 import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
+import { AerialPerspective } from '../planet/aerialPerspective.js'
 import { RingAssembly } from './RingAssembly.js'
 import { transitSystem } from '../transit/transitsystems.js'
 import * as Launcher from '../launcher/launcher.js'
@@ -737,6 +738,11 @@ export class App {
     // background is the water colour.
     const underwater = this.ocean?.enabled && this.ocean.cameraUnderSurface
     const atmosphereVisible = this.planet.atmosphere.visible
+    // Haze over everything seen through the air. It lives in the fog code, so the scene needs a fog
+    // (the sea's, or else one of zero density).
+    const haze = this.planetSpec.hasOcean === true && atmosphereVisible && !underwater
+    AerialPerspective.update(haze, this.planet.atmosphereUniforms)
+    if (haze && !this.scene.fog) this.scene.fog = this._hazeFog ??= new THREE.FogExp2(0x000000, 0)
     if (underwater) {
       renderer.getClearColor(this._clearColor ??= new THREE.Color())
       this._clearAlpha = renderer.getClearAlpha()

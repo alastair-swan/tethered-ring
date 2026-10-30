@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CubedSpherePlanetRenderer, PLANET_YAW } from './CubedSpherePlanetRenderer.js';
 import atmosphereVertexShader from '../shaders/atmosphere.vert.glsl?raw';
 import atmosphereFragmentShader from '../shaders/atmosphere.frag.glsl?raw';
+import './aerialPerspective.js'; // registers <atmosphere_common>
 
 // The atmosphere shell is a sphere of the equatorial radius scaled by this
 // factor (and flattened like the planet). 1.1 / 1.05 reproduces the old look,
