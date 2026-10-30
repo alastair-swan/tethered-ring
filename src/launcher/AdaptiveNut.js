@@ -13,7 +13,7 @@ const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model
 
 // Grappler hardware per grappler slot: for each of the two (top/bottom) grappler rows, each side
 // (left/right) has three (inner/middle/outer) ball-joint pivots, posts, piston rods (struts) and
-// piston cylinders. All of it is drawn as one BatchedMesh per nut; the pads are a second one.
+// piston cylinders. All of it is drawn as one InstancedParts per nut; the pads are a second one.
 const GRAPPLER_ROWS = [0.5, 0] // midwayRotation for the top and bottom rows
 const SIDES = [-1, 1]          // leftRightSign
 const INNER_MIDDLE_OUTER = [
@@ -31,7 +31,7 @@ const PADS_MIN_PIXELS = 6       // pads are ~1 px across here
 const HARDWARE_MIN_PIXELS = 60  // ball joints and pistons are a few cm: ~2 px across here
 
 // Returns a copy of `geometry` mirrored in x, with the triangle winding reversed so that front faces
-// stay front faces (batched instances cannot use negative scale for mirroring).
+// stay front faces (instances cannot use negative scale for mirroring).
 function mirrorGeometryX(geometry) {
   const mirrored = geometry.clone()
   mirrored.applyMatrix4(new THREE.Matrix4().makeScale(-1, 1, 1))
@@ -55,6 +55,83 @@ function mirrorGeometryX(geometry) {
   }
   return mirrored
 }
+
+// A set of parts drawn as one InstancedMesh per shape, addressed like a BatchedMesh (addGeometry,
+// addInstance, setMatrixAt, setVisibleAt, setColorAt, setGeometryAt). This was a BatchedMesh, but that
+// finds each part's matrix by its draw number, which some GPUs and drivers get wrong: on Windows with
+// Direct3D 11 (ANGLE on an Intel Arc), the pads were sometimes drawn at each other's places, so the
+// whole set seemed to turn half a turn about the screw or to mirror.
+class InstancedParts extends THREE.Group {
+  constructor(material, { colors = false } = {}) {
+    super()
+    this.material = material
+    this.colors = colors
+    this.shapes = []      // per geometry id: { geometry, mesh (made by finish()), count }
+    this.instances = []   // per instance id: { shape, index, visible }
+  }
+
+  addGeometry(geometry) {
+    this.shapes.push({ geometry, mesh: null, count: 0 })
+    return this.shapes.length - 1
+  }
+
+  addInstance(geometryId) {
+    const shape = this.shapes[geometryId]
+    this.instances.push({ shape, index: shape.count++, visible: true, matrix: new THREE.Matrix4() })
+    return this.instances.length - 1
+  }
+
+  // Makes the meshes, once every geometry and instance has been added.
+  finish() {
+    for (const shape of this.shapes) {
+      const mesh = new THREE.InstancedMesh(shape.geometry, this.material, Math.max(1, shape.count))
+      mesh.count = shape.count
+      mesh.name = this.name
+      mesh.castShadow = this.castShadow
+      mesh.frustumCulled = false // its bounding sphere would have to follow the parts every frame
+      if (this.colors) for (let i = 0; i < shape.count; i++) mesh.setColorAt(i, _white)
+      shape.mesh = mesh
+      this.add(mesh)
+    }
+  }
+
+  setMatrixAt(id, matrix) {
+    const instance = this.instances[id]
+    instance.matrix.copy(matrix)
+    if (instance.visible) this._write(instance, matrix)
+  }
+
+  // (Hidden parts are scaled to nothing.)
+  setVisibleAt(id, visible) {
+    const instance = this.instances[id]
+    if (instance.visible === visible) return
+    instance.visible = visible
+    this._write(instance, visible ? instance.matrix : _hidden)
+  }
+
+  setColorAt(id, color) {
+    const { shape, index } = this.instances[id]
+    shape.mesh.setColorAt(index, color)
+    shape.mesh.instanceColor.needsUpdate = true
+  }
+
+  // Replaces a shape's geometry (with a copy: the caller keeps and disposes its own).
+  setGeometryAt(geometryId, geometry) {
+    const shape = this.shapes[geometryId]
+    const copy = geometry.clone()
+    shape.mesh.geometry.dispose()
+    shape.mesh.geometry = copy
+    shape.geometry = copy
+  }
+
+  _write({ shape, index }, matrix) {
+    shape.mesh.setMatrixAt(index, matrix)
+    shape.mesh.instanceMatrix.needsUpdate = true
+  }
+}
+
+const _white = new THREE.Color(1, 1, 1)
+const _hidden = new THREE.Matrix4().makeScale(0, 0, 0)
 
 export class adaptiveNutModel {
   constructor(dParamWithUnits, myScene, unallocatedModelsList) {
@@ -88,8 +165,7 @@ export class adaptiveNutModel {
       strut: new THREE.CylinderGeometry(cylinderRadius/2, cylinderRadius/2, strutLength, 16, 1).translate(0, strutLength/2, 0),
       cylinder: new THREE.CylinderGeometry(cylinderRadius, cylinderRadius, strutLength, 16, 1).translate(0, strutLength/2, 0),
     }
-    // BatchedMesh needs matching attributes on every geometry.
-    for (const g of Object.values(hardwareGeometries)) g.deleteAttribute('uv')
+    for (const g of Object.values(hardwareGeometries)) g.userData.shared = true // used by every pooled nut
 
     // Pad geometry for each grappler at the start of the screws (regenerated per speed while running).
     const templatePads = []
@@ -114,16 +190,11 @@ export class adaptiveNutModel {
       if (loadedBody) nut.add(loadedBody.clone())
 
       // Pads: geometry i is grappler i, geometry numGrapplers + i its mirror image.
-      const padVertices = templatePads.reduce((n, g) => n + g.attributes.position.count, 0) * 2
-      const padIndices = templatePads.reduce((n, g) => n + (g.index ? g.index.count : 0), 0) * 2
-      const pads = new THREE.BatchedMesh(numGrapplers * GRAPPLER_ROWS.length * SIDES.length, Math.max(1, padVertices), Math.max(1, padIndices), padMaterial)
+      const pads = new InstancedParts(padMaterial, { colors: true })
       pads.name = 'adaptiveNut_grappler'
       pads.castShadow = true
-      // The batch's own bounding sphere is computed once (with every instance at the origin) and never
-      // refreshed, so whole-object culling would hide it; BatchedMesh still culls per instance.
-      pads.frustumCulled = false
       pads.padGeometryIds = []
-      for (let i = 0; i < numGrapplers; i++) pads.padGeometryIds[i] = pads.addGeometry(templatePads[i])
+      for (let i = 0; i < numGrapplers; i++) pads.padGeometryIds[i] = pads.addGeometry(templatePads[i].clone())
       for (let i = 0; i < numGrapplers; i++) pads.padGeometryIds[numGrapplers + i] = pads.addGeometry(mirrorGeometryX(templatePads[i]))
       pads.instanceIds = []
       for (let i = 0; i < numGrapplers; i++) {
@@ -135,18 +206,17 @@ export class adaptiveNutModel {
           }
         }
       }
+      pads.finish()
 
-      const hardware = new THREE.BatchedMesh(numGrapplers * GRAPPLER_ROWS.length * SIDES.length * INNER_MIDDLE_OUTER.length * HARDWARE_PARTS.length,
-        Object.values(hardwareGeometries).reduce((n, g) => n + g.attributes.position.count, 0),
-        Object.values(hardwareGeometries).reduce((n, g) => n + g.index.count, 0), hardwareMaterial)
+      const hardware = new InstancedParts(hardwareMaterial)
       hardware.name = 'adaptiveNut_hardware'
       hardware.castShadow = true
-      hardware.frustumCulled = false
       const partIds = Object.fromEntries(HARDWARE_PARTS.map(part => [part, hardware.addGeometry(hardwareGeometries[part])]))
       hardware.instanceIds = []
       for (let k = 0; k < numGrapplers * GRAPPLER_ROWS.length * SIDES.length * INNER_MIDDLE_OUTER.length; k++) {
         for (const part of HARDWARE_PARTS) hardware.instanceIds.push(hardware.addInstance(partIds[part]))
       }
+      hardware.finish()
 
       // Pixel-size LODs measured on the nut's width; extent covers the nut's length.
       const padsLod = new PixelLOD(width, { extent: bodyLength })
@@ -465,7 +535,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
           acceleration, initialVelocity, initialDistance, keyDistance, grapplerLength, numGrapplers,
           v.magnetThickness, v.betweenGrapplerFactor, v.shaftToGrapplerPad, 0, grapplerDistance, geometryInfo.offset, layout.threadStartDistance)
         const mirrored = mirrorGeometryX(geometry)
-        // setGeometryAt copies the data into the batch's buffers.
+        // setGeometryAt takes its own copy.
         g.pads.setGeometryAt(g.pads.padGeometryIds[i], geometry)
         g.pads.setGeometryAt(g.pads.padGeometryIds[g.numGrapplers + i], mirrored)
         geometry.dispose()
