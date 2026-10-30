@@ -226,7 +226,9 @@ POSIX shells:
 
 `--land-lod`, `--mountain-lod`, `--regional-lod`, `--percentile` and `--dilate` change the plan, and
 `--resume` finishes an interrupted bake. To use the tiles, open any scene with `?earthTiles=earth_hires`;
-to make them the default, set `EARTH_BASE_TILES` in `src/planet/Planet.js` to `'earth_hires'`. They are
+to make them the default, set `EARTH_BASE_TILES` in `src/planet/Planet.js` to `'earth_hires'`. To compare the two sets from the same
+view, use **Scene → Earth imagery (A/B, T)** or press `T`: it switches in place, without reloading, and the
+set switched away from keeps its tiles, so switching back is immediate (temporary, for the comparison). They are
 not in Git LFS until they are committed and uploaded (see below).
 
 Not done yet:

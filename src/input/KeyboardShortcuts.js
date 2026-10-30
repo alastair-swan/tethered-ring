@@ -31,6 +31,7 @@ export const KEY_BINDINGS = [
   { code: 'KeyF', label: 'F', help: 'Cycle illustration settings', action: (app) => app.cycleIllustrationSettings() },
   { code: 'KeyM', label: 'M', help: 'Move the launcher ramp to the next mountain in the mountain list', action: (app) => app.nextMountainLaunchSite() },
   { code: 'KeyH', label: 'H', help: 'Sweep ramp acceleration and log launcher cost/length (console)', action: (app) => app.runRampAccelerationSweep() },
+  { code: 'KeyT', label: 'T', help: 'Switch the Earth imagery between the original and new tile sets (A/B)', action: (app) => app.toggleEarthTiles() },
   { code: 'KeyY', label: 'Y', help: 'Start/stop the launch trajectory trial sweep (console)', action: (app) => app.toggleLaunchTrialSweep() },
   { code: 'KeyG', label: 'G', help: 'Play/stop camera path from a Google Earth Studio JSON export', action: (app) => app.toggleGoogleEarthCamera() },
   { code: 'KeyA', label: 'A', help: 'Shot: add a camera keyframe at the playhead from the current view', action: (app) => app.shots.addKeyframe() },

@@ -193,13 +193,11 @@ export class Planet {
     this.surface.name = 'planetSurface';
     this.surface.rotation.y = PLANET_YAW; // aligns the baked longitude frame with the app's
 
-    this.lod = new CubedSpherePlanetRenderer({
+    this.rendererOptions = {
       ...rendererOptions,
       surfaceColor: rendererOptions.surfaceColor ?? BODY_SURFACE_COLORS[bodyKey(planetSpec)] ?? 0x8aa7c2,
-      group: this.surface,
       renderer,
       planetSpec,
-      assets: assetNames.map(assetFromName),
       doubleSided,
       opacity,
       water: rendererOptions.water ?? planetSpec.hasOcean === true,
@@ -209,7 +207,14 @@ export class Planet {
       onVisibleAssets: (names) => onAttribution?.([...new Set(names
         .map((name) => this.manifestAttributions.get(name) ?? ASSET_ATTRIBUTIONS[name])
         .filter(Boolean))].join('; ')),
-    });
+    };
+    // One renderer per global tile set that has been shown (see setBaseTiles); `lod` is the one in use.
+    // Settings made through Planet are kept so a renderer created later starts with them.
+    this.renderers = new Map();
+    this.settings = new Map(); // renderer method -> its last arguments
+    this.visible = true;
+    this.sunDirection = null;
+    this.lod = this._createRenderer(assetNames);
 
     // The atmosphere: a shell ATMOSPHERE_HEIGHT above the sea-level ellipsoid, drawn from inside
     // (its far side), shaded per pixel by single scattering along the line of sight through it (see
@@ -269,7 +274,49 @@ export class Planet {
     const fade = THREE.MathUtils.smoothstep(Math.sqrt(c2) - a, EXPOSURE_FADE[0], EXPOSURE_FADE[1]);
     u.atmoParams.value.y = THREE.MathUtils.lerp(1, SPACE_EXPOSURE, fade);
     u.atmoSun.value.copy(sunDirection).normalize();
+    this.sunDirection = sunDirection;
     this.lod.setSunDirection(sunDirection);
+  }
+
+  _createRenderer(assetNames) {
+    const group = new THREE.Group();
+    group.name = `planetTiles:${assetNames[0] ?? 'none'}`;
+    this.surface.add(group);
+    const lod = new CubedSpherePlanetRenderer({ ...this.rendererOptions, group, assets: assetNames.map(assetFromName) });
+    this.renderers.set(assetNames[0], lod);
+    return lod;
+  }
+
+  // Calls a renderer setting on every renderer, and keeps it for renderers created later.
+  _setOnRenderers(method, ...args) {
+    this.settings.set(method, args);
+    for (const lod of this.renderers.values()) lod[method](...args);
+  }
+
+  /** The global tile set in use (the first asset, e.g. 'earth' or 'earth_hires'). */
+  get baseTiles() {
+    return this.assetNames[0];
+  }
+
+  /**
+   * Switches the global tile set (a folder under assets/) without rebuilding anything else, keeping
+   * the regional bakes. The set switched away from keeps its loaded tiles, so switching back is
+   * immediate: for comparing two sets from the same view.
+   */
+  setBaseTiles(name) {
+    if (!name || name === this.baseTiles) return;
+    const previous = this.lod;
+    const assetNames = [name, ...this.assetNames.slice(1)];
+    const next = this.renderers.get(name) ?? this._createRenderer(assetNames);
+    for (const [method, args] of this.settings) next[method](...args);
+    next.sseThreshold = previous.sseThreshold; // (graphics quality sets it directly)
+    if (this.sunDirection) next.setSunDirection(this.sunDirection);
+    previous.setEnabled(false);
+    previous.group.visible = false;
+    next.group.visible = true;
+    next.setEnabled(this.visible);
+    this.assetNames = assetNames;
+    this.lod = next;
   }
 
   /** Per-frame LOD selection and streaming. Call before rendering. */
@@ -280,17 +327,18 @@ export class Planet {
   /** Shows/hides the surface. While hidden, update() streams nothing. */
   setVisible(visible) {
     this.surface.visible = !!visible;
+    this.visible = !!visible;
     this.lod.setEnabled(!!visible);
   }
 
   // Sea surface over terrain below sea level (planets with oceans).
   setWaterVisible(visible) {
-    this.lod.setWaterVisible(visible)
+    this._setOnRenderers('setWaterVisible', visible)
   }
 
   // 1 while the camera is under the sea surface: the ground below sea level is drawn as sea floor.
   setSeafloorView(amount) {
-    this.lod.setSeafloorView(amount)
+    this._setOnRenderers('setSeafloorView', amount)
   }
 
   setAtmosphereVisible(visible) {
@@ -298,19 +346,19 @@ export class Planet {
   }
 
   setOpacity(value) {
-    this.lod.setOpacity(value);
+    this._setOnRenderers('setOpacity', value);
   }
 
   setDoubleSided(doubleSided) {
-    this.lod.setDoubleSided(doubleSided);
+    this._setOnRenderers('setDoubleSided', doubleSided);
   }
 
   setDisplacementScale(multiplier) {
-    this.lod.setDisplacementScale(multiplier);
+    this._setOnRenderers('setDisplacementScale', multiplier);
   }
 
   setDebugMode(mode) {
-    this.lod.setDebugMode(mode);
+    this._setOnRenderers('setDebugMode', mode);
   }
 
   /**
@@ -332,7 +380,7 @@ export class Planet {
   }
 
   dispose() {
-    this.lod.dispose();
+    for (const lod of this.renderers.values()) lod.dispose();
     this.surface.removeFromParent();
     this.atmosphere.removeFromParent();
     this.atmosphere.geometry.dispose();
