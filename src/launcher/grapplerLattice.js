@@ -388,10 +388,110 @@ export class GrapplerLatticePlan {
       : { handover: 0, grips: Array.from({ length: N }, () => []), joins: new Array(N).fill(0) })
   }
 
+  // Moves to join a neighbour: a grappler gripping a flight that neither neighbour grips (alone on it) moves,
+  // as soon as it can, to the flight a neighbour grips (of two, the one it can then hold the longest),
+  // where that neighbour is not alone on it either (so
+  // that lone grapplers do not chase each other), the flight is within its travel when it lands, and the
+  // hop leaves the count engaged no lower than the fewest the plan keeps from then on. It holds that
+  // flight while it stays within its travel and the neighbour on it, then goes back to its plan. All
+  // judged from the planned grips (plannedHolds), moves taken in time order, each counted against the
+  // fewest engaged. Per grappler: [{ start, land, until, back, from, to, backTo }] (grid steps; flights).
+  get joinMoves() {
+    if (this._joinMoves) return this._joinMoves
+    const N = this.samplesAt(0).length, K = this.lastStep, hop = 2 * this.half
+    const planned = Array.from({ length: N }, (_, i) => this.plannedHolds(i))
+    const heldAt = (i, k) => {
+      const list = planned[i]
+      if (!list) return null
+      let lo = 0, hi = list.length - 1
+      while (lo <= hi) { const mid = (lo + hi) >> 1, h = list[mid]; if (k < h.from) hi = mid - 1; else if (k > h.to) lo = mid + 1; else return h.flight }
+      return null
+    }
+    // The count engaged by the plan, and the fewest it keeps from each step on.
+    const change = new Int32Array(K + 2)
+    planned.forEach(list => list.forEach(h => { change[h.from]++; change[Math.min(K + 1, h.to + 1)]-- }))
+    const counted = new Int16Array(K + 1)
+    for (let k = 0, n = 0; k <= K; k++) { n += change[k]; counted[k] = n }
+    const fewest = new Int16Array(K + 2).fill(N)
+    for (let k = K; k >= 0; k--) fewest[k] = Math.min(counted[k], fewest[k + 1])
+    // Lone stretches, in time order.
+    const lone = []
+    planned.forEach((list, i) => list.forEach(h => {
+      let from = null
+      for (let k = h.from; k <= h.to + 1; k++) {
+        const alone = k <= h.to && !same(heldAt(i - 1, k), h.flight) && !same(heldAt(i + 1, k), h.flight)
+        if (alone && from === null) from = k
+        if (!alone && from !== null) { lone.push({ i, flight: h.flight, from, to: k - 1 }); from = null }
+      }
+    }))
+    lone.sort((a, b) => a.from - b.from || a.i - b.i)
+    const moves = Array.from({ length: N }, () => [])
+    for (const stretch of lone) {
+      const i = stretch.i
+      if (moves[i].some(m => m.back >= stretch.from)) continue   // (already moved away)
+      for (let start = stretch.from; start <= stretch.to; start++) {
+        const land = start + hop
+        if (land > K) break
+        // The moves it can make now: to either neighbour's flight; the one it can then hold the longest
+        // first.
+        const options = []
+        for (const j of [i - 1, i + 1]) {
+          const flight = heldAt(j, land)
+          if (flight === null || same(flight, stretch.flight)) continue
+          if (!same(heldAt(j === i - 1 ? j - 1 : j + 1, land), flight)) continue   // the neighbour is alone on it too
+          let until = land - 1
+          while (until < K && same(heldAt(j, until + 1), flight) && this.reachable(i, flight, until + 1)) until++
+          if (until < land + hop) continue   // (not for long enough to be worth it)
+          options.push({ flight, until })
+        }
+        options.sort((a, b) => b.until - a.until)
+        const move = options.map(o => this.joinMove(i, stretch.flight, o.flight, start, o.until, heldAt, counted, fewest)).find(Boolean)
+        if (move) { moves[i].push(move); break }
+      }
+    }
+    return (this._joinMoves = moves)
+  }
+
+  // A move for grappler i from flight `from` to `to`, starting at grid step `start` and holding it until
+  // `until`, then back to its plan; or null if that would take the count engaged below the fewest the plan
+  // keeps from then on. Taking it counts it (in `counted`).
+  joinMove(i, from, to, start, until, heldAt, counted, fewest) {
+    const K = this.lastStep, hop = 2 * this.half, land = start + hop
+    // Back to its plan: to where the plan has it a hop later (its flight, parked, or, mid-hop, where that
+    // hop lands, when it does).
+    let backTo = null, back = until + 1 + hop
+    if (until >= K) back = until
+    else {
+      const planned = this.plannedMotion(i, Math.min(K, until + 1 + hop))
+      if (planned.hold !== undefined) backTo = planned.hold
+      else if (planned.hop) { backTo = planned.hop[1]; back = Math.max(back, planned.end) }
+      if (same(backTo, to)) back = until
+    }
+    // Engaged: off for the hops, on in between.
+    const engagedAt = (k) => k < land ? 0 : k <= until ? 1 : same(backTo, to) ? 1 : 0
+    for (let k = start; k <= Math.min(K, back); k++) {
+      if (counted[k] + engagedAt(k) - (heldAt(i, k) !== null ? 1 : 0) < fewest[k]) return null
+    }
+    for (let k = start; k <= Math.min(K, back); k++) counted[k] += engagedAt(k) - (heldAt(i, k) !== null ? 1 : 0)
+    return { start, land, until, back, from, to, backTo }
+  }
+
   // What grappler i is doing at grid step k: { hold: flight } (gripping it), { park: true }, or { hop:
   // [from, to] (flights, or null for parked), start, end (grid steps) }: by the low-speed grips until it
-  // joins the lattice, then by the lattice.
+  // joins the lattice, then by the lattice; with any moves to join a neighbour (joinMoves).
   motion(i, k) {
+    for (const m of this.joinMoves[i]) {
+      if (k < m.start || k > m.back) continue
+      if (k < m.land) return this.hop(m.from, m.to, m.start, m.land)
+      if (k <= m.until) return { hold: m.to }
+      return this.hop(m.to, m.backTo, m.until + 1, m.back)
+    }
+    return this.plannedMotion(i, k)
+  }
+
+  // What grappler i is doing at grid step k by its plan: the low-speed grips until it joins the lattice,
+  // then the lattice.
+  plannedMotion(i, k) {
     const { grips, joins } = this.lowSpeed, join = joins[i], hop = 2 * this.half
     if (k < join) return this.lowSpeedMotion(grips[i], k)
     const m = this.latticeMotion(i, k)
@@ -483,7 +583,22 @@ export class GrapplerLatticePlan {
       if (span.value === null || landing === Infinity) continue
       const next = this.nextSpan(i, span)
       const from = Math.max(landing, previous ? span.start + h : 0), to = next ? span.end - h - 1 : this.lastStep
-      if (to >= from) out.push([from, to])
+      if (to >= from) out.push([from, to, span.value])
+    }
+    return out
+  }
+
+  // The stretches { from, to, flight } (grid steps) over which grappler i grips, by the low-speed grips and
+  // then the lattice (as plannedMotion has it).
+  plannedHolds(i) {
+    const { grips, joins } = this.lowSpeed, join = joins[i], hop = 2 * this.half
+    const out = grips[i].filter(g => g.from < join).map(g => ({ from: g.from, to: Math.min(g.to, join - 1), flight: g.flight }))
+    const last = grips[i].find(g => g.to === join - 1)
+    for (const [a, b, flight] of this.latticeHolds(i)) {
+      if (b < join) continue
+      // (Joining: straight on if the lattice has it on the flight it is on, otherwise after a hop.)
+      const from = Math.max(a, last && same(last.flight, flight) ? join : join + hop)
+      if (b >= from) out.push({ from, to: b, flight })
     }
     return out
   }
