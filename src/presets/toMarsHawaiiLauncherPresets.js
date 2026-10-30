@@ -277,7 +277,7 @@ export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showStars'].value = false
   guidParamWithUnits['showMoon'].value = false
   guidParamWithUnits['showLogo'].value = false
-  guidParamWithUnits['showEarthsAtmosphere'].value = false
+  guidParamWithUnits['showEarthsAtmosphere'].value = true
   
 
   //guidParamWithUnits['showLaunchTrajectory'].value = true

@@ -11,7 +11,7 @@ export function grapplerEngineeringPresets(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showXYChart'].value = false
   guidParamWithUnits['showEarthsSurface'].value = true
   //guidParamWithUnits['earthTextureOpacity'].value = 0.25
-  guidParamWithUnits['showEarthsAtmosphere'].value = false
+  guidParamWithUnits['showEarthsAtmosphere'].value = true
   guidParamWithUnits['showMoon'].value = false
   guidParamWithUnits['showStars'].value = false
   guidParamWithUnits['showEarthAxis'].value = false

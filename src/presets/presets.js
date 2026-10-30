@@ -105,7 +105,7 @@ function launchVehicleOrbit(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showLogo'].value = true // It will automatically turn off later to indicate that the launch delay timer is about to expire...
   guidParamWithUnits['showXYChart'].value = false
   guidParamWithUnits['showEarthsSurface'].value = true
-  guidParamWithUnits['showEarthsAtmosphere'].value = false
+  guidParamWithUnits['showEarthsAtmosphere'].value = true
   guidParamWithUnits['showMoon'].value = true
   guidParamWithUnits['showStars'].value = true
   guidParamWithUnits['showEarthAxis'].value = true
@@ -217,7 +217,7 @@ function launchVehiclePanShot(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showLogo'].value = true // It will automatically turn off later to indicate that the launch delay timer is about to expire...
   guidParamWithUnits['showXYChart'].value = false
   guidParamWithUnits['showEarthsSurface'].value = allFeaturesOn
-  guidParamWithUnits['showEarthsAtmosphere'].value = false
+  guidParamWithUnits['showEarthsAtmosphere'].value = true
   guidParamWithUnits['showMoon'].value = allFeaturesOn
   guidParamWithUnits['showStars'].value = allFeaturesOn
   guidParamWithUnits['showEarthAxis'].value = false
@@ -467,7 +467,7 @@ function launchVehiclePanShotInSpace(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showLogo'].value = true // It will automatically turn off later to indicate that the launch delay timer is about to expire...
   guidParamWithUnits['showXYChart'].value = false
   guidParamWithUnits['showEarthsSurface'].value = allFeaturesOn
-  guidParamWithUnits['showEarthsAtmosphere'].value = false
+  guidParamWithUnits['showEarthsAtmosphere'].value = true
   guidParamWithUnits['showMoon'].value = true
   guidParamWithUnits['showStars'].value = true
   guidParamWithUnits['showEarthAxis'].value = false
@@ -562,7 +562,7 @@ function launchVehicleFountain(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showLogo'].value = true // It will automatically turn off later to indicate that the launch delay timer is about to expire...
   guidParamWithUnits['showXYChart'].value = false
   guidParamWithUnits['showEarthsSurface'].value = true
-  guidParamWithUnits['showEarthsAtmosphere'].value = false
+  guidParamWithUnits['showEarthsAtmosphere'].value = true
   guidParamWithUnits['showMoon'].value = false
   guidParamWithUnits['showStars'].value = false
   guidParamWithUnits['showEarthAxis'].value = false
@@ -639,7 +639,7 @@ function LaunchVehicleAndTubeBugs(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showLogo'].value = true // It will automatically turn off later to indicate that the launch delay timer is about to expire...
   guidParamWithUnits['showXYChart'].value = false
   guidParamWithUnits['showEarthsSurface'].value = true
-  guidParamWithUnits['showEarthsAtmosphere'].value = false
+  guidParamWithUnits['showEarthsAtmosphere'].value = true
   guidParamWithUnits['showMoon'].value = false
   guidParamWithUnits['showStars'].value = false
   guidParamWithUnits['showEarthAxis'].value = false
@@ -712,7 +712,7 @@ function launchSystemOverview(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showLogo'].value = true // It will automatically turn off later to indicate that the launch delay timer is about to expire...
   guidParamWithUnits['showXYChart'].value = false
   guidParamWithUnits['showEarthsSurface'].value = true
-  guidParamWithUnits['showEarthsAtmosphere'].value = false
+  guidParamWithUnits['showEarthsAtmosphere'].value = true
   guidParamWithUnits['showMoon'].value = true
   guidParamWithUnits['showStars'].value = true
   guidParamWithUnits['showEarthAxis'].value = false
@@ -878,7 +878,7 @@ function twoStageMassDriver(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showXYChart'].value = true
   guidParamWithUnits['showEarthsSurface'].value = true
   //guidParamWithUnits['earthTextureOpacity'].value = 0.25
-  guidParamWithUnits['showEarthsAtmosphere'].value = false
+  guidParamWithUnits['showEarthsAtmosphere'].value = true
   guidParamWithUnits['showMoon'].value = true
   guidParamWithUnits['showStars'].value = true
   guidParamWithUnits['showEarthAxis'].value = false

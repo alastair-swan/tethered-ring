@@ -39,7 +39,7 @@ export function toLEOFromBocaChikaWithStarship(guidParamWithUnits, nonGUIParams)
   setAllShowsToFalse(guidParamWithUnits)
   guidParamWithUnits['showLogo'].value = false
   guidParamWithUnits['showEarthsSurface'].value = true
-  guidParamWithUnits['showEarthsAtmosphere'].value = false
+  guidParamWithUnits['showEarthsAtmosphere'].value = true
   guidParamWithUnits['showLaunchTrajectory'].value = true
   guidParamWithUnits['showLaunchVehicles'].value = true
   guidParamWithUnits['trackingMode'].value = 0
