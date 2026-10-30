@@ -12,15 +12,18 @@ import { PROFILE, outAndBack, leaving, arriving, smootherstep } from './grappler
 // middle (the screw's mount brackets bound it). The flights the grapplers hold are taken from a lattice
 // of angles round the screw, `step` turns apart: the widest spacing of whole flights under the nut that
 // fits in the travel (so a grappler always has a lattice flight within reach), the same for every
-// grappler and, since the travel is a fixed angle, wherever the screw has more or fewer flights. Each grappler holds the
-// lattice flight nearest the middle of its travel. So
-// - it keeps a flight across as much of its travel as the lattice allows, and when the flight drifts past
-//   half a step from the middle it moves to the next lattice flight: a hop, centred on that moment (it
-//   lets go half a hop's time before, and lands half a hop's time after);
-// - neighbours hold the same flight, in runs, ending only where the drift of phase along the nut crosses
-//   half a step: as few runs as that spacing allows;
-// - a run of a single grappler is left free (it waits until a neighbour can join it: alone it would add
-//   two run ends for one grappler's grip).
+// grappler and, since the travel is a fixed angle, wherever the screw has more or fewer flights. Each
+// grappler's lattice flight is the one nearest the middle of its travel, so neighbours share flights,
+// in runs ending only where the drift of phase along the nut crosses half a step: as few runs as that
+// spacing allows.
+//
+// Its motion. A grappler lets go only where its lattice flight changes (the flight drifts past half a
+// step from the middle, or a change of lattice reaches it), half a hop's time before, and knows then
+// where it is going: the flight it has next for at least a hop's time (shorter ones are passed over),
+// landing half a hop's time after the change. If no neighbour has that flight when it lands, it would be
+// alone on it (two run ends for one grappler's grip): it parks instead, and lands on that flight when a
+// neighbour does, if that leaves it time before it moves on. Once gripping it lets go only where its own
+// lattice flight changes, whatever its neighbours do.
 // Where the travel is less than the spacing between flights (step 0), each grappler holds the nearest
 // flight while it is within its travel, and is free in between. It does not grip where it may not:
 // before the thread, off the screws, or where the flights drift past faster than fastestDrift (it could
@@ -28,18 +31,20 @@ import { PROFILE, outAndBack, leaving, arriving, smootherstep } from './grappler
 //
 // The alignment. Where the travel spans more than one flight spacing there is more than one lattice
 // (`offset` from the flights at whole turns): every second flight, say, from the even ones or the odd
-// ones. The one used is the one with the fewest runs and free grapplers over the LOOKAHEAD s from now
-// (looking ahead, it does not flip back and forth as the two run close). A change of lattice (of
-// alignment, or of spacing where the nut moves onto more flights) would move many grapplers at once;
-// instead it sweeps along the nut from front to back over SWEEP s: grappler i of N follows the lattice
-// chosen SWEEP * i / (N - 1) s earlier, so each hops once, where the old and new runs meet.
+// ones. A change of lattice (of alignment, or of spacing where the nut moves onto more flights) would
+// move many grapplers at once; instead it passes along the nut one grappler at a time, from its first
+// grappler to its last: grappler i follows the lattice chosen i hops' time (plus a little) earlier, so it
+// lets go only once its neighbour has landed on the new lattice's flight, and the old and new lattices
+// meet at one break. (Either lattice keeps every grappler within reach of a flight, so being on the old
+// one for a while costs at most a run.) Since that takes the whole nut a while, the lattice chosen is the
+// one with the fewest runs and free grapplers over that time from now (or LOOKAHEAD s, if longer):
+// worth changing to for as long as the change takes, and not flipping back and forth as two run close.
 //
 // Everything is evaluated on a grid of GRID s (the alignment on one of COARSE s) and remembered; that is
 // only a cache: each value is a pure function of its time.
 const GRID = 1 / 30
 const COARSE = 0.1
 const LOOKAHEAD = 2
-const SWEEP = 1
 
 // x wrapped into [-m/2, m/2).
 const wrap = (x, m) => x - m * Math.floor(x / m + 0.5)
@@ -70,7 +75,7 @@ export function latticeStep(holdLimit, fewestFlights) {
 // Returns per grappler { flight: the angle (turns, [0, 1)) of the flight it holds, or null; can: whether
 // it may grip at all here; travel: its offset from that flight (turns from the middle of its travel; for
 // a free grappler, from the flight it would hold) }.
-export function latticeArrangement(samples, { holdLimit, fastestDrift, step, offset = 0 }) {
+export function latticeArrangement(samples, { holdLimit, fastestDrift, step, offset = 0, alone = true }) {
   const offsetOf = typeof offset === 'function' ? offset : () => offset
   const stepOf = typeof step === 'function' ? step : () => step
   const out = samples.map((s, i) => {
@@ -83,11 +88,19 @@ export function latticeArrangement(samples, { holdLimit, fastestDrift, step, off
     const flight = (((angle - travel) % 1) + 1) % 1
     return { flight: can && Math.abs(travel) <= holdLimit + 1e-9 ? flight : null, can, travel }
   })
-  // A run of one is left free.
-  const same = (a, b) => b !== undefined && a.flight !== null && b.flight !== null && Math.abs(wrap(a.flight - b.flight, 1)) < 1e-6
-  const alone = out.map((g, i) => g.flight !== null && !same(g, out[i - 1]) && !same(g, out[i + 1]))
-  out.forEach((g, i) => { if (alone[i]) g.flight = null })
+  if (alone) leaveAloneFree(out)
   return out
+}
+
+// Whether two flight angles (or nulls) are the same.
+const same = (a, b) => a === b || (a !== null && b !== null && Math.abs(wrap(a - b, 1)) < 1e-6)
+
+const sameFlight = (a, b) => b !== undefined && a.flight !== null && b.flight !== null && Math.abs(wrap(a.flight - b.flight, 1)) < 1e-6
+
+// A grappler alone on its flight (neither neighbour holds it) is left free.
+function leaveAloneFree(arrangement) {
+  const alone = arrangement.map((g, i) => g.flight !== null && !sameFlight(g, arrangement[i - 1]) && !sameFlight(g, arrangement[i + 1]))
+  arrangement.forEach((g, i) => { if (alone[i]) g.flight = null })
 }
 
 // The cost of an arrangement: its runs and the grapplers left free that could grip.
@@ -115,6 +128,13 @@ export class GrapplerLatticePlan {
     this._costs = new Map()
     this._lattices = new Map()
     this._arrangements = new Map()
+    this._starts = []
+    this._ends = []
+    this._landings = []
+    // Half a hop's time, in grid steps.
+    this.half = Math.max(1, Math.round(switchoverTime / 2 / GRID))
+    // Between one grappler and the next taking up a change of lattice (s): a hop, and a little.
+    this.delay = switchoverTime + 2 * GRID
   }
 
   samplesAt(time) {
@@ -123,13 +143,13 @@ export class GrapplerLatticePlan {
     return samples
   }
 
-  arrange(samples, step, offset) {
-    return latticeArrangement(samples, { holdLimit: this.holdLimit, fastestDrift: this.fastestDrift, step, offset })
+  arrange(samples, step, offset, alone = true) {
+    return latticeArrangement(samples, { holdLimit: this.holdLimit, fastestDrift: this.fastestDrift, step, offset, alone })
   }
 
   // The lattice chosen at coarse step q, { step, offset } (turns): its spacing from the fewest flights
   // under the nut's grapplers then, and of its alignments (multiples of the most flights' spacing), the one with the
-  // fewest runs and free grapplers over the LOOKAHEAD s from then.
+  // fewest runs and free grapplers over the time a change takes to pass along the nut (or LOOKAHEAD s).
   latticeAt(q) {
     q = Math.max(0, q)
     let lattice = this._lattices.get(q)
@@ -143,7 +163,7 @@ export class GrapplerLatticePlan {
     let best = Infinity, offset = 0
     for (let j = 0; j < count && count > 1; j++) {
       let sum = 0
-      for (let r = q; r <= q + Math.round(LOOKAHEAD / COARSE); r++) {
+      for (let r = q; r <= q + Math.round(Math.max(LOOKAHEAD, this.delay * samples.length) / COARSE); r++) {
         const key = step + ':' + j / most + ':' + r
         let cost = this._costs.get(key)
         if (cost === undefined) this._costs.set(key, cost = arrangementCost(this.arrange(this.samplesAt(r * COARSE), step, j / most)))
@@ -155,34 +175,136 @@ export class GrapplerLatticePlan {
     return lattice
   }
 
-  // The arrangement at grid step k (see latticeArrangement), with changes of lattice sweeping along the nut.
+  // The lattice flight each grappler can hold at grid step k (see latticeArrangement; free where it may
+  // not grip), with changes of lattice passing along the nut one grappler at a time. Its own motion
+  // (motion) is worked out from the changes in this.
   arrangementAt(k) {
     let arrangement = this._arrangements.get(k)
     if (arrangement) return arrangement
-    const time = k * GRID, samples = this.samplesAt(time), last = Math.max(1, samples.length - 1)
-    const lattice = (i) => this.latticeAt(Math.floor((time - SWEEP * i / last) / COARSE + 1e-9))
-    this._arrangements.set(k, arrangement = this.arrange(samples, (i) => lattice(i).step, (i) => lattice(i).offset))
+    const time = k * GRID
+    const lattice = (i) => this.latticeAt(Math.floor((time - this.delay * i) / COARSE + 1e-9))
+    arrangement = this.arrange(this.samplesAt(time), (i) => lattice(i).step, (i) => lattice(i).offset, false)
+    this._arrangements.set(k, arrangement)
     return arrangement
   }
-  // The flight (angle, turns) grappler i holds at grid step k, or null.
-  flightAt(i, k) {
-    return this.arrangementAt(k)[i]?.flight ?? null
+
+  // Grappler i's lattice flight at grid step k (null: free; before the launch, free).
+  raw(i, k) {
+    return k < 0 ? null : this.arrangementAt(Math.min(k, this.lastStep))[i]?.flight ?? null
   }
 
-  // The change of flight for grappler i nearest `time` within half a hop's time either side: { at (s),
-  // from, to } (flight angles or null), or null if none.
-  hopNear(i, time) {
-    const half = this.switchoverTime / 2
-    const k0 = Math.floor((time - half) / GRID), k1 = Math.ceil((time + half) / GRID)
-    let best = null
-    for (let k = k0 + 1; k <= k1; k++) {
-      const from = this.flightAt(i, k - 1), to = this.flightAt(i, k)
-      const same = from === to || (from !== null && to !== null && Math.abs(wrap(from - to, 1)) < 1e-6)
-      if (same) continue
-      const at = (k - 0.5) * GRID
-      if (Math.abs(at - time) < half && (!best || Math.abs(at - time) < Math.abs(best.at - time))) best = { at, from, to }
+  get lastStep() {
+    return Math.ceil(this.end / GRID)
+  }
+
+  // The stretch of grid steps [start, end) around k over which grappler i's lattice flight is `value`.
+  segment(i, k) {
+    const starts = (this._starts[i] ??= new Map()), ends = (this._ends[i] ??= new Map())
+    const value = this.raw(i, k)
+    let start = starts.get(k)
+    if (start === undefined) {
+      start = k
+      while (start > 0 && same(this.raw(i, start - 1), value)) {
+        start--
+        if (starts.has(start)) { start = starts.get(start); break }
+      }
+      starts.set(k, start)
     }
-    return best
+    let end = ends.get(k)
+    if (end === undefined) {
+      end = k + 1
+      while (end <= this.lastStep && same(this.raw(i, end), value)) {
+        if (ends.has(end)) { end = ends.get(end); break }
+        end++
+      }
+      ends.set(k, end)
+    }
+    return { start, end, value }
+  }
+
+  // A stretch lasting at least a hop's time (or at either end of the launch): one the grappler goes to.
+  // Shorter ones are passed over: the grappler goes straight on to the next lasting one.
+  lasting(segment) {
+    return segment.end - segment.start >= 2 * this.half || segment.start === 0 || segment.end > this.lastStep
+  }
+
+  // The lasting stretch before (or after) `segment`, or null.
+  previousLasting(i, segment) {
+    for (let s = segment; s.start > 0;) {
+      s = this.segment(i, s.start - 1)
+      if (this.lasting(s)) return s
+    }
+    return null
+  }
+
+  nextLasting(i, segment) {
+    for (let s = segment; s.end <= this.lastStep;) {
+      s = this.segment(i, s.end)
+      if (this.lasting(s)) return s
+    }
+    return null
+  }
+
+  // Whether a neighbour of grappler i has the flight `value` at grid step k.
+  joined(i, value, k) {
+    return same(this.raw(i - 1, k), value) || same(this.raw(i + 1, k), value)
+  }
+
+  // When (grid step) grappler i is on the flight of its lasting stretch `segment`: half a hop after the
+  // change to it, if a neighbour is on it then; otherwise (alone, it parks) a hop after a neighbour joins
+  // it, if that leaves it time before it lets go again; Infinity if it is never on it (or it is free).
+  landing(i, segment) {
+    const memo = (this._landings[i] ??= new Map())
+    let landing = memo.get(segment.start)
+    if (landing !== undefined) return landing
+    landing = Infinity
+    if (segment.value !== null) {
+      const direct = segment.start + this.half
+      if (segment.start === 0 ? false : this.joined(i, segment.value, direct)) landing = direct
+      else {
+        for (let k = direct; k + 2 * this.half <= segment.end - this.half; k++) {
+          if (this.joined(i, segment.value, k)) { landing = k + 2 * this.half; break }
+        }
+      }
+    }
+    memo.set(segment.start, landing)
+    return landing
+  }
+
+  // What grappler i is doing at grid step k: { hold: flight } (gripping it), { park: true }, or { hop:
+  // [from, to] (flights, or null for parked), start, end (grid steps) }. It lets go only where its
+  // lattice flight changes (half a hop before), and knows then where it is going: the flight of the next
+  // lasting stretch (passing over shorter ones), or parked if it would be alone there (see landing).
+  motion(i, k) {
+    const h = this.half, here = this.segment(i, k)
+    const current = this.lasting(here) ? here : this.previousLasting(i, here)
+    if (!current) return { park: true }
+    const landing = this.landing(i, current)
+    // Where it is at the end of a lasting stretch (and so where a hop from it starts).
+    const heldAtEnd = (s) => this.landing(i, s) <= s.end - h ? s.value : null
+    // Where a hop to a lasting stretch goes: its flight, if the grappler lands on it straight away.
+    const target = (s) => this.landing(i, s) === s.start + h ? s.value : null
+    const previous = this.previousLasting(i, current)
+    if (current === here && previous && k < current.start + h) {
+      return this.hop(heldAtEnd(previous), target(current), previous.end - h, current.start + h)
+    }
+    const next = this.nextLasting(i, current)
+    if (next && k >= current.end - h) return this.hop(heldAtEnd(current), target(next), current.end - h, next.start + h)
+    // Within its stretch: on its flight, or parked and joining it when a neighbour does.
+    if (k >= landing) return { hold: current.value }
+    if (landing !== Infinity && k >= landing - 2 * h) return this.hop(null, current.value, landing - 2 * h, landing)
+    return { park: true }
+  }
+
+  hop(from, to, start, end) {
+    if (from === null && to === null) return { park: true }
+    if (same(from, to)) return { hold: from }
+    return { hop: [from, to], start, end }
+  }
+
+  // The flight grappler i grips at grid step k (null: free, parked or hopping).
+  flightAt(i, k) {
+    return this.motion(i, k).hold ?? null
   }
 
   // The pose of grappler i at `time` since launch. g: its placement info now (see effectivePhase;
@@ -196,20 +318,19 @@ export class GrapplerLatticePlan {
     const inRange = (alpha) => Math.min(limit, Math.max(-limit, alpha))
     // Its angle from the middle of its travel when following the flight at `flight`, t s from now.
     const following = (flight) => (t) => 2 * Math.PI * wrap(angle + rate * t - flight, 1)
-    const hop = this.hopNear(i, time)
-    if (!hop) {
-      const flight = this.flightAt(i, Math.round(time / GRID))
-      if (flight === null) return Object.assign(out, { lift: 1, raise: 1, neutral: 1, alpha: 0, attached: false })
-      return Object.assign(out, { lift: 0, raise: 0, neutral: 0, alpha: inRange(following(flight)(0)), attached: true })
-    }
-    // In a hop centred on hop.at: progress p from 0 (lets go) to 1 (lands); from or to parked (null).
-    const S = this.switchoverTime, start = hop.at - S / 2 - time, end = hop.at + S / 2 - time
-    const p = Math.min(1, Math.max(0, -start / S))
-    const fastest = 2 * Math.PI * this.fastestDrift / n, slow = (PROFILE.slow[1] - PROFILE.slow[0]) * S
+    // (Changes between grid steps k - 1 and k happen at (k - 1/2) GRID.)
+    const motion = this.motion(i, Math.floor(time / GRID + 0.5))
+    if (motion.park) return Object.assign(out, { lift: 1, raise: 1, neutral: 1, alpha: 0, attached: false })
+    if (motion.hold !== undefined) return Object.assign(out, { lift: 0, raise: 0, neutral: 0, alpha: inRange(following(motion.hold)(0)), attached: true })
+    // In a hop: progress p from 0 (lets go) to 1 (lands); from or to parked (null).
+    const [fromFlight, toFlight] = motion.hop
+    const span = (motion.end - motion.start) * GRID, start = (motion.start - 0.5) * GRID - time, end = start + span
+    const p = Math.min(1, Math.max(0, -start / span))
+    const fastest = 2 * Math.PI * this.fastestDrift / n, slow = (PROFILE.slow[1] - PROFILE.slow[0]) * span
     const low = -0.9 * limit, high = 0.9 * limit
-    const leave = hop.from === null ? () => 0 : leaving(following(hop.from), start + PROFILE.slow[0] * S, slow, low, high, fastest)
-    const arrive = hop.to === null ? () => 0 : arriving(following(hop.to), end - PROFILE.slow[0] * S, slow, low, high, fastest)
-    const [from, to] = hop.from === null ? [0.5, PROFILE.move[1]] : hop.to === null ? [PROFILE.move[0], 0.5] : PROFILE.move
+    const leave = fromFlight === null ? () => 0 : leaving(following(fromFlight), start + PROFILE.slow[0] * span, slow, low, high, fastest)
+    const arrive = toFlight === null ? () => 0 : arriving(following(toFlight), end - PROFILE.slow[0] * span, slow, low, high, fastest)
+    const [from, to] = fromFlight === null ? [0.5, PROFILE.move[1]] : toFlight === null ? [PROFILE.move[0], 0.5] : PROFILE.move
     const w = smootherstep((p - from) / (to - from))
     return Object.assign(out, {
       lift: outAndBack(PROFILE.lift, p), raise: outAndBack(PROFILE.raise, p), neutral: outAndBack(PROFILE.untwist, p),

@@ -94,23 +94,49 @@ test('the pad moves smoothly at 60 fps, never beyond its travel, and every hop t
   }
 })
 
-test('a change of lattice sweeps along the nut, a few grapplers at a time', () => {
+test('a change of lattice passes along the nut one grappler at a time', () => {
   // Travel spanning two flights: two lattices (even or odd flights). The phases along the nut move half
-  // a flight over a few seconds, so that the better of the two changes.
+  // a flight over 40 s, so that the better of the two changes. (Slowly, as at speed: where the phases
+  // drift faster than a grappler's spacing in a hop's time, the end of a run passes neighbours faster
+  // than they can hop one after another, and with travel of exactly one lattice step they cannot wait.)
   const count = 32
-  const setup = nut({ count, phase: (i, t) => 0.04 * i + 0.5 * Math.min(1, Math.max(0, (t - 10) / 4)) })
+  const setup = nut({ count, phase: (i, t) => 0.04 * i + 0.5 * Math.min(1, Math.max(0, (t - 10) / 40)), end: 90 })
   const plan = planFor(setup, 0.25)
   assert.equal(plan.latticeAt(0).step, 0.5)   // every second flight: two alignments
-  let changes = 0
-  for (let k = 1; k < 30 / (1 / 30); k++) {
-    const a = plan.arrangementAt(k - 1), b = plan.arrangementAt(k)
-    let moved = 0
-    for (let i = 0; i < count; i++) if (a[i].flight !== b[i].flight) moved++
-    changes += moved
-    // (Never more than a few at one step.)
-    assert.ok(moved <= 4, `${moved} grapplers changed flight at step ${k}`)
+  let hops = 0
+  // (From after the first landings: every grappler here may grip from the launch.)
+  for (let t = 2 * switchoverTime; t < 90; t += 1 / 60) {
+    // Grapplers mid-hop now: no more than the breaks between runs, plus one (the change passing, and runs'
+    // ends passing grapplers as the phases drift), and never a block of them: at most two neighbours
+    // (where a run's end meets the change).
+    const hopping = []
+    for (let i = 0; i < count; i++) {
+      const p = plan.pose(i, t, setup.g(i, t))
+      if (!p.attached && p.lift < 1) hopping.push(i)
+    }
+    const { runs } = runsAndFree(plan, Math.round(t * 30))
+    assert.ok(hopping.length <= runs, `${hopping.length} grapplers hopping with ${runs} runs at ${t.toFixed(3)}: ${hopping}`)
+    assert.ok(!hopping.some((i, j) => hopping[j + 2] === i + 2), `three neighbours hopping at ${t.toFixed(3)}: ${hopping}`)
+    hops += hopping.length
   }
-  assert.ok(changes > 0)
+  assert.ok(hops > 0)
+})
+
+test('a grappler never lets go only to take the same flight again', () => {
+  // A nut at low speed (phases far apart along it, drifting fast): short runs, neighbours coming and going.
+  const count = 24
+  const setup = nut({ count, phase: (i, t) => 0.3 * i + 0.4 * t })
+  const plan = planFor(setup, 0.125)
+  for (let i = 0; i < count; i++) {
+    const spans = []
+    for (let k = 0; k < 30 / (1 / 30); k++) {
+      const f = plan.flightAt(i, k), key = f === null ? null : f.toFixed(5)
+      if (!spans.length || spans[spans.length - 1] !== key) spans.push(key)
+    }
+    for (let j = 2; j < spans.length; j++) {
+      if (spans[j] !== null) assert.notEqual(spans[j - 2], spans[j], `grappler ${i} let go of ${spans[j]} and took it again`)
+    }
+  }
 })
 
 test('grapplers share flights where the screw has more of them under part of the nut', () => {
