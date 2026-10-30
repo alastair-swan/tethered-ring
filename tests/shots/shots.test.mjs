@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { sampleCameraPath } from '../../src/shots/CameraPath.js'
 import { createShot, parseShot, serializeShot, sampleParameterTrack, validateShot } from '../../src/shots/ShotFormat.js'
-import { createTimeMap } from '../../src/shots/ShotTiming.js'
+import { createTimeMap, solveSpeedFor } from '../../src/shots/ShotTiming.js'
 
 const R = 6.4e6
 const key = (time, x) => ({ time, position: [R + x, 1, 2], target: [R, 0, 0], up: [1, 0, 0], fov: 45 })
@@ -92,18 +92,23 @@ test('keyframes are resolved through their anchors at the current time', () => {
 
 test('time warp integrates the speed exactly and inverts', () => {
   const map = createTimeMap([{ time: 0, speed: 1 }, { time: 2, speed: 100 }, { time: 4, speed: 100 }])
-  // Geometric ramp from 1 to 100 over 2 s: integral = 2 * 99 / ln(100).
-  const ramp = 2 * 99 / Math.log(100)
-  assert.ok(Math.abs(map.simOffsetAt(2) - ramp) < 1e-9)
-  assert.ok(Math.abs(map.simOffsetAt(4) - (ramp + 200)) < 1e-9)
-  assert.ok(Math.abs(map.simOffsetAt(5) - (ramp + 300)) < 1e-9)
-  assert.ok(Math.abs(map.speedAt(1) - 10) < 1e-9)
+  // The offset is the integral of the speed (checked numerically) ...
+  let integral = 0
+  const n = 20000
+  for (let i = 0; i < n; i++) integral += map.speedAt(5 * (i + 0.5) / n) * 5 / n
+  assert.ok(Math.abs(map.simOffsetAt(5) - integral) < 1e-6 * integral, `${map.simOffsetAt(5)} vs ${integral}`)
+  assert.ok(Math.abs(map.simOffsetAt(5) - map.simOffsetAt(4) - 100) < 1e-9)
+  // ... the ramp is geometric (10x halfway from 1x to 100x, give or take the floor near 0) ...
+  assert.ok(Math.abs(map.speedAt(1) - 10) < 0.3)
+  // ... and it inverts.
   for (const u of [-1, 0.3, 1.7, 3, 6]) assert.ok(Math.abs(map.videoTimeAt(map.simOffsetAt(u)) - u) < 1e-9, `u=${u}`)
   assert.equal(createTimeMap([{ time: 0 }, { time: 1 }]).simOffsetAt(3), 3)
-  // A frozen stretch maps back to its start.
+  // A frozen stretch maps back to its start, and speeds near 0 behave like 0.
   const frozen = createTimeMap([{ time: 0, speed: 0 }, { time: 1, speed: 0 }, { time: 1.5, speed: 1 }])
   assert.equal(frozen.simOffsetAt(0.5), 0)
   assert.equal(frozen.videoTimeAt(0), 0)
+  const near = createTimeMap([{ time: 0, speed: 1 }, { time: 1, speed: 1e-9 }]).simOffsetAt(1)
+  assert.ok(Math.abs(near - createTimeMap([{ time: 0, speed: 1 }, { time: 1, speed: 0 }]).simOffsetAt(1)) < 1e-6)
 })
 
 test('version 1 shots still load, and anchors are validated', () => {
@@ -129,4 +134,16 @@ test('a world-fixed neighbour does not swing a camera riding with an object', ()
     const p = sampleCameraPath({ interpolation: 'smooth', keyframes: keys }, t, resolve)
     assert.ok(Math.hypot(p.position[0] - objectX, p.position[1], p.position[2]) < 31, `t=${t}: ${p.position[0] - objectX}`)
   }
+})
+
+test('a keyframe speed can be solved to reach a simulated moment', () => {
+  const keys = [{ time: 0, speed: 1 }, { time: 4, speed: 1 }, { time: 8, speed: 1 }]
+  for (const [j, i, offset] of [[1, 2, 500], [2, 2, 30], [1, 1, 4], [0, 2, 9]]) {
+    const { speed, exact } = solveSpeedFor(keys, j, i, offset)
+    assert.ok(exact, `${j} ${i} ${offset}`)
+    const solved = keys.map((k, n) => (n === j ? { ...k, speed } : k))
+    assert.ok(Math.abs(createTimeMap(solved).simOffsetAt(keys[i].time) - offset) < 1e-6 * offset)
+  }
+  // Even stopping at once from 1x takes some simulated time.
+  assert.equal(solveSpeedFor(keys, 2, 2, 1).exact, false)
 })

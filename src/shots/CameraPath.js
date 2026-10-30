@@ -16,7 +16,8 @@
 //              thousands of km/s. While the distance changes, the target moves in proportion to the
 //              distance (not to time), so a subject stays in frame while the camera pulls away from it.
 //   'auto'   - (the default) 'orbit' where the camera's distance to its target changes by more than
-//              ORBIT_RATIO over the segment, otherwise 'direct'.
+//              ORBIT_RATIO over the segment, or the direction it views its target from turns by more
+//              than ORBIT_ANGLE (a move round the subject), otherwise 'direct'.
 //
 // Keyframes may be relative to moving objects (see Anchors.js). The caller passes `resolve(key)`,
 // which returns the key's world-space pose *at the current simulation time*; every keyframe the
@@ -29,6 +30,7 @@
 // All arithmetic is on plain JS numbers (float64), so world coordinates of ~6.4e6 m keep
 // sub-millimetre precision.
 export const ORBIT_RATIO = 3
+export const ORBIT_ANGLE = Math.PI / 3
 
 import { sameAnchor } from './ShotFormat.js'
 
@@ -94,10 +96,15 @@ function hermite(v0, v1, v2, v3, t0, t1, t2, t3, t, ease1, ease2, [link01, link1
 export function segmentMotion(key, a, b) {
   const motion = key.motion ?? 'auto'
   if (motion !== 'auto') return motion
-  const da = length3(sub3(a.position, a.target))
-  const db = length3(sub3(b.position, b.target))
+  const oa = sub3(a.position, a.target)
+  const ob = sub3(b.position, b.target)
+  const da = length3(oa)
+  const db = length3(ob)
   const lo = Math.min(da, db)
-  return lo > 0 && Math.max(da, db) / lo > ORBIT_RATIO ? 'orbit' : 'direct'
+  if (!(lo > 0)) return 'direct'
+  if (Math.max(da, db) / lo > ORBIT_RATIO) return 'orbit'
+  const cos = (oa[0] * ob[0] + oa[1] * ob[1] + oa[2] * ob[2]) / (da * db)
+  return cos < Math.cos(ORBIT_ANGLE) ? 'orbit' : 'direct'
 }
 
 function poseOf(key, resolved, time) {

@@ -414,10 +414,19 @@ export class ShotSidebar {
     const fov = field(plain('input', { type: 'number', class: 'ss-number', step: 'any', min: 1, max: 170 }), () => (key().fov ?? 45).toFixed(1))
     fov.addEventListener('change', () => { set({ fov: Number(fov.value) }); fov.blur() })
     this.editorTitle = el('div', { class: 'ss-editor-title' })
-    this.keySimTime = el('span', { class: 'ss-value' })
+    const simTime = field(plain('input', { type: 'number', class: 'ss-number', step: 'any', min: 0, title: 'The simulated moment of this keyframe. Changing it sets this keyframe\'s time speed (or, for the first, the shot\'s start).' }),
+      () => (this.selectedKey ? s.simTimeAt(this.selectedKey.time) : 0).toFixed(2))
+    const adjust = plain('select', { class: 'ss-select ss-grow', title: 'Which time speed changes when you set the simulated time' })
+    adjust.append(el('option', { value: 'previous', textContent: 'by changing the previous keyframe\'s speed' }), el('option', { value: 'this', textContent: 'by changing this keyframe\'s speed' }))
+    adjust.addEventListener('change', () => adjust.blur())
+    simTime.addEventListener('change', () => { s.setKeyframeSimTime(s.selected, Number(simTime.value), { adjust: adjust.value }); simTime.blur() })
+    const simNow = this.button('Now', () => s.setKeyframeSimTime(s.selected, this.app.clock.time, { adjust: adjust.value }), { title: 'Make this keyframe happen at the current simulated time (jump there first, for example to an event under Time)' })
+    this.adjustRow = this.row('', adjust)
     return el('div', { class: 'ss-editor' },
       this.editorTitle,
-      this.row('Time in shot (s)', time, this.keySimTime),
+      this.row('Time in shot (s)', time),
+      this.row('Simulated time (s)', simTime, simNow),
+      this.adjustRow,
       this.row('Camera moves with', this.anchorSelect('anchor'), this.pickButton('anchor')),
       this.orientRow,
       this.row('Looks at', this.anchorSelect('lookAt'), this.pickButton('lookAt')),
@@ -437,8 +446,8 @@ export class ShotSidebar {
     if (!key) return
     const s = this.shots
     this.editorTitle.textContent = `Keyframe ${s.selected + 1} of ${s.keyframes.length}`
-    this.keySimTime.textContent = `sim ${s.simTimeAt(key.time).toFixed(2)} s`
     this.orientRow.hidden = isWorldAnchor(key.anchor)
+    this.adjustRow.hidden = s.selected === 0
     for (const sync of this.editorSyncs) sync()
   }
 
@@ -621,7 +630,6 @@ export class ShotSidebar {
     }
     else this.dateText.textContent = ''
 
-    if (this.selectedKey) this.keySimTime.textContent = `sim ${s.simTimeAt(this.selectedKey.time).toFixed(2)} s`
     this.refreshEvents()
     this.timeline.draw()
   }

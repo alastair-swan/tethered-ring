@@ -4,7 +4,7 @@ import {
   SHOT_FILE_EXTENSION, WORLD_ANCHOR,
 } from './ShotFormat.js'
 import { sampleCameraPath } from './CameraPath.js'
-import { createTimeMap } from './ShotTiming.js'
+import { createTimeMap, solveSpeedFor } from './ShotTiming.js'
 import { AnchorResolver } from './Anchors.js'
 import { ShotPathOverlay } from './ShotPathOverlay.js'
 import {
@@ -453,6 +453,28 @@ export class ShotController {
       return
     }
     this.changed()
+  }
+
+  // Makes keyframe i happen at `simTime` without moving it in the video. The first keyframe moves the
+  // shot's start. For any other, a time speed is changed: by default the previous keyframe's (so a
+  // keyframe after a fast-forward keeps its own speed, typically 1x), or with `adjust: 'this'` its own.
+  // Later keyframes keep their speeds, so set the moments from the first keyframe on.
+  setKeyframeSimTime(i, simTime, { adjust = 'previous' } = {}) {
+    const keys = this.keyframes
+    const key = keys[i]
+    if (!key) return
+    const sim = this.shot.simulation
+    if (i === 0) {
+      sim.startTime = Math.max(0, sim.startTime + simTime - this.simTimeAt(key.time))
+      this.changed()
+      return
+    }
+    const j = adjust === 'this' ? i : i - 1
+    const { speed, exact } = solveSpeedFor(keys, j, i, simTime - sim.startTime)
+    keys[j].speed = Number(speed.toPrecision(9))
+    this.changed()
+    if (exact) this.setStatus(`Keyframe ${i + 1} is now at simulated time ${simTime.toFixed(2)} s (keyframe ${j + 1}'s time speed is ${Number(speed.toPrecision(3))}x).`)
+    else this.setStatus(`Keyframe ${i + 1} cannot reach simulated time ${simTime.toFixed(2)} s by changing keyframe ${j + 1}'s time speed; it is as close as it gets. Move the keyframes further apart, or change other speeds.`)
   }
 
   setOutput(patch) {

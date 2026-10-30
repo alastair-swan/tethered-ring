@@ -61,6 +61,10 @@ const POOL_FOR_CLASS = {
 
 const _cameraLocal = new THREE.Vector3()
 const _pointOnRing = new THREE.Vector3()
+const _planetCentre = new THREE.Vector3()
+const _shaft = new THREE.Vector3()
+const _toCamera = new THREE.Vector3()
+const FACILITIES_FRAME = 4
 
 function disposeObjectTree(object) {
   object.traverse(child => {
@@ -585,9 +589,25 @@ export class transitSystem {
     this.refFrames.forEach((refFrame, i) => {
       if (refFrame.baseCameraRange === undefined) refFrame.baseCameraRange = refFrame.cameraRange
       refFrame.cameraRange = this.screenSpaceRange(refFrame, horizon, ringCircumference, invalidate)
-      this.updateWedges(refFrame, nearestTrackPosition, distanceFromCameraToRing, ringCircumference, invalidate)
+      const distance = i === FACILITIES_FRAME ? this.distanceToShaft(_cameraLocal, _pointOnRing) : distanceFromCameraToRing
+      this.updateWedges(refFrame, nearestTrackPosition, distance, ringCircumference, invalidate)
     })
     Object.values(this.pools).forEach(pool => pool.reportShortage())
+  }
+
+  // Distance (ring-local) from the camera to the line from the ring point nearest it straight down to
+  // the ground. The facilities hang along it (elevator cars on their way down, ground terminuses at the
+  // bottom), so a camera following an elevator car to the ground still has them drawn.
+  distanceToShaft(cameraLocal, pointOnRing) {
+    this.scene.updateWorldMatrix(true, false)
+    _planetCentre.set(0, 0, 0)
+    this.scene.worldToLocal(_planetCentre)
+    _shaft.copy(_planetCentre).sub(pointOnRing)
+    const depth = Math.min(_shaft.length(), this.crv.currentMainRingAltitude)
+    _shaft.normalize()
+    _toCamera.copy(cameraLocal).sub(pointOnRing)
+    const along = Math.min(depth, Math.max(0, _toCamera.dot(_shaft)))
+    return _toCamera.addScaledVector(_shaft, -along).length()
   }
 
   // Half-length of the arc of the ring (measured along it, centred on the ring point nearest the
