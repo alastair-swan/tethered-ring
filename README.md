@@ -115,6 +115,11 @@ The playhead is a time in the shot's video, and it drives simulated time: **play
    - **Go to** moves the playhead and the free camera to the keyframe (the free camera then moves with its object as you scrub). **Update from view** replaces the keyframe's view with the current one.
 4. In the free view the shot's camera path (orange), the path of what it looks at (blue), the keyframes and the shot's camera at the playhead are drawn in the scene, so you can see the whole shot from outside. **Shot camera** (`B`) shows what the shot sees at the playhead, framed like the video. **▶ Play the shot from the start** plays it in real time.
 
+Two example shots for the default preset are in `docs/examples/shots/`; **Import…** one to see how it is built:
+
+- `launch-to-orbit.shot.json`: an overview of the launcher, then riding with launch #0's vehicle out of the mass driver as time speeds up, then an orbit-and-zoom out to 22,000 km with the trajectory in view (40 s).
+- `transit-to-ground.shot.json`: riding with a collector-lane transit vehicle into a terminus, pulling back to show it, fast-forwarding to the elevator's departure, then following the elevator car down to the ground (62 s).
+
 **Live take** (**Video export** section) records a shot as you fly the camera instead: every frame's camera pose, and any parameter you change, is recorded. With **Encode the live take** on, the video is written at the same time.
 
 ### Rendering and sharing
