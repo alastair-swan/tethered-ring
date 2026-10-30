@@ -49,7 +49,7 @@ const TUBE_DEPLOY_RATE = 0.0025 // fraction per second
 // exposes the actions used by the GUI and keyboard shortcuts.
 //
 // Frame structure (see frame()):
-//   clock.tick() -> step(dt): advance animations at clock.time -> render()
+//   shots.tick() (the shot playhead moves the clock) -> step(dt): advance animations at clock.time -> render()
 // Recording and shot playback drive step()/render() themselves with a fixed time step.
 const _sunDirection = new THREE.Vector3()
 const _sunPlanet = new THREE.Vector3()

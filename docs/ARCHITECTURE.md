@@ -10,7 +10,8 @@ src/main.js           bootstrap: reads URL parameters, creates App, exposes wind
 src/app/              App (scene construction, per-frame loop, actions), RingAssembly, exports,
                       the Y-key launch trial sweep and F-key illustration settings
 src/params/           parameterDefinitions.js (every tunable parameter, as data) and ParameterStore
-src/ui/               ParameterGui (lil-gui panel generated from the parameter definitions)
+src/ui/               ParameterGui (lil-gui panel generated from the parameter definitions); ShotSidebar and
+                      Timeline (the shot and video panel)
 src/presets/          presets.js (registry) and one file per larger preset
 src/core/             SimClock (simulated time), ReferenceFrame (wedge-partitioned curves)
 src/scene/            renderer, lighting, SkyPass (stars and Moon), overlays (logo, XYChart), backgrounds
@@ -22,7 +23,7 @@ src/physics/          geodesy, planet specifications, atmosphere models
 src/curves/           SuperCurve family (curves with arc-length and time parameterisations)
 src/camera/           CameraController, ObjectTracker, modified OrbitControls, Google Earth playback
 src/input/            keyboard shortcuts (one declarative table), VR controllers
-src/shots/            shot file format, camera path interpolation, ShotController
+src/shots/            shot file format, camera path, time warp, camera anchors, path overlay, ShotController
 src/capture/          VideoRecorder (WebCodecs via mediabunny)
 src/shaders/          GLSL, imported with Vite's ?raw
 src/utils/            math helpers; tram.js is a compatibility barrel re-exporting the split modules
@@ -73,23 +74,24 @@ To add a parameter:
 
 `SimClock` is the only source of time.
 
-- **Interactive viewing:** each frame advances it by the real frame time, clamped so a backgrounded tab does not jump.
-- **Recording:** it advances by exactly `1/fps` per frame.
+- **Interactive viewing:** the shot playhead (`ShotController.tick`) decides it. Each frame the playhead moves by the real frame time (clamped so a backgrounded tab does not jump) times the playback rate, which may be negative (rewinding) or 0 (paused); the shot's time warp turns the playhead's video time into simulated time. Scrubbing and jumping set it directly. Everything animated must therefore cope with time going backwards or jumping.
+- **Recording:** frame `i` is at video time `i/fps`, so simulated time is fixed for every frame.
 
 Every animated system receives the simulation time in `animate(time, ...)`. Its state must be a pure function of the parameters and that time: no wall-clock time, no `Math.random()`, nothing that depends on how many frames were rendered. Anything that cannot be computed from time alone is exposed through `getAnimationState()` / `setAnimationState()` and stored in shot files. The star field uses a seeded random generator for the same reason.
 
 ## Per frame
 
-`App.frame()` runs `clock.tick()`, then `step(dt)`, then `render()`.
+`App.frame()` runs `shots.tick()` (which moves the clock), then `step(dt)`, then `render()`.
 
 `step` does the following, in order:
 
-1. Ring raise/lower animation (parameter changes)
-2. The Y-key launch trial sweep (when active)
-3. `launchSystem.animate()` and `transitSystem.animate()`
-4. `CameraController.update()`: tracking, tweens, zoom/climb and follow modes, then orbit controls and clipping planes
-5. `planet.update(camera)`: level-of-detail selection and tile streaming
-6. The shadow frustum follows the camera target
+1. `shots.beforeStep()`: when the shot camera drives the view, it is placed first, so the objects near it get their models in this frame
+2. Ring raise/lower animation (parameter changes)
+3. The Y-key launch trial sweep (when active)
+4. `launchSystem.animate()` and `transitSystem.animate()`
+5. `CameraController.update()`: tracking, tweens, zoom/climb and follow modes, then orbit controls and clipping planes
+6. `planet.update(camera)`: level-of-detail selection and tile streaming
+7. The shadow frustum follows the camera target
 
 `render` draws four layers, clearing the depth buffer between them:
 
@@ -174,13 +176,24 @@ Three.js builds each object's model-view matrix in float64 on the CPU, but the G
 
 The shot file format is documented at the top of `src/shots/ShotFormat.js`. A shot records:
 
-- the preset id and a full parameter snapshot
+- the preset id and a full parameter snapshot (taken when the shot is exported or rendered, so it includes the sun's date)
 - the simulated start time and animation state
-- camera keyframes, interpolated smoothly or linearly by time
-- tracks for any parameter that changes during the shot
+- camera keyframes, each at a video time, possibly relative to a moving object, with a time speed
+- tracks for any parameter that changes during the shot (live takes)
 - output settings
 
-`ShotController` handles preview, live takes (sampling the camera pose every frame), fixed-step rendering and import/export.
+The pieces:
+
+| Module | Role |
+|---|---|
+| `ShotTiming.js` | The time warp. Each keyframe's `speed` is simulated seconds per video second; between keyframes `speed + 0.05` changes geometrically, and simulated time is its exact integral, with an inverse for jumping to a simulated moment. `solveSpeedFor` finds the speed that puts a keyframe at a given moment. |
+| `Anchors.js` | What a keyframe is relative to: the world or one particular object (launch `k`'s vehicle, sled or nut; the transit vehicle in lane `l` at frame position `p`; the elevator car at terminus `p`). The launcher and transit system answer where any such object is at any simulated time (`movingObjectFrameAt`, `vehicleFrameAt`, `elevatorCarFrameAt`), whether or not it has a model, because their animation is a pure function of time. Also lists candidates for picking and the events (launch stages, stops, elevator departures). |
+| `CameraPath.js` | Interpolation. Every keyframe is resolved to world space at the *current* simulated time, then a Hermite spline with non-uniform Catmull-Rom tangents runs through them. Tangents only use neighbours tied to the same objects. Segments are `direct` (positions on the spline) or `orbit` (the target on the spline, the camera placed by direction and log-distance, the target moving in step with the distance), chosen per keyframe or automatically. |
+| `ShotController.js` | The playhead (video time; drives `SimClock`), play/rewind/speeds, the free and shot-camera views, keyframe editing (changing a keyframe's anchor keeps its view at its own moment), picking objects under the mouse, fixed-step rendering, live takes and files. |
+| `ShotPathOverlay.js` | The free view's drawing of the shot: the camera and target paths (sampled over the shot, each point at its own moment; chunked lines for precision), keyframe markers and a camera gizmo at the playhead. Hidden in the shot camera's view and while recording. |
+| `src/ui/ShotSidebar.js`, `Timeline.js` | The panel on the right. Plain DOM; it only calls the controller (and sets the sun parameters). It is not part of the canvas, so it never appears in recordings. |
+
+While recording, the path overlay and the tracking markers are hidden, and every frame is rendered at the output size with full quality.
 
 `VideoRecorder` encodes the canvas with WebCodecs through mediabunny:
 
@@ -190,9 +203,9 @@ The shot file format is documented at the top of `src/shots/ShotFormat.js`. A sh
 
 ## Testing
 
-- `npm test` runs the unit tests: physics maths, the shot format and the camera path.
+- `npm test` runs the unit tests: physics maths, the shot format, the camera path and the time warp.
 - `npm run lint` runs ESLint.
-- `npm run smoke` loads the full app in headless Chrome/Chromium and fails on any console error. Use `SMOKE_GPU=1` with real hardware; the software renderer takes over a minute to decode a single terrain tile. `--eval "<js>"` runs code against `window.tetheredRing` and prints the result, and `--page /tests/planet.html` targets a standalone test page.
+- `npm run smoke` loads the full app in headless Chrome/Chromium and fails on any console error. Use `SMOKE_GPU=1` with real hardware; the software renderer takes over a minute to decode a single terrain tile. `--eval "<js>"` runs code against `window.tetheredRing` and prints the result, `--steps <file.mjs>` runs a multi-step check with screenshots, and `--page /tests/planet.html` targets a standalone test page.
 
 ## Sun, sky and atmosphere
 

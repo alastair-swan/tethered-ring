@@ -39,7 +39,7 @@ npm run smoke          # headless Chrome/Chromium: loads "/" and fails on consol
 - **Rendering.**
   - The renderer uses a logarithmic depth buffer. Custom ShaderMaterials must include the `logdepthbuf_*` chunks (see `src/shaders/`), imported with `?raw`.
   - Stars and the Moon are drawn in `SkyPass`.
-- **Shots.** `src/shots/ShotFormat.js` documents the `.shot.json` format. `ShotController` previews, records live takes and renders at a fixed step. `src/capture/VideoRecorder.js` encodes AV1 (falling back to H.264/HEVC/VP9) into MP4/MKV with WebCodecs.
+- **Shots.** `src/shots/ShotFormat.js` documents the `.shot.json` format. The shot playhead (`ShotController.tick`) drives `SimClock` through the shot's time warp (`ShotTiming.js`). Keyframes can be relative to moving objects (`Anchors.js`), so new moving things should be locatable at any simulated time. `ShotController` edits, previews, records live takes and renders at a fixed step; the floating panel is `src/ui/ShotSidebar.js`. `src/capture/VideoRecorder.js` encodes AV1 (falling back to H.264/HEVC/VP9) into MP4/MKV with WebCodecs.
 
 ## Conventions
 

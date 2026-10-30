@@ -65,11 +65,11 @@ Open the browser developer tools (F12) for console output. `window.tetheredRing`
 
 ### Sun and time of day
 
-The sun is placed from a date: **Rendering → sunDayOfYear** (1–366) and **sunTimeOfDayUTC** (hours) set where it is when the simulation starts, and it then moves with simulated time. Each preset starts at its own repeatable daytime for its opening view (mid-morning to mid-afternoon local time, with the sun well up); change the two values to see the scene at another time, including night and sunset. The atmosphere's colour (blue sky, sunsets, the glow around the sun) follows from the sun's position.
+The sun is placed from a date: **Day of year** and **Time of day (UTC)** in the **Sun** section of the **Shot & video** panel (also **Rendering → sunDayOfYear** and **sunTimeOfDayUTC**) set where it is at simulated time 0, and it then moves with simulated time. Each preset starts at its own repeatable daytime for its opening view (mid-morning to mid-afternoon local time, with the sun well up); change the two values to see the scene at another time, including night and sunset. The atmosphere's colour (blue sky, sunsets, the glow around the sun) follows from the sun's position.
 
 ## Controls
 
-Mouse: drag to orbit, right-drag to pan, wheel to zoom. The **Controls** panel holds every parameter, grouped by subsystem. Press the **Keyboard shortcuts** button for the full list; the most useful keys are:
+Mouse: drag to orbit, right-drag to pan, wheel to zoom. The **Controls** panel (top left) holds every parameter, grouped by subsystem; the **Shot & video** panel (right) controls time, the sun, the camera and video making. Press the **Keyboard shortcuts** button for the full list; the most useful keys are:
 
 | Key | Action |
 |:---:|---|
@@ -83,24 +83,45 @@ Mouse: drag to orbit, right-drag to pan, wheel to zoom. The **Controls** panel h
 | `R` / `L` | Raise / lower the ring (or deploy/retract the evacuated tube) |
 | `W` | Jump to the camera preset selected in **Camera → cameraPreset** |
 | `E` / `C` | Follow the elevator cars / the transit vehicles |
-| `A` / `K` / `B` | Shot: add keyframe / remove last keyframe / preview |
-| `Space` | Pause or resume simulated time |
+| `A` / `K` / `B` | Shot: add a keyframe from the view / delete the selected keyframe / switch between the free view and the shot camera |
+| `Space` | Play or pause (the shot playhead, which drives simulated time) |
+| `,` / `.` | Back / forward one video frame |
 | `S` | Update the engineering specs summary (**TextOutput** folder) |
 
 Keys are ignored while you are typing in a GUI field.
 
 ## Recording video and repeatable shots
 
-Recording happens entirely in the browser; no tar files, PowerShell or ffmpeg are needed. Open **Shots & Recording** in the Controls panel.
+Recording happens entirely in the browser; no tar files, PowerShell or ffmpeg are needed. Everything is in the **Shot & video** panel on the right, and all of it works with the mouse alone. Press **—** to minimise the panel and **🎬 Shots** to bring it back. Nothing in the panel, and nothing drawn to help set up a shot, ever appears in a video: recordings capture only the 3D scene.
 
-1. Set the **Output video** options: resolution, frame rate, duration, preferred codec and container. AV1 is preferred; if the browser cannot encode AV1 at that size, H.264 (then HEVC, then VP9) is used automatically. The default bitrate is deliberately high (about 0.25 bits per pixel per frame for AV1, 0.45 for H.264); set **Bitrate Mbps** to override it.
-2. Build a shot. Either:
-   - **Keyframes:** move the camera and press `A` (or **Add camera keyframe**) at each point; let simulated time run between keyframes (`Space` pauses). The first keyframe fixes the shot's start time. `B` previews.
-   - **Live take:** press **Start live take** and fly the camera (keyboard tracking modes work too). Every frame's camera pose, and any parameter you change, is recorded. With **Encode live take** on, the video is written at the same time.
-3. **Render shot to video** renders the shot frame by frame at a fixed time step (independent of how fast your computer renders) and downloads the file, or streams it to the file you choose when **Stream to file** is on (recommended for long, high-resolution videos).
-4. **Export shot file** saves a `.shot.json` file. **Import shot file** on any computer restores the preset, every parameter, the simulated start time (and therefore where every vehicle is on its track), the camera path and the output settings, so rendering it produces the same footage. Importing a shot made with another preset reloads the page with that preset first.
+### Time
 
-**Wait for terrain tiles** pauses each frame until the planet's terrain has finished streaming, so frames never contain half-loaded terrain.
+The playhead is a time in the shot's video, and it drives simulated time: **play**, **pause**, **play backwards**, step by **frames**, choose a **playback speed** (0.1x to 1000x, also for rewinding), or click and drag on the **timeline**. You can type a simulated time or a shot time to jump to. **Previous / Next** and **Jump to…** go to the moments that matter: the launches; or, for the object the selected keyframe follows, a launch's stages (mass driver, ramp, evacuated tube, free flight), a collector-lane vehicle's arrivals and departures at each stop (saying which stops are terminuses), or an elevator car leaving and reaching the ring and the ground. The playhead can run before or after the shot to find the right moment.
+
+### The sun
+
+**Day of year** and **Time of day (UTC)** set the date at simulated time 0; the sun then moves on with simulated time. The panel shows the local solar time and the sun's elevation at the place in view.
+
+### Building a shot
+
+1. Find the moment, then press **Now** next to **Starts at sim time** (**Shot** section).
+2. **Free view** lets you fly the camera. Frame a view, put the playhead where it should be, and press **+ Add keyframe** (`A`). Repeat. A new keyframe keeps the settings of the selected one, including the object it follows.
+3. Click a keyframe (in the list or on the timeline) to edit it. Drag it on the timeline to retime it. Each keyframe has:
+   - **Camera moves with**: the world, or one particular launch vehicle, launch sled, adaptive nut, transit vehicle or elevator car. Choose a kind (the one nearest the middle of the keyframe's view is taken) or press **🎯 Pick** and click the object in the view. The camera then rides with that object: the keyframe's view is kept relative to it at every moment of the shot. **Camera frame** sets whether the view turns with the object, turns only with its heading (staying level), or never turns.
+   - **Looks at**: by default the same object; or a different one (for example, ride with the transit vehicle and look at the terminus's elevator car).
+   - **Time speed**: simulated seconds per video second at this keyframe (0 freezes time). Speeds blend smoothly between keyframes, so a shot can show a launch at 1x and the whole flight at 60x. **Simulated time** shows (and sets) the moment a keyframe falls on: jump to an event and press **Now** to put the keyframe there. That works out the speed of the previous keyframe (or, if you choose, this one's).
+   - **Path to next**: **Direct** moves the camera along a smooth curve through the keyframes. **Orbit & zoom** moves around the target, with the distance changing by equal factors per second: from 50 m to 20,000 km in a few seconds, keeping the subject in frame. **Auto** (the default) orbits when the distance changes more than threefold or the camera circles its subject, and moves directly otherwise.
+   - **Ease in and out**: the camera comes to rest at this keyframe.
+   - **Go to** moves the playhead and the free camera to the keyframe (the free camera then moves with its object as you scrub). **Update from view** replaces the keyframe's view with the current one.
+4. In the free view the shot's camera path (orange), the path of what it looks at (blue), the keyframes and the shot's camera at the playhead are drawn in the scene, so you can see the whole shot from outside. **Shot camera** (`B`) shows what the shot sees at the playhead, framed like the video. **▶ Play the shot from the start** plays it in real time.
+
+**Live take** (**Video export** section) records a shot as you fly the camera instead: every frame's camera pose, and any parameter you change, is recorded. With **Encode the live take** on, the video is written at the same time.
+
+### Rendering and sharing
+
+**⏺ Render video** renders the shot frame by frame at a fixed time step (independent of how fast your computer renders) and downloads the file, or streams it to the file you choose when **Stream to a file** is on (recommended for long, high-resolution videos). Set the resolution, frame rate, preferred codec and container first. AV1 is preferred; if the browser cannot encode AV1 at that size, H.264 (then HEVC, then VP9) is used automatically. The default bitrate is deliberately high (about 0.25 bits per pixel per frame for AV1, 0.45 for H.264); set **Bitrate** to override it. **Wait for terrain tiles** pauses each frame until the planet's terrain has finished streaming, so frames never contain half-loaded terrain.
+
+**Export…** saves a `.shot.json` file. **Import…** on any computer restores the preset, every parameter (including the sun), the simulated start time (and therefore where every vehicle is on its track), the camera path and the output settings, so rendering it produces the same footage. Importing a shot made with another preset reloads the page with that preset first. Shot files from before keyframes could follow objects still load.
 
 ### Converting or re-encoding (optional)
 
@@ -132,6 +153,15 @@ The command is identical in PowerShell and POSIX shells once ffmpeg is on your P
 SMOKE_GPU=1 npm run smoke -- --wait 30 --out smoke.png
 # Windows PowerShell
 $env:SMOKE_GPU=1; npm run smoke -- --wait 30 --out smoke.png
+```
+
+For checks with several steps (for example, several views of one shot), `--steps <file.mjs>` runs the module's default export, an async function given `{ page, screenshot(name) }` (Puppeteer's page; screenshots are saved next to `--out` with the name appended):
+
+```
+# POSIX
+SMOKE_GPU=1 npm run smoke -- --wait 15 --out check.png --steps my-check.mjs
+# Windows PowerShell
+$env:SMOKE_GPU=1; npm run smoke -- --wait 15 --out check.png --steps my-check.mjs
 ```
 
 The production build does not copy the runtime data folders (`assets/`, `textures/`, `models/`, `basis/`); deploy them next to `dist/`'s contents.
