@@ -130,10 +130,13 @@ export class Timeline {
       this.fit()
       this.fittedDuration = shots.duration
     }
-    // Keep the playhead in view while playing.
-    if (shots.playing && !this.drag) {
+    // Keep the playhead in view (unless it is being dragged).
+    if (!this.drag) {
       const span = this.view[1] - this.view[0]
-      if (shots.playhead > this.view[1] || shots.playhead < this.view[0]) this.view = [shots.playhead - 0.1 * span, shots.playhead + 0.9 * span]
+      if (shots.playhead > this.view[1] || shots.playhead < this.view[0]) {
+        if (shots.playhead >= 0 && shots.playhead <= shots.duration) this.fit()
+        else this.view = [shots.playhead - 0.1 * span, shots.playhead + 0.9 * span]
+      }
     }
     const ratio = window.devicePixelRatio || 1
     const width = this.width

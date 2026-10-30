@@ -213,7 +213,6 @@ export class ShotController {
   setViewMode(mode) {
     if (mode === this.viewMode) return
     this.viewMode = mode
-    this.app.camera.controls.enabled = mode === 'free'
     this.app.onResize()
     this.emit('mode')
   }
@@ -268,6 +267,7 @@ export class ShotController {
   // Called at the start of App.step(): places the shot camera before anything is animated, so the
   // objects near it get their models in this frame rather than the next.
   beforeStep() {
+    this.app.camera.controls.enabled = !this.drivesCamera
     if (!this.drivesCamera) return
     const pose = this.poseAt(this.playhead)
     if (pose) this.app.camera.setState(pose)

@@ -14,7 +14,7 @@ const RESOLUTIONS = [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160], [108
 const FRAME_RATES = [24, 25, 30, 48, 50, 60, 120]
 const TIME_SPEEDS = [0, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
 const ORIENT_LABELS = { follow: 'Turns with the object', level: 'Level, turns with its heading', translate: 'Moves with it, never turns' }
-const MOTION_LABELS = { auto: 'Auto (orbit when zooming)', direct: 'Direct (straight path)', orbit: 'Orbit & zoom around target' }
+const MOTION_LABELS = { auto: 'Auto (orbit when zooming or circling)', direct: 'Direct (straight path)', orbit: 'Orbit & zoom around target' }
 
 const _v = new THREE.Vector3()
 
@@ -93,6 +93,9 @@ export class ShotSidebar {
     this.syncs = []
     this.build()
     this.shots.subscribe((kind) => this.onChange(kind))
+    app.renderer.domElement.addEventListener('pointerdown', () => {
+      if (this.shots.drivesCamera && this.shots.mode === 'idle') this.shots.setStatus('This is the shot camera\'s view. Switch to the free view (B) to move the camera.')
+    })
     this.onChange('shot')
     this.onChange('mode')
     this.onChange('status')
@@ -179,7 +182,7 @@ export class ShotSidebar {
       this.state.sections[id] = details.open
       this.save()
     })
-    details.append(el('summary', { textContent: title }), ...children)
+    details.append(el('summary', { textContent: title }), ...children.filter(c => c !== null && c !== undefined))
     return details
   }
 
@@ -267,7 +270,7 @@ export class ShotSidebar {
       this.row('Time of day (UTC)', this.range(0, 24, 0.05, () => Math.max(0, store.get('sunTimeOfDayUTC')), (v) => setParam('sunTimeOfDayUTC', v)), this.timeOfDayText),
       this.sunInfo,
       el('div', { class: 'ss-hint', textContent: enabled
-        ? 'At the shot\'s simulated time 0. The sun then moves with simulated time, so a time warp moves it too.'
+        ? 'The date and time at simulated time 0. The sun then moves on with simulated time (a time warp moves it faster).'
         : 'This preset places the sun itself, so these have no effect here.' }))
     return section
   }
@@ -311,7 +314,7 @@ export class ShotSidebar {
   // nearest the middle of the keyframe's view), or the current object.
   anchorOptions(includeSame) {
     const options = []
-    if (includeSame) options.push(['same', 'Same as the camera'])
+    if (includeSame) options.push(['same', 'Same as camera'])
     options.push(['world', 'World (fixed to the planet)'])
     for (const [type, kind] of Object.entries(ANCHOR_KINDS)) options.push([type, `${kind.label} (nearest in view)`])
     return options
@@ -417,17 +420,19 @@ export class ShotSidebar {
     const simTime = field(plain('input', { type: 'number', class: 'ss-number', step: 'any', min: 0, title: 'The simulated moment of this keyframe. Changing it sets this keyframe\'s time speed (or, for the first, the shot\'s start).' }),
       () => (this.selectedKey ? s.simTimeAt(this.selectedKey.time) : 0).toFixed(2))
     const adjust = plain('select', { class: 'ss-select ss-grow', title: 'Which time speed changes when you set the simulated time' })
-    adjust.append(el('option', { value: 'previous', textContent: 'by changing the previous keyframe\'s speed' }), el('option', { value: 'this', textContent: 'by changing this keyframe\'s speed' }))
+    adjust.append(el('option', { value: 'previous', textContent: 'Previous keyframe\'s speed' }), el('option', { value: 'this', textContent: 'This keyframe\'s speed' }))
     adjust.addEventListener('change', () => adjust.blur())
     simTime.addEventListener('change', () => { s.setKeyframeSimTime(s.selected, Number(simTime.value), { adjust: adjust.value }); simTime.blur() })
     const simNow = this.button('Now', () => s.setKeyframeSimTime(s.selected, this.app.clock.time, { adjust: adjust.value }), { title: 'Make this keyframe happen at the current simulated time (jump there first, for example to an event under Time)' })
-    this.adjustRow = this.row('', adjust)
+    this.adjustRow = this.row('…by changing', adjust)
+    this.anchorText = el('div', { class: 'ss-sub ss-anchor-text' })
     return el('div', { class: 'ss-editor' },
       this.editorTitle,
       this.row('Time in shot (s)', time),
       this.row('Simulated time (s)', simTime, simNow),
       this.adjustRow,
       this.row('Camera moves with', this.anchorSelect('anchor'), this.pickButton('anchor')),
+      this.anchorText,
       this.orientRow,
       this.row('Looks at', this.anchorSelect('lookAt'), this.pickButton('lookAt')),
       this.row('Time speed', speed, speedNumber),
@@ -447,6 +452,7 @@ export class ShotSidebar {
     const s = this.shots
     this.editorTitle.textContent = `Keyframe ${s.selected + 1} of ${s.keyframes.length}`
     this.orientRow.hidden = isWorldAnchor(key.anchor)
+    this.anchorText.textContent = [key.anchor, key.lookAt].filter(a => a && !isWorldAnchor(a)).map((a, n) => `${n === 0 && !isWorldAnchor(key.anchor) ? 'Moves with' : 'Looks at'}: ${s.resolver.label(a)}`).join('\n')
     this.adjustRow.hidden = s.selected === 0
     for (const sync of this.editorSyncs) sync()
   }

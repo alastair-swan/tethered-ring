@@ -345,6 +345,11 @@ html, body {
   margin-top: 6px;
 }
 
+.ss-anchor-text {
+  white-space: pre-line;
+  font-size: 11px;
+}
+
 .ss-editor-title {
   font-weight: 600;
 }
