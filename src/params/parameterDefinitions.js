@@ -547,6 +547,8 @@ export function createParameterDefinitions() {
   sunDayOfYear: {value: 0, units: '', autoMap: true, min: 0, max: 366, step: 1, onChange: 'updatedParam', folder: 'Rendering'},
   sunTimeOfDayUTC: {value: -1, units: 'h', autoMap: true, min: -1, max: 24, step: 0.01, onChange: 'updatedParam', folder: 'Rendering'},
   showOcean: {value: true, units: '', autoMap: true, onChange: 'adjustOcean', folder: 'Rendering'},
+  // Seasonal sea ice on the sea surface, for the simulated date (see src/planet/seaIce.js).
+  showSeaIce: {value: true, units: '', autoMap: true, onChange: 'adjustSeaIce', folder: 'Rendering'},
   underwaterVisibility: {value: 20000, units: 'm', autoMap: true, min: 100, max: 200000, onChange: 'adjustOcean', folder: 'Rendering'},   // distance at which things underwater have almost faded into the water colour (a visual cue, not realism)
   earthTextureOpacity: {value: 1, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustEarthTextureOpacity', folder: 'Rendering'},
   earthTextureDoubleSided: {value: false, units: '', autoMap: true, onChange: 'adjustEarthTextureSidedness', folder: 'Rendering'},

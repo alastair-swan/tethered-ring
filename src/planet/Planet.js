@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CubedSpherePlanetRenderer, PLANET_YAW } from './CubedSpherePlanetRenderer.js';
+import { loadSeaIce, setSeaIceDayOfYear, setSeaIceVisible } from './seaIce.js';
 import atmosphereVertexShader from '../shaders/atmosphere.vert.glsl?raw';
 import atmosphereFragmentShader from '../shaders/atmosphere.frag.glsl?raw';
 import './aerialPerspective.js'; // registers <atmosphere_common>
@@ -219,6 +220,8 @@ export class Planet {
     this.visible = true;
     this.sunDirection = null;
     this.lod = this._createRenderer(assetNames);
+    // Seasonal sea ice on the Earth's sea surface (seaIce.js; the date is set by setDayOfYear).
+    if (bodyKey(planetSpec) === 'earth' && this.rendererOptions.water) loadSeaIce();
 
     // The atmosphere: a shell ATMOSPHERE_HEIGHT above the sea-level ellipsoid, drawn from inside
     // (its far side), shaded per pixel by single scattering along the line of sight through it (see
@@ -334,6 +337,15 @@ export class Planet {
     next.setEnabled(this.visible);
     this.assetNames = assetNames;
     this.lod = next;
+  }
+
+  /** The date for seasonal effects (sea ice): day of the year, 1 = 1 January, fractional days allowed. */
+  setDayOfYear(dayOfYear) {
+    setSeaIceDayOfYear(dayOfYear);
+  }
+
+  setSeaIceVisible(visible) {
+    setSeaIceVisible(visible);
   }
 
   /** Per-frame LOD selection and streaming. Call before rendering. */

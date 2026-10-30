@@ -218,6 +218,7 @@ export class App {
     StructureLines.setHaze(this.planet.atmosphereUniforms)
     StructureLines.setGlowDistance(d.structureGlowDistance.value)
     this.planet.setVisible(d.showEarthsSurface.value)
+    this.planet.setSeaIceVisible(d.showSeaIce.value)
     this.planet.setAtmosphereVisible(d.showEarthsAtmosphere.value)
     this.ocean = null
     if (this.planetSpec.hasOcean) {
@@ -496,6 +497,7 @@ export class App {
       adjustEarthTextureOpacity: visibility((p) => this.planet.setOpacity(p.earthTextureOpacity.value)),
       adjustEarthSurfaceVisibility: visibility((p) => { this.planet.setVisible(p.showEarthsSurface.value); this.applyOceanSettings(p) }),
       adjustOcean: visibility((p) => this.applyOceanSettings(p)),
+      adjustSeaIce: visibility((p) => this.planet.setSeaIceVisible(p.showSeaIce.value)),
       adjustEarthAtmosphereVisibility: visibility((p) => this.planet.setAtmosphereVisible(p.showEarthsAtmosphere.value)),
       adjustTerrainExaggeration: visibility((p) => this.planet.setDisplacementScale((this.nonGUIParams.planet2DisplacementScaleMultiplier ?? 1) * p.terrainExaggeration.value)),
       adjustBackgroundOpacity: visibility((p) => this.renderer.setClearAlpha(p.enableBackgroundAlpha.value ? 0 : 1)),
@@ -507,7 +509,7 @@ export class App {
     this.store.derive()
     const handlers = this.parameterHandlers()
     for (const name of ['adjustEarthSurfaceVisibility', 'adjustEarthAtmosphereVisibility', 'adjustEarthTextureOpacity', 'adjustEarthTextureSidedness',
-      'adjustTerrainExaggeration', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
+      'adjustTerrainExaggeration', 'adjustSeaIce', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
       'updateOrbitControlsRotateSpeed', 'adjustTetherOpacity', 'adjustStructureGlow', 'adjustBackgroundOpacity']) handlers[name]()
     this.rebuildRing()
     this.ring.adjustLatLon(0)
@@ -719,10 +721,11 @@ export class App {
     this.store.derive()
   }
 
-  // Sun direction for the start date plus the simulated time.
+  // Sun direction (and the season, for sea ice) for the start date plus the simulated time.
   updateSun() {
-    if (!this.sunFollowsDate) return
     const date = advanceDate(Math.max(1, this.store.get('sunDayOfYear')), Math.max(0, this.store.get('sunTimeOfDayUTC')), this.clock.time)
+    this.planet.setDayOfYear(date.dayOfYear + date.utcHours / 24)
+    if (!this.sunFollowsDate) return
     const s = subsolarPoint(date.dayOfYear, date.utcHours)
     const p = tram.geodeticToECEF(s.lat, s.lon, 0, this.planetSpec.ellipsoid)
     _sunPlanet.set(p.x, p.y, p.z).normalize()

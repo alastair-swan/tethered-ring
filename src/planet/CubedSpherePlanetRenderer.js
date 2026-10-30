@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { fbmGlsl, noiseOffsets, SEA_SURFACE_FREQUENCIES, seaSurfaceLookGlsl } from './seaNoise.js';
+import { SEA_ICE_FREQUENCIES, seaIceGlsl, seaIceUniforms } from './seaIce.js';
 import { PixelLOD } from '../scene/PixelLOD.js';
 
 // Milliseconds per frame for uploading newly loaded tiles to the GPU (at least one tile per frame;
@@ -2005,7 +2006,8 @@ varying float vSeaDepth;`)
 
   // Mostly clear (so the tube and cables show through), more opaque at grazing angles, with fine
   // ripples (seaNoise.js) that show where the surface is and how far away; tinted by the imagery's
-  // ocean colour and clearer still in the shallows. (Front faces; see _updateTileWater.)
+  // ocean colour and clearer still in the shallows. Where there is sea ice at the simulated date
+  // (seaIce.js), it covers the water: opaque and matte. (Front faces; see _updateTileWater.)
   _createWaterMaterial(tile) {
     const material = new THREE.MeshPhongMaterial({
       color: tile.texture ? 0xffffff : WATER_FALLBACK_COLOR,
@@ -2016,10 +2018,13 @@ varying float vSeaDepth;`)
       depthWrite: false,
     });
     const offsets = noiseOffsets(tile.center, SEA_SURFACE_FREQUENCIES);
+    const iceOffsets = noiseOffsets(tile.center, SEA_ICE_FREQUENCIES);
     const invA2 = (1 / (this.a * this.a)).toExponential(10);
     const invB2 = (1 / (this.b * this.b)).toExponential(10);
     material.onBeforeCompile = (shader) => {
       shader.uniforms.seaRippleOffset = { value: offsets };
+      shader.uniforms.seaIceOffset = { value: iceOffsets };
+      Object.assign(shader.uniforms, seaIceUniforms);
       shader.uniforms.seaTileCenter = { value: tile.center };
       // The sea's darkening of what is seen through it (seaDarkening.js) is not for the surface itself.
       // It is worked out per vertex from the depth below sea level, and where a tile's edge is pulled
@@ -2058,11 +2063,18 @@ varying vec3 vSeaAxisX;
 varying vec3 vSeaAxisY;
 varying vec3 vSeaAxisZ;
 ${fbmGlsl('seaRipple', SEA_SURFACE_FREQUENCIES)}
+${fbmGlsl('seaIce', SEA_ICE_FREQUENCIES)}
 ${seaSurfaceLookGlsl(WATER_OPACITY)}
+${seaIceGlsl}
+
+// Ellipsoid normal at this pixel, in planet axes.
+vec3 seaPlanetNormal() {
+  return normalize(vSeaPlanet * vec3(${invA2}, ${invB2}, ${invA2}));
+}
 
 // Ellipsoid normal at this pixel, in view space.
 vec3 seaViewNormal() {
-  vec3 n = normalize(vSeaPlanet * vec3(${invA2}, ${invB2}, ${invA2}));
+  vec3 n = seaPlanetNormal();
   return normalize(n.x * vSeaAxisX + n.y * vSeaAxisY + n.z * vSeaAxisZ);
 }`)
         .replace('#include <alphatest_fragment>', `if (vSeaDepth <= 0.0) discard; // land
@@ -2071,18 +2083,31 @@ vec3 seaViewNormal() {
 // vertices can dip below sea level, do not dot the shore with blobs of water.
 float seaImageryLand = smoothstep(${WATER_LAND_LUMINANCE[0]}, ${WATER_LAND_LUMINANCE[1]}, dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722)));
 if (seaImageryLand >= 1.0) discard;
+float seaIce = 0.0;
 {
-  float ripple = seaRippleFbm(vSeaLocal, length(vViewPosition));
+  float viewDistance = length(vViewPosition);
+  float ripple = seaRippleFbm(vSeaLocal, viewDistance);
   float shine;
   vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, abs(dot(seaViewNormal(), normalize(vViewPosition))), shine);
+  // Clearer in the shallows, so the coastline is soft.
+  float alpha = shaded.a * mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed(1)}, 0.0, 1.0));
+  float concentration = seaIceConcentration(seaPlanetNormal());
+  if (concentration > 0.0) {
+    vec4 ice = seaIceLook(concentration, seaIceFbm(vSeaLocal, viewDistance), viewDistance);
+    seaIce = ice.a;
+    shaded.rgb = mix(shaded.rgb, ice.rgb, seaIce);
+    alpha = mix(alpha, 1.0, seaIce);
+    shine *= 1.0 - seaIce;
+  }
   diffuseColor.rgb = shaded.rgb;
   totalEmissiveRadiance += seaSurfaceHighlight * shine * 0.35 * ${daylightGlsl('vSeaPlanet', 'daylightSun')}; // reflected sky (by day)
-  // Clearer in the shallows, so the coastline is soft.
-  diffuseColor.a = shaded.a * mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed(1)}, 0.0, 1.0)) * (1.0 - seaImageryLand);
+  diffuseColor.a = alpha * (1.0 - seaImageryLand);
 }
 #include <alphatest_fragment>`)
         .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
 normal = seaViewNormal();`)
+        .replace('#include <lights_phong_fragment>', `#include <lights_phong_fragment>
+material.specularStrength *= 1.0 - seaIce; // ice is matte: no sun glint`)
         .replace('#include <opaque_fragment>', `outgoingLight *= ${daylightGlsl('vSeaPlanet', 'daylightSun')};
 #include <opaque_fragment>`);
     };

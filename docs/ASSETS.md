@@ -241,6 +241,34 @@ Not done yet:
 - The regional bakes' outer tiles were baked against `assets/earth`'s Blue Marble sampling; where they meet
   `assets/earth_hires` the imagery can differ by up to half a Blue Marble pixel (about 230 m).
 
+### Seasonal sea ice (`assets/sea_ice`)
+
+`tools/sources/build_sea_ice.py` builds a monthly sea ice climatology for each pole from the NSIDC Sea Ice
+Index (Version 4, G02135): the monthly concentration grids (25 km, polar stereographic) for 2016-2025,
+downloaded once into `additional_earth_imagery/sea_ice/` (no login needed), averaged for each calendar
+month, with land, coast and the Arctic pole hole filled from the nearest sea, and resampled onto a polar
+azimuthal grid per pole (512 px, out to 36 degrees from the equator): `north.bin` and `south.bin` (3 MB
+each) and `manifest.json`.
+
+At run time `src/planet/seaIce.js` blends the two months either side of the simulated date and the sea
+surface draws the ice over the water (opaque, matte), broken into floes by noise near its edge; it is drawn
+only where the terrain is below sea level, so it stops at the coast. **Rendering → showSeaIce** turns it
+off. Without the data (not built, or not pulled from Git LFS) there is no ice.
+
+PowerShell:
+
+```powershell
+.venv\Scripts\python -m tools.sources.build_sea_ice
+```
+
+POSIX shells:
+
+```sh
+.venv/bin/python -m tools.sources.build_sea_ice
+```
+
+Not done: ice on lakes, land snow (Blue Marble shows April's), and the ice as seen from under the water.
+
 ### Credits and licences
 
 | Source | Credit | Licence |
@@ -248,6 +276,7 @@ Not done yet:
 | Blue Marble | NASA Earth Observatory, Blue Marble Next Generation (Reto Stöckli) | Public domain (NASA); credit requested |
 | GMTED2010 | U.S. Geological Survey, Global Multi-resolution Terrain Elevation Data 2010 | Public domain (USGS) |
 | GEBCO 2026 | GEBCO Compilation Group (2026) GEBCO 2026 Grid (doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa) | UK Open Government Licence v3.0 (CEDA); GEBCO's own terms (`GEBCO_Grid_terms_of_use.pdf` in the zip) place the grid in the public domain. Either way: acknowledge the source with the citation, do not suggest GEBCO endorses the use, and not for navigation |
+| Sea ice | National Snow and Ice Data Center, Sea Ice Index, Version 4 (G02135) | NSIDC's data are free to use with citation of the data set (see its documentation at nsidc.org/data/g02135) |
 | New Zealand imagery and DEM | Sourced from the LINZ Data Service: New Zealand 10m Satellite Imagery (2022-2023), NZ 8m Digital Elevation Model (2012) | CC BY 4.0 (attribution: "Toitū Te Whenua Land Information New Zealand") |
 | Hawaii imagery (XHR) | Esri World Imagery (Esri, Maxar, Earthstar Geographics and the GIS user community) | Esri's terms of use: it may be displayed with attribution, but not redistributed as data. Do not publish the raw images or COGs; check the terms before shipping tiles baked from them |
 | Hawaii terrain | Copernicus DEM GLO-30, © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA | Copernicus DEM licence (free, attribution required) |
