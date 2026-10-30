@@ -80,6 +80,11 @@ export class PixelLOD extends THREE.LOD {
     if (level.object) {
       level.object.visible = false
       this.add(level.object)
+      // The renderer updates this LOD while drawing, after the scene's world matrices were updated, so a
+      // level built now would be drawn this frame without its world transform (far from where it
+      // belongs). Lift fan chunks crossing their threshold one after another at speed showed this as a
+      // gap at a fixed distance ahead of a camera following the launch vehicle.
+      level.object.updateMatrixWorld(true)
     }
   }
 
