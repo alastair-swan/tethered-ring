@@ -48,11 +48,13 @@ THREE.ShaderChunk.fog_pars_vertex += `
   uniform vec4 seaPole;
   uniform vec2 seaParams;
   varying float vSeaFog;
+  varying float vSeaPath;
 #endif
 `
 THREE.ShaderChunk.fog_vertex += `
 #ifdef USE_FOG
   vSeaFog = 0.0;
+  vSeaPath = 0.0;
   if (seaParams.y > 0.5) {
     // Camera-to-vertex offset in world axes, from the view-space position (works for every material,
     // including instanced, batched and sprite geometry).
@@ -68,7 +70,10 @@ THREE.ShaderChunk.fog_vertex += `
     if (seaDisc > 0.0 && seaB < 0.0) {
       float seaQ = -seaB + sqrt(seaDisc);
       float seaPath = min(seaDistance, seaQ / seaA) - max(0.0, seaCamera.w / seaQ);
-      if (seaPath > 0.0) vSeaFog = 1.0 - exp(-seaPath / seaParams.x);
+      if (seaPath > 0.0) {
+        vSeaFog = 1.0 - exp(-seaPath / seaParams.x);
+        vSeaPath = seaPath;
+      }
     }
   }
 #endif
@@ -77,6 +82,7 @@ THREE.ShaderChunk.fog_pars_fragment += `
 #ifdef USE_FOG
   uniform vec3 seaTint;
   varying float vSeaFog;
+  varying float vSeaPath;   // metres of the line of sight under the sea (aerialPerspective.js ends the haze there)
 #endif
 `
 THREE.ShaderChunk.fog_fragment += `

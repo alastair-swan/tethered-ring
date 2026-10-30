@@ -9,7 +9,10 @@ import './seaDarkening.js' // its fog code first: see below
 // seen through a thin blue veil.
 //
 // The line of sight from the camera to the fragment is clipped to the atmosphere shell and marched
-// with a few samples. Like seaDarkening.js it is added to three.js's fog chunks, which every built-in
+// with a few samples. Things under the sea are hazed only as far as the line of sight's entry into the
+// water (seaDarkening.js's vSeaPath, worked out per vertex): beyond it there is no air, and counting it
+// as air at sea-level density would make the deep sea floor hazier than the shallows, so seamounts
+// that stay well under the surface would show through the haze. Like seaDarkening.js it is added to three.js's fog chunks, which every built-in
 // material includes when the scene has fog (App keeps a zero-density fog on the scene while the haze
 // is on), with plain-object uniforms shared by every material's copy of the library uniforms. It is
 // applied after the sea's darkening (this module is imported after seaDarkening.js), since the water
@@ -67,7 +70,7 @@ THREE.ShaderChunk.fog_fragment += `
     float apT0, apT1;
     if (atmoRoots(dot(apDirStretched, apDirStretched), dot(apCamera.xyz, apDirStretched), apCamera.w, apT0, apT1)) {
       apT0 = max(apT0, 0.0);
-      apT1 = min(apT1, apDistance);
+      apT1 = min(apT1, apDistance - vSeaPath);
       if (apT1 > apT0) {
         vec3 apLight, apTransmittance;
         atmoScatter(apCamera.xyz, apDirStretched, apDir, apT0, apT1, apSun, apParams.z, ${SAMPLES}, apLight, apTransmittance);
