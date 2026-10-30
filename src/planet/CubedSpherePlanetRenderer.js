@@ -2017,6 +2017,11 @@ varying float vSeaDepth;`)
     material.onBeforeCompile = (shader) => {
       shader.uniforms.seaRippleOffset = { value: offsets };
       shader.uniforms.seaTileCenter = { value: tile.center };
+      // The sea's darkening of what is seen through it (seaDarkening.js) is not for the surface itself.
+      // It is worked out per vertex from the depth below sea level, and where a tile's edge is pulled
+      // onto a coarser neighbour's straight edge, its vertices sag up to tens of metres below the sea's
+      // curve: the surface would darken along those edges, fading over one row of triangles.
+      shader.uniforms.seaParams = { value: { x: 1, y: 0 } };
       shader.uniforms.daylightSun = this.daylightSun;
       // Per-pixel normals: on a distant (coarse) tile the vertex normals, interpolated across big flat
       // triangles, are slightly off from cell to cell, and the sharp sun glint turns that into a grid.
