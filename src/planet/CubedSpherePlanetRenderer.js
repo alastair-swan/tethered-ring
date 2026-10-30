@@ -555,6 +555,13 @@ export class CubedSpherePlanetRenderer {
     this._tmpB = new THREE.Vector3();
     this._tmpMorphDir = new THREE.Vector3();
     this._tmpFaceUV = { face: '+X', u: 0, v: 0 };
+    this._tmpNearUV = { face: '+X', u: 0, v: 0 };
+    this._tmpPointDir = new THREE.Vector3();
+    this._tmpPointNormal = new THREE.Vector3();
+    this._tmpNormalA = new THREE.Vector3();
+    this._tmpNormalB = new THREE.Vector3();
+    this._tmpNormalC = new THREE.Vector3();
+    this._tmpNormalD = new THREE.Vector3();
     this._tmpV2 = new THREE.Vector2();
     this._tmpColor = new THREE.Color();
     this._steps = [1, 1, 1, 1];
@@ -1112,6 +1119,36 @@ export class CubedSpherePlanetRenderer {
   }
 
   // Bilinear height lookup in meters at tile-local (u01, v01).
+  // The terrain point (planet frame, absolute) at cube coordinates (u, v) on a tile's face, which may
+  // lie beyond the tile: its height then comes from the tile there (see _heightNear).
+  _terrainPointAt(tile, u, v, out) {
+    const dir = this._tmpPointDir, nor = this._tmpPointNormal;
+    cubeToDirection(tile.face, u, v, dir);
+    rayEllipsoidIntersection(dir, this.a, this.b, out);
+    ellipsoidNormal(out, this.a, this.b, nor);
+    const span = 2 / Math.pow(2, tile.lod);
+    const u01 = (u + 1) / span - tile.x, v01 = (v + 1) / span - tile.y;
+    const eps = 1e-9;
+    const inside = u01 >= -eps && u01 <= 1 + eps && v01 >= -eps && v01 <= 1 + eps;
+    const h = inside ? this._sampleHeight(tile, u01, v01) : this._heightNear(dir, tile.lod);
+    return out.addScaledVector(nor, h * this.displacementScaleMultiplier);
+  }
+
+  // The height in the direction `dir` from the loaded tile covering it at `lod`, or else its nearest
+  // loaded ancestor; 0 if none is loaded.
+  _heightNear(dir, lod) {
+    const f = directionToFaceUV(dir, this._tmpNearUV);
+    const faceIndex = FACE_INDEX[f.face];
+    for (let l = lod; l >= this.rootLod; l--) {
+      const count = 1 << l, span = 2 / count;
+      const x = Math.min(count - 1, Math.max(0, Math.floor((f.u + 1) / span)));
+      const y = Math.min(count - 1, Math.max(0, Math.floor((f.v + 1) / span)));
+      const t = this._getTile(faceIndex, l, x, y);
+      if (t?.heightSamples && t.heightWidth && t.heightHeight) return this._sampleHeight(t, (f.u + 1) / span - x, (f.v + 1) / span - y);
+    }
+    return 0;
+  }
+
   _sampleHeight(tile, u01, v01) {
     const samples = tile.heightSamples;
     if (!samples) return 0;
@@ -1783,6 +1820,25 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
       }
     }
 
+    // Normals from the height field by central differences, one grid step either way, taking the
+    // points beyond the tile's edge from the tile next to it: both tiles then agree on the normal at
+    // their shared edge (normals from each tile's own triangles differ there, which shows as a line).
+    const step = tileSpan / seg;
+    const pu = this._tmpNormalA, pd = this._tmpNormalB, pv = this._tmpNormalC, pw = this._tmpNormalD;
+    for (let y = 0; y <= seg; y++) {
+      const v = v0 + tileSpan * y / seg;
+      for (let x = 0; x <= seg; x++) {
+        const u = u0 + tileSpan * x / seg;
+        this._terrainPointAt(tile, u + step, v, pu).sub(this._terrainPointAt(tile, u - step, v, pd));
+        this._terrainPointAt(tile, u, v + step, pv).sub(this._terrainPointAt(tile, u, v - step, pw));
+        pu.cross(pv).normalize();
+        const i3 = (y * (seg + 1) + x) * 3;
+        // (Facing out, as the ellipsoid normal does: the cross product's sign depends on the face.)
+        if (pu.x * normals[i3] + pu.y * normals[i3 + 1] + pu.z * normals[i3 + 2] < 0) pu.negate();
+        normals[i3] = pu.x; normals[i3 + 1] = pu.y; normals[i3 + 2] = pu.z;
+      }
+    }
+
     // CDLOD edge morph: where an edge faces a coarser neighbor, collapse the in-between
     // boundary vertices onto the segment between the coarse tile's shared vertices so the
     // fine edge matches the coarse vertex spacing (removes T-junction cracks). Handles
@@ -1818,7 +1874,7 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
       takeNeighborHeights(2, (i) => [0, i]);
       takeNeighborHeights(3, (i) => [seg, i]);
       const lerp = (i, a, b, t) => {
-        for (const p of seaPositions ? [positions, seaPositions] : [positions]) {
+        for (const p of seaPositions ? [positions, seaPositions, normals] : [positions, normals]) {
           const i3 = i * 3, a3 = a * 3, b3 = b * 3;
           p[i3] = p[a3] + (p[b3] - p[a3]) * t;
           p[i3 + 1] = p[a3 + 1] + (p[b3 + 1] - p[a3 + 1]) * t;
@@ -1846,15 +1902,11 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     // (u,v) handedness, so FrontSide culling never opens holes.
     const reversed = this._needsReversedWinding(positions, normals, seg);
 
-    // The initial normals describe only the smooth ellipsoid. Recompute them from
-    // the displaced triangles so kilometer-scale relief participates in the
-    // same directional lighting as the synthetic fine regolith normals.
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
     geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     geometry.setIndex(this.indexBufferCache.getIndexAttribute(seg, reversed));
-    geometry.computeVertexNormals();
     geometry.computeBoundingSphere();
     geometry.userData.waterGeometry = seaPositions
       ? this._buildWaterGeometry(seaPositions, seaNormals, uvs, heights, seg, reversed)
