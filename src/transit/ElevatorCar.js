@@ -45,6 +45,19 @@ export class virtualElevatorCar extends VirtualRingObject {
     om.visible = virtualElevatorCar.isVisible
   }
 
+  // The car's frame (ring-local) at `elevatorAltitude` (see offsetsForAltitude): forward along the
+  // ring, upward away from the ring's axis and tilted with the ring's latitude, like the transit vehicles.
+  frameAt(refFrame, elevatorAltitude) {
+    const [dr, dy] = virtualElevatorCar.offsetsForAltitude(elevatorAltitude)
+    this.placeWithOffsets(_tmp, refFrame, dr, dy)
+    const angle = 2 * Math.PI * this.trackPosition(refFrame)
+    const lat = virtualElevatorCar.currentEquivalentLatitude
+    const forward = new THREE.Vector3(-Math.sin(angle), 0, Math.cos(angle))
+    const upward = new THREE.Vector3(Math.cos(lat) * Math.cos(angle), Math.sin(lat), Math.cos(lat) * Math.sin(angle))
+    const rightward = forward.clone().cross(upward).normalize()
+    return { position: _tmp.position.clone(), forward, upward, rightward }
+  }
+
   getFuturePosition(refFrame, timeDeltaInSeconds = 0) {
     let dr = virtualElevatorCar.elevatorCarPosition_dr
     let dy = virtualElevatorCar.elevatorCarPosition_dy

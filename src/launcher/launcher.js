@@ -387,6 +387,72 @@ export class launcher {
     if (state && Number.isFinite(state.frozenTimeSinceStart)) this.frozenTimeSinceStart = state.frozenTimeSinceStart
   }
 
+  // ---- Moving objects at any simulated time (camera anchors in shots) ----------------------------
+  // Every launch is a pure function of time (the k-th launch leaves at k * spacing), so where a given
+  // launch's vehicle, sled or nut is at any moment can be worked out without it being on screen.
+
+  movingObjectClass(className) {
+    return this.objectClasses?.find(c => c.className === className && c.refFrames?.[0]) ?? null
+  }
+
+  // The time the animation shows at simulated time `simTime` (it is frozen while every animate* flag is off).
+  animationTimeAt(simTime) {
+    return (this.animateLaunchVehicles || this.animateLaunchSleds || this.animateAdaptiveNuts) ? simTime : this.frozenTimeSinceStart
+  }
+
+  // { position (the object's centre), forward, upward, rightward } in planet coordinates, for launch
+  // `launchIndex` at `simTime` (before the launch: at the start of its path; after: at the end), or null.
+  movingObjectFrameAt(className, launchIndex, simTime) {
+    const objectClass = this.movingObjectClass(className)
+    if (!objectClass) return null
+    const refFrame = objectClass.refFrames[0]
+    const adj = objectClass.adjustedTime(this.animationTimeAt(simTime))
+    const deltaT = Math.max(0, Math.min(refFrame.curve.getDuration(), adj - launchIndex * objectClass.tInc))
+    const object = Object.create(objectClass.prototype)
+    object.launchIndex = launchIndex
+    object.timeLaunched = launchIndex * objectClass.tInc
+    const frame = object.frameAt(refFrame, deltaT)
+    return { position: frame.centre, forward: frame.forward, upward: frame.upward, rightward: frame.rightward }
+  }
+
+  // Launch indices of `className` objects in flight at simTime (only every launchStride-th launch is shown).
+  activeLaunchIndicesAt(className, simTime) {
+    const objectClass = this.movingObjectClass(className)
+    if (!objectClass || !(objectClass.numObjects > 0)) return []
+    return objectClass.activeLaunchIndices(objectClass.adjustedTime(this.animationTimeAt(simTime)), objectClass.refFrames[0].curve.getDuration())
+  }
+
+  // Simulated time at which launch `launchIndex` has been on its path for `deltaT` seconds.
+  launchSimTime(className, launchIndex, deltaT = 0) {
+    const objectClass = this.movingObjectClass(className)
+    if (!objectClass || !(objectClass.slowDownPassageOfTime > 0)) return null
+    return objectClass.launcherStartDelayInSeconds + (launchIndex * objectClass.tInc + deltaT) / objectClass.slowDownPassageOfTime
+  }
+
+  // The shown launch (a multiple of the launch stride) that starts first at or after simTime.
+  nextLaunchIndex(className, simTime) {
+    const objectClass = this.movingObjectClass(className)
+    if (!objectClass || !(objectClass.tInc > 0) || !(objectClass.numObjects > 0)) return null
+    const step = Math.max(1, objectClass.launchStride | 0)
+    const adj = (simTime - objectClass.launcherStartDelayInSeconds) * objectClass.slowDownPassageOfTime
+    return Math.max(0, Math.ceil(adj / (step * objectClass.tInc) - 1e-9)) * step
+  }
+
+  // Named stages of a launch's path: [{ name, deltaT }], from the sub-curves of the object's path.
+  launchStages(className) {
+    const objectClass = this.movingObjectClass(className)
+    if (!objectClass) return []
+    const path = objectClass.refFrames[0].curve
+    const stages = []
+    let t = 0
+    for (const curve of path.superCurves) {
+      stages.push({ name: curve.name, deltaT: t })
+      t += curve.getDuration()
+    }
+    stages.push({ name: 'end', deltaT: t })
+    return stages
+  }
+
   update(dParamWithUnits, timeSinceStart, planetCoordSys, planetSpec, tetheredRingRefCoordSys, mainRingCurve, crv, specs, genLauncherKMLFile, kmlFile) {
 
     this.versionNumber++

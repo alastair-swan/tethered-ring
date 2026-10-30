@@ -422,6 +422,94 @@ export class transitSystem {
     return result
   }
 
+  // ---- Vehicles and elevator cars at any simulated time (camera anchors in shots) ---------------
+  // Lanes 0/1 are the express lanes, 2/3 the collector lanes (which stop at every transit stop); a
+  // vehicle is identified by its lane and its position `p` within the lane's moving frame. An elevator
+  // car is identified by the track position `p` of its terminus. Frames are ring-local (this.scene).
+
+  vehicleFrameAt(lane, p, simTime) {
+    const refFrame = this.refFrames[lane]
+    if (!refFrame || lane > 3) return null
+    const t = this.channels.transitVehicles.timeAt(simTime)
+    const framePosition = refFrame.positionFunction ? posFrac(refFrame.positionFunction(t)) : refFrame.p
+    return new virtualTransitVehicle(p, null).frameAt(refFrame, framePosition)
+  }
+
+  elevatorCarFrameAt(p, simTime) {
+    if (!this.elevatorPosCalc) return null
+    const altitude = this.elevatorPosCalc.calculateElevatorPosition(this.channels.elevatorCars.timeAt(simTime))
+    return new virtualElevatorCar(p, null).frameAt(this.refFrames[4], altitude)
+  }
+
+  // Every vehicle ({ lane, p }) and elevator car ({ p }) there is.
+  listVehicles() {
+    const list = []
+    this.refFrames.slice(0, 4).forEach((refFrame, lane) => refFrame.wedges.forEach(wedge => {
+      for (const vehicle of wedge['virtualTransitVehicles'] ?? []) list.push({ lane, p: vehicle.p })
+    }))
+    return list
+  }
+
+  listElevatorCars() {
+    const list = []
+    this.refFrames[4].wedges.forEach(wedge => {
+      for (const car of wedge['virtualElevatorCars'] ?? []) list.push({ p: car.p })
+    })
+    return list
+  }
+
+  // Simulated time from the transit vehicles' / elevator cars' animation time (null while paused).
+  simTimeFromChannel(channelName, animationTime) {
+    const channel = this.channels[channelName]
+    return channel.running ? animationTime + channel.timeOffset : null
+  }
+
+  // Stops and departures of the collector lanes, and of the elevators: [{ simTime, name }] within
+  // [fromSimTime, toSimTime]. `lane` 0/1 (express) never stop.
+  collectorStopEvents(lane, p, fromSimTime, toSimTime) {
+    const calc = this.refFrameCalculator
+    const channel = this.channels.transitVehicles
+    if (lane < 2 || !calc?.moving || !channel.running) return []
+    const events = []
+    const t0 = channel.timeAt(fromSimTime)
+    const t1 = channel.timeAt(toSimTime)
+    for (let n = Math.floor(t0 / calc.cycleTime) - 1; n * calc.cycleTime <= t1; n++) {
+      const arrive = n * calc.cycleTime
+      const stop = this.stopAt(lane, p, arrive)
+      events.push({ animationTime: arrive, name: `Arrives at ${stop}` }, { animationTime: arrive + calc.stopDuration, name: `Leaves ${stop}` })
+    }
+    return events
+      .map(e => ({ simTime: this.simTimeFromChannel('transitVehicles', e.animationTime), name: e.name }))
+      .filter(e => e.simTime >= fromSimTime && e.simTime <= toSimTime)
+  }
+
+  // Which stop a collector-lane vehicle is at, at transit animation time t (while its lane dwells).
+  stopAt(lane, p, t) {
+    const refFrame = this.refFrames[lane]
+    const numStops = this.stopLayout.numStops
+    const position = posFrac(p + posFrac(refFrame.positionFunction(t)))
+    const index = Math.round(position * numStops) % numStops
+    const terminuses = this.stopLayout.terminusPositions
+    const isTerminus = terminuses.some(q => Math.abs(q - index / numStops) < 0.5 / numStops)
+    return `${isTerminus ? 'terminus' : 'habitat'} stop ${index}`
+  }
+
+  elevatorEvents(fromSimTime, toSimTime) {
+    const calc = this.elevatorPosCalc
+    const channel = this.channels.elevatorCars
+    if (!calc || !Number.isFinite(calc.cycleTime) || !channel.running) return []
+    const w = calc.waitTime
+    const T = calc.travelTime
+    const phases = [[w, 'Leaves the ring'], [w + T, 'Reaches the ground'], [2 * w + T, 'Leaves the ground'], [2 * w + 2 * T, 'Reaches the ring']]
+    const events = []
+    const t0 = channel.timeAt(fromSimTime)
+    const t1 = channel.timeAt(toSimTime)
+    for (let n = Math.floor(t0 / calc.cycleTime) - 1; n * calc.cycleTime <= t1; n++) {
+      for (const [offset, name] of phases) events.push({ simTime: this.simTimeFromChannel('elevatorCars', n * calc.cycleTime + offset), name })
+    }
+    return events.filter(e => e.simTime >= fromSimTime && e.simTime <= toSimTime)
+  }
+
   animate(timeSinceStart, tetheredRingRefCoordSys, cameraPosition, mainRingCurve, dParamWithUnits) {
     const t = Number(Array.isArray(timeSinceStart) ? timeSinceStart[0] : timeSinceStart) || 0
     this.lastTimeSinceStart = t
