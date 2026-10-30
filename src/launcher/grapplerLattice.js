@@ -37,15 +37,20 @@ import { PROFILE, outAndBack, leaving, arriving, smootherstep } from './grappler
 // grappler to its last: grappler i follows the lattice chosen i hops' time (plus a little) earlier, so it
 // lets go only once its neighbour has landed on the new lattice's flight, and the old and new lattices
 // meet at one break. (Either lattice keeps every grappler within reach of a flight, so being on the old
-// one for a while costs at most a run.) Since that takes the whole nut a while, the lattice chosen is the
-// one with the fewest runs and free grapplers over that time from now (or LOOKAHEAD s, if longer):
-// worth changing to for as long as the change takes, and not flipping back and forth as two run close.
+// one for a while costs at most a run.) The alignment is there to bring the runs down to the fewest the
+// screw allows at the fast end, so it changes at most once: the alignment with the fewest runs and free
+// grapplers over the last FINAL of the run is the final one; the best over the rest of the run is the
+// first; and if they differ, it changes at the earliest time from which the final one is at least as
+// good to the end (judged every DECISION s), but not while the last change of lattice is still passing
+// along the nut. Where the flights under the nut change but the lattice spacing does not, the lattice
+// keeps its alignment if it can.
 //
 // Everything is evaluated on a grid of GRID s (the alignment on one of COARSE s) and remembered; that is
 // only a cache: each value is a pure function of its time.
 const GRID = 1 / 30
 const COARSE = 0.1
-const LOOKAHEAD = 2
+const FINAL = 0.1
+const DECISION = 1
 
 // x wrapped into [-m/2, m/2).
 const wrap = (x, m) => x - m * Math.floor(x / m + 0.5)
@@ -126,7 +131,9 @@ export class GrapplerLatticePlan {
     this.switchoverTime = switchoverTime
     this.fastestDrift = fastestDrift
     this._samples = new Map()
-    this._costs = new Map()
+    this._alignments = new Map()
+    this._periodStarts = new Map()
+    this._periodEnds = new Map()
     this._lattices = new Map()
     this._arrangements = new Map()
     this._starts = []
@@ -149,31 +156,84 @@ export class GrapplerLatticePlan {
     return latticeArrangement(samples, { holdLimit: this.holdLimit, fastestDrift: this.fastestDrift, step, offset, alone })
   }
 
-  // The lattice chosen at coarse step q, { step, offset } (turns): its spacing from the fewest flights
-  // under the nut's grapplers then, and of its alignments (multiples of the most flights' spacing), the one with the
-  // fewest runs and free grapplers over the time a change takes to pass along the nut (or LOOKAHEAD s).
+  // The lattice spacing at time t, and the flights' spacing it is aligned to: from the fewest and most
+  // flights under the nut's grapplers then (of those over the thread; any, before the thread).
+  spacingAt(time) {
+    const samples = this.samplesAt(time)
+    const over = samples.filter(s => s.engageable), flights = (over.length ? over : samples).map(s => s.n)
+    const step = latticeStep(this.holdLimit, Math.min(...flights))
+    return { step, most: Math.max(...flights) }
+  }
+
+  // The period of time around coarse step q over which the lattice spacing (and the flights' spacing it
+  // is aligned to) stays the same: { start, end } (coarse steps, end exclusive), step, most.
+  periodAt(q) {
+    const spacing = (q) => this.spacingAt(q * COARSE)
+    const { step, most } = spacing(q), alike = (r) => { const s = spacing(r); return s.step === step && s.most === most }
+    let start = this._periodStarts.get(q)
+    if (start === undefined) {
+      start = q
+      while (start > 0 && alike(start - 1)) { start--; if (this._periodStarts.has(start)) { start = this._periodStarts.get(start); break } }
+      this._periodStarts.set(q, start)
+    }
+    const last = Math.ceil(this.end / COARSE)
+    let end = this._periodEnds.get(q)
+    if (end === undefined) {
+      end = q + 1
+      while (end <= last && alike(end)) { if (this._periodEnds.has(end)) { end = this._periodEnds.get(end); break } end++ }
+      this._periodEnds.set(q, end)
+    }
+    return { start, end, step, most }
+  }
+
+  // The alignments (offsets, turns) over a period of one lattice spacing, and when it changes from the
+  // first to the final one (see the top of this file): { first, final, change (s) }. It starts with the
+  // alignment the lattice had just before, where that had the same spacing and is one of these.
+  alignment(period) {
+    let plan = this._alignments.get(period.start)
+    if (plan) return plan
+    const { step, most } = period
+    const count = step > 0 ? Math.max(1, Math.round(step * most)) : 1
+    if (count === 1) plan = { first: 0, final: 0, change: Infinity }
+    else {
+      const offsets = Array.from({ length: count }, (_, j) => j / most)
+      // The cost of each alignment every DECISION s over the period.
+      const startTime = period.start * COARSE, endTime = Math.min(this.end, period.end * COARSE)
+      const times = []
+      for (let t = startTime; t < endTime; t += DECISION) times.push(t)
+      const costs = offsets.map(offset => times.map(t => arrangementCost(this.arrange(this.samplesAt(t), step, offset))))
+      const finalFrom = Math.max(0, Math.floor(times.length * (1 - FINAL)))
+      const best = (from, to) => {
+        let chosen = 0, lowest = Infinity
+        costs.forEach((list, j) => { const sum = list.slice(from, to).reduce((a, b) => a + b, 0); if (sum < lowest) { lowest = sum; chosen = j } })
+        return chosen
+      }
+      const final = best(finalFrom, times.length)
+      // (Where the lattice spacing changes too, every grappler moves anyway: no need to carry it on.)
+      const before = period.start > 0 ? this.latticeAt(period.start - 1) : null
+      const carried = before && before.step === step ? offsets.findIndex(o => Math.abs(wrap(o - before.offset, step)) < 1e-9) : -1
+      const first = carried >= 0 ? carried : finalFrom > 0 ? best(0, finalFrom) : final
+      let change = Infinity
+      if (first !== final) {
+        let from = times.length
+        while (from > 0 && costs[final][from - 1] <= costs[first][from - 1]) from--
+        change = from < times.length ? times[from] : times[times.length - 1]
+        // (Not while the last change of lattice is still passing along the nut.)
+        change = Math.max(change, startTime + this.delay * this.samplesAt(startTime).length)
+      }
+      plan = { first: offsets[first], final: offsets[final], change }
+    }
+    this._alignments.set(period.start, plan)
+    return plan
+  }
+
+  // The lattice at coarse step q, { step, offset } (turns).
   latticeAt(q) {
     q = Math.max(0, q)
     let lattice = this._lattices.get(q)
     if (lattice) return lattice
-    const samples = this.samplesAt(q * COARSE)
-    // (Of the grapplers over the thread; any, before the thread.)
-    const over = samples.filter(s => s.engageable), flights = (over.length ? over : samples).map(s => s.n)
-    const fewest = Math.min(...flights), most = Math.max(...flights)
-    const step = latticeStep(this.holdLimit, fewest)
-    const count = step > 0 ? Math.max(1, Math.round(step * most)) : 1
-    let best = Infinity, offset = 0
-    for (let j = 0; j < count && count > 1; j++) {
-      let sum = 0
-      for (let r = q; r <= q + Math.round(Math.max(LOOKAHEAD, this.delay * samples.length) / COARSE); r++) {
-        const key = step + ':' + j / most + ':' + r
-        let cost = this._costs.get(key)
-        if (cost === undefined) this._costs.set(key, cost = arrangementCost(this.arrange(this.samplesAt(r * COARSE), step, j / most)))
-        sum += cost
-      }
-      if (sum < best) { best = sum; offset = j / most }
-    }
-    this._lattices.set(q, lattice = { step, offset })
+    const period = this.periodAt(q), alignment = this.alignment(period)
+    this._lattices.set(q, lattice = { step: period.step, offset: q * COARSE >= alignment.change ? alignment.final : alignment.first })
     return lattice
   }
 
