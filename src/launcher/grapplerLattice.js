@@ -252,10 +252,49 @@ export class GrapplerLatticePlan {
     let arrangement = this._arrangements.get(k)
     if (arrangement) return arrangement
     const time = k * GRID
-    const lattice = (i) => this.latticeAt(Math.floor((time - this.delay * i) / COARSE + 1e-9))
+    const lattice = (i) => {
+      const passed = this.latticeAt(Math.floor((time - this.delay * i) / COARSE + 1e-9))
+      // (Taking up a change of alignment early, where it would otherwise move twice: see early.)
+      const early = this.early(i, k)
+      return early ? { step: passed.step, offset: early.offset } : passed
+    }
     arrangement = this.arrange(this.samplesAt(time), (i) => lattice(i).step, (i) => lattice(i).offset, false)
     this._arrangements.set(k, arrangement)
     return arrangement
+  }
+
+  // Taking up a change of alignment early. Where a grappler's flight on the old alignment changes shortly
+  // before the change reaches it (the last change of the old one before), it would hop there (two flights,
+  // say) only to hop again (one back) onto the new one: it goes straight to the new alignment's flight
+  // instead, from that change on, where the grappler behind it is on the new alignment by the time it
+  // lands (having reached it, or itself early). Returns { offset } (the new alignment) if grappler i is
+  // on the new alignment early at grid step k, else null.
+  early(i, k) {
+    const from = this.earlyFrom(i)
+    return from !== null && k >= from.start && k < from.end ? { offset: from.offset } : null
+  }
+
+  // The stretch [start, end) (grid steps) over which grappler i is on a change of alignment early, and its
+  // offset; or null.
+  earlyFrom(i) {
+    const memo = (this._early ??= new Map())
+    if (memo.has(i)) return memo.get(i)
+    memo.set(i, null)   // (while working it out: none)
+    let result = null
+    const q = Math.floor(this.end / COARSE), period = this.periodAt(q), plan = this.alignment(period)
+    if (i > 0 && Number.isFinite(plan.change) && plan.first !== plan.final) {
+      // When the change reaches it (grid steps), and its old alignment's flight changes before that.
+      const reach = Math.ceil((plan.change + this.delay * i) / GRID)
+      const startOfPeriod = Math.ceil(period.start * COARSE / GRID)
+      const old = (j, k) => this.arrange(this.samplesAt(k * GRID), period.step, plan.first, false)[j].flight
+      let last = null
+      for (let k = reach - 1; k > startOfPeriod; k--) {
+        if (!same(old(i, k), old(i, k - 1))) { last = k; break }
+      }
+      if (last !== null) result = { start: last, end: reach, offset: plan.final }
+    }
+    memo.set(i, result)
+    return result
   }
 
   // Grappler i's lattice flight at grid step k (null: free; before the launch, free).
@@ -366,7 +405,8 @@ export class GrapplerLatticePlan {
     landing = Infinity
     if (span.value !== null) {
       const direct = span.start + this.half
-      if (span.start === 0 ? false : this.joined(i, span.value, direct)) landing = direct
+      // (Taking up a change of alignment early, it lands even if alone: see early.)
+      if (span.start === 0 ? false : this.joined(i, span.value, direct) || this.early(i, direct)) landing = direct
       else {
         for (let k = direct; k + 2 * this.half <= span.end - this.half; k++) {
           if (this.joined(i, span.value, k)) { landing = k + 2 * this.half; break }
