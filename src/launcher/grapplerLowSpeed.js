@@ -14,7 +14,7 @@
 // never falls. The layers
 // go on starting grips for two hops' time after it (so that those joining the lattice have landed before
 // the chains stop handing over), and each grappler joins the lattice when its last grip from the layers
-// ends.
+// ends, or sooner where that grip would keep it off the lattice (see joinTheLattice).
 //
 // Everything is worked out on the plan's grid from the screw alone, once per plan.
 
@@ -59,8 +59,30 @@ export function lowSpeedGrips(plan) {
   // The layers, built to an horizon that grows until the handover is found within it.
   for (let horizon = Math.min(K, Math.round(10 / plan.grid)); ; horizon = Math.min(K, horizon * 2)) {
     const result = layersTo(horizon, opportunities, landable, N, K, hop, fewestFrom)
-    if (result || horizon >= K) return result ?? { handover: K + 1, grips: Array.from({ length: N }, () => []), joins: new Array(N).fill(K + 1), guarantee: new Int16Array(K + 1) }
+    if (result) return joinTheLattice(plan, result, hop)
+    if (horizon >= K) return { handover: K + 1, grips: Array.from({ length: N }, () => []), joins: new Array(N).fill(K + 1), guarantee: new Int16Array(K + 1) }
   }
+}
+
+// When each grappler joins the lattice: when its grip from the layers that runs past the handover ends, or
+// sooner: where its lattice flight changes from the handover on (it would move then anyway), or, on a
+// flight that is not its lattice flight, once the layers stop starting grips (two hops after the
+// handover). (A grip could otherwise last the whole run: a grappler near the screw's design point sees
+// its flights barely drift, and would keep one the lattice does not use to the end.)
+function joinTheLattice(plan, result, hop) {
+  const { handover, grips } = result
+  const same = (a, b) => a === b || (a !== null && b !== null && Math.abs(wrap(a - b, 1)) < 1e-6)
+  grips.forEach((list, i) => {
+    for (const g of list) {
+      if (g.to < handover) continue
+      for (let k = Math.max(handover, g.from + 1); k <= g.to; k++) {
+        const lattice = plan.raw(i, k)
+        if ((k > handover && !same(lattice, plan.raw(i, k - 1))) || (k >= handover + 2 * hop && !same(lattice, g.flight))) { g.to = k - 1; break }
+      }
+    }
+  })
+  result.joins = grips.map(list => Math.max(handover, ...list.filter(g => g.to >= handover).map(g => g.to + 1)))
+  return result
 }
 
 function layersTo(horizon, opportunities, landable, N, K, hop, fewestFrom) {
