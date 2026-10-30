@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { sampleCameraPath } from '../../src/shots/CameraPath.js'
 import { createShot, parseShot, serializeShot, sampleParameterTrack, validateShot } from '../../src/shots/ShotFormat.js'
 import { createTimeMap, solveSpeedFor } from '../../src/shots/ShotTiming.js'
+import { subFrameTimes, adaptiveSubFrames } from '../../src/capture/MotionBlur.js'
 
 const R = 6.4e6
 const key = (time, x) => ({ time, position: [R + x, 1, 2], target: [R, 0, 0], up: [1, 0, 0], fov: 45 })
@@ -146,4 +147,34 @@ test('a keyframe speed can be solved to reach a simulated moment', () => {
   }
   // Even stopping at once from 1x takes some simulated time.
   assert.equal(solveSpeedFor(keys, 2, 2, 1).exact, false)
+})
+
+test('motion blur sub-frames are spread over the shutter, centred on the frame', () => {
+  const t = subFrameTimes(10, 50, 4, 180)
+  assert.equal(t.length, 4)
+  const mean = t.reduce((a, b) => a + b, 0) / 4
+  assert.ok(Math.abs(mean - 10 / 50) < 1e-12)
+  // 180 degrees: the sub-frames cover half the frame interval, evenly.
+  assert.ok(Math.abs((t[3] - t[0]) - 0.5 / 50 * 3 / 4) < 1e-12)
+  assert.deepEqual(subFrameTimes(3, 30, 1, 360), [0.1])
+  const shot = createShot({ preset: 'default', parameters: {}, startTime: 0 })
+  assert.equal(validateShot(shot).output.motionBlur, 'off')
+  shot.output.motionBlurSamples = 0
+  assert.throws(() => validateShot(shot), /motionBlurSamples/)
+})
+
+test('adaptive motion blur takes enough sub-frames for the camera to move a step at a time', () => {
+  // 300 m of travel across the shutter, 1 m steps: 300 sub-frames.
+  const poses = [0, 100, 200, 300].map(x => ({ position: [x, 0, 0], target: [x, 0, 100] }))
+  const options = { maxStep: 1, maxPixels: 2, pixelsPerRadian: 1000, minSamples: 4, maxSamples: 1024 }
+  assert.equal(adaptiveSubFrames(poses, options), 300)
+  assert.equal(adaptiveSubFrames(poses, { ...options, maxSamples: 64 }), 64)
+  // Standing still: the minimum. Turning 0.1 rad at 1000 px/rad and 2 px per sub-frame: 50.
+  const still = [{ position: [0, 0, 0], target: [0, 0, 1] }, { position: [0, 0, 0], target: [0, 0, 1] }]
+  assert.equal(adaptiveSubFrames(still, options), 4)
+  const turning = [{ position: [0, 0, 0], target: [0, 0, 1] }, { position: [0, 0, 0], target: [Math.sin(0.1), 0, Math.cos(0.1)] }]
+  assert.equal(adaptiveSubFrames(turning, options), 50)
+  // The same 300 m travelled 1,000 km from everything moves the scenery far less than a pixel.
+  const far = [0, 100, 200, 300].map(x => ({ position: [x, 1e6, 0], target: [x, 0, 0] }))
+  assert.equal(adaptiveSubFrames(far, { ...options, planetRadius: 1 }), 4)
 })

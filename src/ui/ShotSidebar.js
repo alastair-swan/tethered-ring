@@ -518,6 +518,16 @@ export class ShotSidebar {
       this.row('Codec (preferred)', this.select(codecs, () => o().codec, (v) => s.setOutput({ codec: v }))),
       this.row('Container', this.select(containers, () => o().container, (v) => s.setOutput({ container: v }))),
       this.row('Bitrate (Mbps, 0 = auto)', this.number(() => o().bitrateMbps ?? 0, (v) => s.setOutput({ bitrateMbps: v > 0 ? v : null }), { min: 0 })),
+      this.row('Motion blur', this.select([['off', 'Off'], ['adaptive', 'Adaptive (by camera motion)'], ['fixed', 'Fixed sub-frames']], () => o().motionBlur, (v) => s.setOutput({ motionBlur: v }), { title: 'Average several renders per frame, spread over the shutter time, so fast motion past repeated structures blurs instead of strobing. Rendering takes as many times longer as there are sub-frames.' })),
+      this.blurRows = el('div', { class: 'ss-editor' },
+        this.row('Shutter angle', this.select([[90, '90°'], [180, '180° (film look)'], [270, '270°'], [360, '360° (no gaps)']], () => o().shutterAngle, (v) => s.setOutput({ shutterAngle: Number(v) }), { title: 'How much of each frame\'s time the sub-frames cover. 360° leaves no gaps between frames, which removes the most strobing.' })),
+        this.blurSamplesRow = this.row('Sub-frames', this.number(() => o().motionBlurSamples, (v) => s.setOutput({ motionBlurSamples: Math.max(1, Math.round(v)) }), { min: 1, step: 1 })),
+        this.blurAdaptiveRows = el('div', {},
+          this.row('Camera step near things (m)', this.number(() => o().motionBlurMaxStep, (v) => v > 0 && s.setOutput({ motionBlurMaxStep: v }), { min: 0.01, title: 'How far the camera may move between sub-frames close to things. Keep it below about half the spacing of the repeated structures it passes (mass-driver brackets are about 5 m apart). Further from everything the step grows, keeping the nearest scenery moving no more than the pixel limit below.' })),
+          this.row('Scenery motion per sub-frame (px)', this.number(() => o().motionBlurMaxPixels, (v) => v > 0 && s.setOutput({ motionBlurMaxPixels: v }), { min: 0.1 })),
+          this.row('Most sub-frames per frame', this.number(() => o().motionBlurMaxSamples, (v) => s.setOutput({ motionBlurMaxSamples: Math.max(1, Math.round(v)) }), { min: 1, step: 1 }))),
+        this.blurHint = el('div', { class: 'ss-hint' }),
+        this.button('Preview this frame', () => this.previewFrame(), { title: 'Render the video frame at the playhead as the recording will (with motion blur) and show it', cls: 'ss-wide' })),
       this.checkbox('Wait for terrain tiles', () => o().waitForTerrain, (v) => s.setOutput({ waitForTerrain: v }), { title: 'Each frame waits for the terrain it shows to load (slower, but no blurry tiles)' }),
       typeof window.showSaveFilePicker === 'function'
         ? this.checkbox('Stream to a file (large videos)', () => s.prefs.saveToDisk, (v) => { s.prefs.saveToDisk = v })
@@ -532,6 +542,7 @@ export class ShotSidebar {
   onChange(kind) {
     const s = this.shots
     if (kind === 'shot') {
+      this.updateBlurRows()
       this.rebuildKeyList()
       this.syncEditor()
       for (const sync of this.syncs) sync()
@@ -545,6 +556,31 @@ export class ShotSidebar {
       for (const sync of this.syncs) sync()
     }
     if (kind === 'status') this.statusLine.textContent = s.status
+  }
+
+  async previewFrame() {
+    const image = await this.shots.previewFrame()
+    if (!image) return
+    const overlay = el('div', { class: 'ss-still', title: 'Click to close' },
+      el('img', { src: image, alt: 'The video frame at the playhead' }),
+      el('div', { class: 'ss-still-caption', textContent: `Frame at ${this.shots.playhead.toFixed(2)} s, as recorded. Click to close.` }))
+    overlay.addEventListener('click', () => overlay.remove())
+    document.body.append(overlay)
+  }
+
+  // Shows the motion blur settings that apply, and how much rendering they cost for this shot.
+  updateBlurRows() {
+    const s = this.shots
+    const o = s.shot.output
+    this.blurRows.hidden = o.motionBlur === 'off'
+    this.blurAdaptiveRows.hidden = o.motionBlur !== 'adaptive'
+    this.blurSamplesRow.querySelector('.ss-label').textContent = o.motionBlur === 'adaptive' ? 'Fewest sub-frames' : 'Sub-frames'
+    if (o.motionBlur === 'off') return
+    clearTimeout(this._blurEstimate)
+    this._blurEstimate = setTimeout(() => {
+      const { total, most, frames } = s.estimateSubFrames()
+      this.blurHint.textContent = `This shot: ${total.toLocaleString()} renders for ${frames.toLocaleString()} frames (up to ${most} per frame), about ${(total / frames).toFixed(1)}x the time of rendering without blur.`
+    }, 300)
   }
 
   // The anchor whose events the Time section offers: the selected keyframe's object (or what it looks

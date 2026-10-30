@@ -10,7 +10,13 @@
 //   simulation: { startTime, animationState },
 //   camera: { interpolation: 'smooth' | 'linear', keyframes: [keyframe, ...] },
 //   parameterTracks: { name: [{ time, value }] },   // optional, times relative to the shot start
-//   output: { width, height, fps, duration, codec, container, bitrateMbps, waitForTerrain },
+//   output: { width, height, fps, duration, codec, container, bitrateMbps, waitForTerrain,
+//             motionBlur,            // 'off' | 'fixed' | 'adaptive' (see src/capture/MotionBlur.js)
+//             motionBlurSamples,     // sub-frames per frame ('fixed'), or the fewest ('adaptive')
+//             motionBlurMaxStep,     // 'adaptive': metres the camera may move between sub-frames near things
+//             motionBlurMaxPixels,   // 'adaptive': pixels nearby scenery may move between sub-frames
+//             motionBlurMaxSamples,  // 'adaptive': the most sub-frames per frame
+//             shutterAngle },        // degrees of each frame interval the sub-frames cover (360 = all)
 // }
 //
 // keyframe: {
@@ -56,7 +62,15 @@ export const DEFAULT_OUTPUT = {
   container: 'mp4',
   bitrateMbps: null, // null = derive a high default from resolution and frame rate
   waitForTerrain: true,
+  motionBlur: 'off',
+  motionBlurSamples: 16,
+  motionBlurMaxStep: 1,
+  motionBlurMaxPixels: 2,
+  motionBlurMaxSamples: 1024,
+  shutterAngle: 360,
 }
+
+export const MOTION_BLUR_MODES = ['off', 'fixed', 'adaptive']
 
 export function createShot({ name = 'Untitled shot', preset, parameters, startTime, animationState = null }) {
   return {
@@ -131,6 +145,12 @@ export function validateShot(shot) {
   const o = shot.output
   if (!(o.width >= 16 && o.height >= 16)) fail('"output.width/height" must be at least 16')
   if (!(o.fps > 0 && o.fps <= 240)) fail('"output.fps" must be between 0 and 240')
+  if (!MOTION_BLUR_MODES.includes(o.motionBlur)) fail(`"output.motionBlur" must be one of ${MOTION_BLUR_MODES.join(', ')}`)
+  for (const field of ['motionBlurSamples', 'motionBlurMaxSamples']) {
+    if (!(Number.isInteger(o[field]) && o[field] >= 1 && o[field] <= 4096)) fail(`"output.${field}" must be a whole number from 1 to 4096`)
+  }
+  if (!(o.motionBlurMaxStep > 0) || !(o.motionBlurMaxPixels > 0)) fail('"output.motionBlurMaxStep" and "motionBlurMaxPixels" must be positive')
+  if (!(o.shutterAngle >= 0 && o.shutterAngle <= 360)) fail('"output.shutterAngle" must be between 0 and 360')
   return shot
 }
 

@@ -195,6 +195,8 @@ The pieces:
 
 While recording, the path overlay and the tracking markers are hidden, and every frame is rendered at the output size with full quality.
 
+Motion blur (`src/capture/MotionBlur.js`) is temporal supersampling: each video frame averages several sub-frames at moments spread over the shutter interval, centred on the frame's own moment. Each sub-frame is stepped and rendered to the canvas exactly as an ordinary frame (so nothing in the renderer knows about it), copied into a texture, converted to linear light and added into a float buffer; the average is converted back to sRGB and drawn to the canvas for the encoder. In adaptive mode the number of sub-frames per frame comes from the shot camera's motion over that frame's shutter (`adaptiveSubFrames`): a step of at most `motionBlurMaxStep` metres near things, growing with the distance to the nearest scenery (the closer of the camera's target and the ground) so that it moves at most `motionBlurMaxPixels` on screen. Terrain is waited for once per frame, not per sub-frame.
+
 `VideoRecorder` encodes the canvas with WebCodecs through mediabunny:
 
 - AV1 is preferred; it falls back to H.264, then HEVC, then VP9.

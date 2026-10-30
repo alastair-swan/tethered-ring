@@ -11,6 +11,7 @@ import {
   VideoRecorder, resolveCodec, defaultBitrate, evenDimension, isRecordingSupported, CODEC_LABELS,
 } from '../capture/VideoRecorder.js'
 import { downloadText } from '../app/exports.js'
+import { MotionBlur, subFrameTimes, adaptiveSubFrames } from '../capture/MotionBlur.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 
 const PENDING_SHOT_KEY = 'tetheredRing.pendingShot'
@@ -612,9 +613,10 @@ export class ShotController {
     }
   }
 
-  // Runs frames at a fixed step. perFrame(i) sets up frame i and returns the simulated time step to
-  // take, or false to stop.
-  async runFixedStep({ width, height, fps, waitForTerrain, perFrame, recorder, progressLabel }) {
+  // Runs frames at a fixed step. perFrame(i, s) sets up sub-frame s of frame i and returns the
+  // simulated time step to take, or false (at s = 0) to stop. subFrames(i) is how many sub-frames
+  // frame i averages (motion blur, see MotionBlur.js); `blur` allocates the buffers for that.
+  async runFixedStep({ width, height, fps, waitForTerrain, perFrame, recorder, progressLabel, subFrames = () => 1, blur: useBlur = false, afterFrame = null }) {
     const app = this.app
     app.renderer.setAnimationLoop(null)
     app.setRenderSize(width, height, { pixelRatio: 1 })
@@ -628,21 +630,46 @@ export class ShotController {
     const markerVisibility = markers.map(m => m.visible)
     markers.forEach(m => { m.visible = false })
     const progress = new ProgressOverlay(() => this.stop())
+    const blur = useBlur ? new MotionBlur(app.renderer) : null
+    if (blur) {
+      const size = app.renderer.getDrawingBufferSize(new THREE.Vector2())
+      blur.begin(size.x, size.y)
+    }
+    let lastYield = performance.now()
     try {
-      for (let i = 0; ; i++) {
-        if (this.cancelRequested) break
-        const dt = perFrame(i)
-        if (dt === false) break
-        app.step(i === 0 ? 0 : dt)
-        if (waitForTerrain) await this.waitForTerrain()
-        app.render()
+      frames: for (let i = 0; ; i++) {
+        let n = 1
+        for (let s = 0; s < n; s++) {
+          if (this.cancelRequested) break frames
+          const dt = perFrame(i, s)
+          if (dt === false) break frames
+          if (s === 0) n = subFrames(i)
+          app.step(i === 0 && s === 0 ? 0 : dt)
+          // The sub-frames of one frame are close together; their terrain is the first one's.
+          if (waitForTerrain && s === 0) await this.waitForTerrain()
+          app.render()
+          if (blur) {
+            blur.add(s === 0, 1 / n)
+            // Keep the page (and the Stop button) responsive through long runs of sub-frames, without
+            // waiting for a display frame each time.
+            if (performance.now() - lastYield > 100) {
+              progress.update(`${progressLabel(i)}, sub-frame ${s + 1} / ${n}`)
+              await sleep(0)
+              lastYield = performance.now()
+            }
+          }
+        }
+        if (blur) blur.present()
+        afterFrame?.(i)
         if (recorder) await recorder.addFrame()
         progress.update(progressLabel(i))
         // Yield so the page (and the live-take camera controls) stay responsive.
         await nextFrame()
+        lastYield = performance.now()
       }
     }
     finally {
+      blur?.dispose()
       progress.remove()
       markers.forEach((m, i) => { m.visible = markerVisibility[i] })
       PixelLOD.buildBudget = previousBuildBudget
@@ -706,9 +733,40 @@ export class ShotController {
     await this.finishRecorder(recorder, failed)
   }
 
-  // Renders every frame of the shot through `recorder` (null: render without encoding). Returns the
-  // error that stopped it, if any.
-  async renderFrames(recorder, { frameLimit = Infinity } = {}) {
+  // Sub-frames for video frame i under the shot's motion blur settings (1 without blur).
+  subFramesFor(i) {
+    const o = this.shot.output
+    if (o.motionBlur === 'fixed') return o.motionBlurSamples
+    if (o.motionBlur !== 'adaptive') return 1
+    // The shot camera's poses across the frame's shutter interval.
+    const poses = subFrameTimes(i, o.fps, 9, o.shutterAngle).map(t => this.poseAt(t)).filter(Boolean)
+    const fov = THREE.MathUtils.degToRad(poses[0]?.fov ?? this.app.camera3d.fov)
+    return adaptiveSubFrames(poses, {
+      maxStep: o.motionBlurMaxStep,
+      maxPixels: o.motionBlurMaxPixels,
+      pixelsPerRadian: o.height / 2 / Math.tan(fov / 2),
+      planetRadius: this.app.planetRadius,
+      minSamples: o.motionBlurSamples,
+      maxSamples: o.motionBlurMaxSamples,
+    })
+  }
+
+  // Sub-frames the whole shot needs: { total, most, frames }.
+  estimateSubFrames() {
+    const frames = Math.max(1, Math.round(this.duration * this.fps))
+    let total = 0
+    let most = 0
+    for (let i = 0; i < frames; i++) {
+      const n = this.subFramesFor(i)
+      total += n
+      most = Math.max(most, n)
+    }
+    return { total, most, frames }
+  }
+
+  // Renders frames [from, to) of the shot through `recorder` (null: render without encoding), calling
+  // afterFrame(i) while each finished frame is on the canvas. Returns the error that stopped it, if any.
+  async renderFrames(recorder, { from = 0, to = Infinity, afterFrame = null } = {}) {
     const shot = this.shot
     const output = shot.output
     const playhead = this.playhead
@@ -716,14 +774,28 @@ export class ShotController {
     this.mode = 'render'
     this.cancelRequested = false
     this.emit('mode')
-    const frames = Math.min(frameLimit, Math.max(1, Math.round(shotDuration(shot) * output.fps)))
+    const frames = Math.min(to, Math.max(1, Math.round(shotDuration(shot) * output.fps)))
+    const blurred = (output.motionBlur ?? 'off') !== 'off'
+    let n = 1
+    let times = [0]
     let failed = null
     try {
       await this.runFixedStep({
         ...output,
         recorder,
-        perFrame: (i) => (i >= frames ? false : this.setPlayhead(i / output.fps)),
-        progressLabel: (i) => `Rendering "${shot.name}": frame ${i + 1} / ${frames}${recorder ? ` (${CODEC_LABELS[recorder.options.codec]} ${output.width}x${output.height} @ ${output.fps} fps)` : ''}`,
+        blur: blurred,
+        subFrames: () => n,
+        afterFrame: afterFrame && ((k) => afterFrame(from + k)),
+        perFrame: (k, s) => {
+          const i = from + k
+          if (i >= frames) return false
+          if (s === 0) {
+            n = blurred ? this.subFramesFor(i) : 1
+            times = n > 1 ? subFrameTimes(i, output.fps, n, output.shutterAngle) : [i / output.fps]
+          }
+          return this.setPlayhead(times[s])
+        },
+        progressLabel: (k) => `Rendering "${shot.name}": frame ${from + k + 1} / ${frames}${recorder ? ` (${CODEC_LABELS[recorder.options.codec]} ${output.width}x${output.height} @ ${output.fps} fps${n > 1 ? `, ${n} sub-frames` : ''})` : ''}`,
       })
     }
     catch (err) {
@@ -733,6 +805,17 @@ export class ShotController {
     this.setPlayhead(playhead)
     this.emit('mode')
     return failed
+  }
+
+  // Renders the video frame at the playhead exactly as a recording would (with motion blur) and returns
+  // it as a PNG data URL, or null.
+  async previewFrame() {
+    if (this.mode !== 'idle' || !this.keyframes.length) return null
+    const i = Math.max(0, Math.round(this.playhead * this.fps))
+    let image = null
+    const failed = await this.renderFrames(null, { from: i, to: i + 1, afterFrame: () => { image = this.app.renderer.domElement.toDataURL('image/png') } })
+    if (failed) this.setStatus(`Preview failed: ${failed.message}`)
+    return image
   }
 
   async finishRecorder(recorder, failed) {
