@@ -607,7 +607,7 @@ export class CubedSpherePlanetRenderer {
 
     if (options.opacity != null) this.setOpacity(options.opacity);
     this._initRoots();
-    if (this.hasAssets) this._loadManifest();
+    this.manifestLoaded = this.hasAssets ? this._loadManifest() : Promise.resolve();
     if (options.debugMode && options.debugMode !== 'none') this.setDebugMode(options.debugMode);
   }
 
@@ -2276,6 +2276,54 @@ varying vec3 vDaylightUp;`)
     const direction = latLonToDirection(
       latDeg * DEG2RAD, lonDeg * DEG2RAD, this._tmpDir, this.planetE2);
     return this._sampleTerrainHeightAtDirection(direction);
+  }
+
+  // Terrain heights from a fixed tile: the deepest in the manifests (base or overlays) that covers the
+  // unit direction `direction` (planet group frame), down to maxLod, whatever is loaded for display. For
+  // things placed from the terrain that must come out the same wherever the camera has been (see
+  // src/scene/Sailboats.js). Resolves to a function of a unit direction giving the height in metres
+  // (null outside the tile), or to null where there is no terrain data. Each tile is fetched once.
+  async fixedHeightSampler(direction, maxLod) {
+    await this.manifestLoaded;
+    const f = directionToFaceUV(direction, {});
+    for (let lod = Math.min(maxLod, this.maxAvailableLod); lod >= 0; lod--) {
+      const count = 1 << lod, span = 2 / count;
+      const x = Math.min(count - 1, Math.max(0, Math.floor((f.u + 1) / span)));
+      const y = Math.min(count - 1, Math.max(0, Math.floor((f.v + 1) / span)));
+      const key = tileKey(f.face, lod, x, y);
+      const meta = this.manifestTileMap.get(key);
+      if (!meta) continue;
+      this._fixedHeights ??= new Map();
+      if (this._fixedHeights.size > 4000) this._fixedHeights.clear();
+      let sampler = this._fixedHeights.get(key);
+      if (!sampler) {
+        sampler = this._fetchFixedHeights({ id: key, face: f.face, lod, x, y }, meta);
+        this._fixedHeights.set(key, sampler);
+      }
+      return sampler;
+    }
+    return null;
+  }
+
+  async _fetchFixedHeights(tile, meta) {
+    const response = await fetch(this._heightUrl(tile)).catch(() => null);
+    if (!response?.ok) return null;
+    const samples = new Uint16Array(await response.arrayBuffer());
+    const w = meta.width ?? 64, h = meta.height ?? 64;
+    if (samples.length !== w * h) return null;
+    const min = this.heightMinMeters, max = this.heightMaxMeters;
+    const span = 2 / (1 << tile.lod), uv = {};
+    return (direction) => {
+      directionToUVOnFace(direction, tile.face, uv);
+      const u01 = (uv.u + 1) / span - tile.x, v01 = (uv.v + 1) / span - tile.y;
+      if (!(u01 >= 0 && u01 <= 1 && v01 >= 0 && v01 <= 1)) return null;
+      const px = u01 * (w - 1), py = v01 * (h - 1);
+      const x0 = Math.min(w - 2, Math.floor(px)), y0 = Math.min(h - 2, Math.floor(py));
+      const tx = px - x0, ty = py - y0, i = y0 * w + x0;
+      const top = samples[i] + (samples[i + 1] - samples[i]) * tx;
+      const bottom = samples[i + w] + (samples[i + w + 1] - samples[i + w]) * tx;
+      return decodeHeightU16(top + (bottom - top) * ty, min, max);
+    };
   }
 
   // Same as sampleTerrainHeight, for a unit direction in the planet group's local frame.

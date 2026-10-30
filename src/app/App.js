@@ -20,6 +20,7 @@ import { StructureLines } from '../scene/structureLines.js'
 import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
 import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
+import { Sailboats } from '../scene/Sailboats.js'
 
 // The Earth's global tile sets the A/B control switches between (folders under assets/; see docs/ASSETS.md).
 const EARTH_TILE_SETS = { 'Blue Marble, GMTED/GEBCO (earth_hires)': 'earth_hires', 'Original (earth)': 'earth' }
@@ -219,6 +220,10 @@ export class App {
     StructureLines.setGlowDistance(d.structureGlowDistance.value)
     this.planet.setVisible(d.showEarthsSurface.value)
     this.planet.setSeaIceVisible(d.showSeaIce.value)
+    if (this.planetSpec.name === 'Earth' && this.planetSpec.hasOcean) {
+      this.sailboats = new Sailboats(this.planet, this.planetCoordSys, this.planetSpec.ellipsoid)
+      this.sailboats.setVisible(d.showSailboats.value)
+    }
     this.planet.setAtmosphereVisible(d.showEarthsAtmosphere.value)
     this.ocean = null
     if (this.planetSpec.hasOcean) {
@@ -498,6 +503,7 @@ export class App {
       adjustEarthSurfaceVisibility: visibility((p) => { this.planet.setVisible(p.showEarthsSurface.value); this.applyOceanSettings(p) }),
       adjustOcean: visibility((p) => this.applyOceanSettings(p)),
       adjustSeaIce: visibility((p) => this.planet.setSeaIceVisible(p.showSeaIce.value)),
+      adjustSailboats: visibility((p) => this.sailboats?.setVisible(p.showSailboats.value)),
       adjustEarthAtmosphereVisibility: visibility((p) => this.planet.setAtmosphereVisible(p.showEarthsAtmosphere.value)),
       adjustTerrainExaggeration: visibility((p) => this.planet.setDisplacementScale((this.nonGUIParams.planet2DisplacementScaleMultiplier ?? 1) * p.terrainExaggeration.value)),
       adjustBackgroundOpacity: visibility((p) => this.renderer.setClearAlpha(p.enableBackgroundAlpha.value ? 0 : 1)),
@@ -509,7 +515,7 @@ export class App {
     this.store.derive()
     const handlers = this.parameterHandlers()
     for (const name of ['adjustEarthSurfaceVisibility', 'adjustEarthAtmosphereVisibility', 'adjustEarthTextureOpacity', 'adjustEarthTextureSidedness',
-      'adjustTerrainExaggeration', 'adjustSeaIce', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
+      'adjustTerrainExaggeration', 'adjustSeaIce', 'adjustSailboats', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
       'updateOrbitControlsRotateSpeed', 'adjustTetherOpacity', 'adjustStructureGlow', 'adjustBackgroundOpacity']) handlers[name]()
     this.rebuildRing()
     this.ring.adjustLatLon(0)
@@ -681,6 +687,7 @@ export class App {
     this.camera.playbackActive = this.shots.drivesCamera || googleEarthDrives
     this.camera.update(t, dt)
     this.planet.update(this.camera3d)
+    this.sailboats?.update(t, this.camera3d)
     // The water surface follows the camera; under it the view switches to the underwater look (see
     // render()), with the evacuated tube kept dry.
     this.ocean?.update(this.camera3d, (point, maxDistance) => this.launchSystem?.tubeNear(point, maxDistance) ?? null)

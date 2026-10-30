@@ -91,6 +91,19 @@ export function setSeaIceDayOfYear(dayOfYear) {
   }
 }
 
+/** The sea ice concentration (0..1) at the current date at a geodetic latitude and longitude (degrees). */
+export function seaIceConcentrationAt(latDeg, lonDeg) {
+  if (!state.months) return 0
+  const north = latDeg >= 0
+  const r = (90 - Math.abs(latDeg)) * seaIceUniforms.seaIceParams.value.x * Math.PI / 180
+  if (r >= 1) return 0
+  const lon = lonDeg * Math.PI / 180, size = state.size
+  const col = Math.floor((0.5 + 0.5 * r * Math.cos(lon)) * size)
+  const row = Math.floor((0.5 + 0.5 * r * Math.sin(lon)) * size)
+  const data = (north ? seaIceUniforms.seaIceNorth : seaIceUniforms.seaIceSouth).value.image.data
+  return data[Math.min(size - 1, row) * size + Math.min(size - 1, col)] / 255 * seaIceUniforms.seaIceParams.value.y
+}
+
 export function setSeaIceVisible(visible) {
   seaIceUniforms.seaIceParams.value.y = visible ? 1 : 0
 }

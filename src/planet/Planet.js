@@ -399,7 +399,12 @@ export class Planet {
     return this.lod.sampleTerrainHeight(latDeg, lonDeg);
   }
 
-  /** Intersections with the visible surface tiles only, nearest first. */
+  /** See CubedSpherePlanetRenderer.fixedHeightSampler. */
+  fixedHeightSampler(direction, maxLod) {
+    return this.lod.fixedHeightSampler(direction, maxLod);
+  }
+
+    /** Intersections with the visible surface tiles only, nearest first. */
   raycast(raycaster) {
     return this.lod.raycast(raycaster, []);
   }
