@@ -321,6 +321,37 @@ export class ShotController {
     this.setPlayhead(this.videoTimeAt(this.app.clock.time))
   }
 
+  // Sets where the shot ends (at least one frame long).
+  setDuration(videoTime) {
+    const duration = Math.max(1 / this.fps, Math.round(videoTime * this.fps) / this.fps)
+    if (duration === this.shot.output.duration) return
+    this.shot.output.duration = duration
+    this.changed()
+  }
+
+  // Where the shot's start can be moved to (video time, snapped to frames): not before simulated time
+  // 0, not after the first keyframe, and leaving the shot at least a frame long.
+  clampShotStart(videoTime) {
+    let t = Math.max(this.minPlayhead, videoTime)
+    const first = this.keyframes[0]
+    if (first) t = Math.min(t, first.time)
+    t = Math.min(t, this.duration - 1 / this.fps)
+    return Math.round(t * this.fps) / this.fps
+  }
+
+  // Moves the shot's start to video time `videoTime` (which becomes 0). The keyframes, the end and the
+  // playhead keep their simulated moments.
+  moveShotStart(videoTime) {
+    const d = this.clampShotStart(videoTime)
+    if (d === 0) return
+    this.shot.simulation.startTime = this.simTimeAt(d)
+    for (const key of this.keyframes) key.time = Math.round((key.time - d) * 1e9) / 1e9
+    this.shot.output.duration = Math.max(1 / this.fps, this.shot.output.duration - d)
+    this.playhead -= d
+    this.changed()
+    this.setPlayhead(this.playhead)
+  }
+
   setStartToNow() {
     this.setStartTime(this.app.clock.time)
   }

@@ -81,7 +81,7 @@ function secondsText(t) {
   return `${t.toFixed(2)} s`
 }
 
-// The floating panel on the right for setting up and making videos: simulated time, the sun, the
+// The floating panel on the left for setting up and making videos: simulated time, the sun, the
 // camera views, the shot's keyframes and timeline, and video export. It only drives the
 // ShotController (and a few App parameters); it is ordinary page content, so it never appears in
 // recordings, which capture the canvas alone.

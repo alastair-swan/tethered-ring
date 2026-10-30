@@ -69,7 +69,7 @@ The sun is placed from a date: **Day of year** and **Time of day (UTC)** in the 
 
 ## Controls
 
-Mouse: drag to orbit, right-drag to pan, wheel to zoom. The **Controls** panel (top left) holds every parameter, grouped by subsystem; the **Shot & video** panel (right) controls time, the sun, the camera and video making. Press the **Keyboard shortcuts** button for the full list; the most useful keys are:
+Mouse: drag to orbit, right-drag to pan, wheel to zoom. The **Controls** panel (top right) holds every parameter, grouped by subsystem; the **Shot & video** panel (left) controls time, the sun, the camera and video making. Press the **Keyboard shortcuts** button for the full list; the most useful keys are:
 
 | Key | Action |
 |:---:|---|
@@ -92,11 +92,11 @@ Keys are ignored while you are typing in a GUI field.
 
 ## Recording video and repeatable shots
 
-Recording happens entirely in the browser; no tar files, PowerShell or ffmpeg are needed. Everything is in the **Shot & video** panel on the right, and all of it works with the mouse alone. Press **—** to minimise the panel and **🎬 Shots** to bring it back. Nothing in the panel, and nothing drawn to help set up a shot, ever appears in a video: recordings capture only the 3D scene.
+Recording happens entirely in the browser; no tar files, PowerShell or ffmpeg are needed. Everything is in the **Shot & video** panel on the left, and all of it works with the mouse alone. Press **—** to minimise the panel and **🎬 Shots** to bring it back. Nothing in the panel, and nothing drawn to help set up a shot, ever appears in a video: recordings capture only the 3D scene.
 
 ### Time
 
-The playhead is a time in the shot's video, and it drives simulated time: **play**, **pause**, **play backwards**, step by **frames**, choose a **playback speed** (0.1x to 1000x, also for rewinding), or click and drag on the **timeline**. You can type a simulated time or a shot time to jump to. **Previous / Next** and **Jump to…** go to the moments that matter: the launches; or, for the object the selected keyframe follows, a launch's stages (mass driver, ramp, evacuated tube, free flight), a collector-lane vehicle's arrivals and departures at each stop (saying which stops are terminuses), or an elevator car leaving and reaching the ring and the ground. The playhead can run before or after the shot to find the right moment.
+The playhead is a time in the shot's video, and it drives simulated time: **play**, **pause**, **play backwards**, step by **frames**, choose a **playback speed** (0.1x to 1000x, also for rewinding), or use the **timeline**: drag the playhead (or click on the ruler) to move it, drag anywhere else to pan, and use the wheel to zoom. The green handles mark the shot's start and end; drag them to change where it starts and ends (moving the start keeps every keyframe at its simulated moment). You can type a simulated time or a shot time to jump to. **Previous / Next** and **Jump to…** go to the moments that matter: the launches; or, for the object the selected keyframe follows, a launch's stages (mass driver, ramp, evacuated tube, free flight), a collector-lane vehicle's arrivals and departures at each stop (saying which stops are terminuses), or an elevator car leaving and reaching the ring and the ground. The playhead can run before or after the shot to find the right moment.
 
 ### The sun
 

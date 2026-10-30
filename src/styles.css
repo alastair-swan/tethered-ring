@@ -28,7 +28,7 @@ html, body {
 
 .imagery-attribution {
   position: fixed;
-  left: 8px;
+  right: 8px;
   bottom: 6px;
   z-index: 1000;
   padding: 3px 6px;
@@ -67,12 +67,7 @@ html, body {
   white-space: pre-wrap;
 }
 
-/* The parameter panel sits on the left; the shot panel (src/ui/ShotSidebar.js) floats on the right. */
-.lil-gui.autoPlace {
-  right: auto;
-  left: 15px;
-}
-
+/* The shot panel (src/ui/ShotSidebar.js) floats on the left; the parameter panel stays top right. */
 #simContainer canvas.picking {
   cursor: crosshair;
 }
@@ -86,7 +81,7 @@ html, body {
   --ss-accent: #ff7020;
   position: fixed;
   top: 8px;
-  right: 8px;
+  left: 8px;
   bottom: 8px;
   z-index: 1002;
   width: 372px;
@@ -115,7 +110,7 @@ html, body {
 .shot-sidebar-tab {
   position: fixed;
   top: 8px;
-  right: 8px;
+  left: 8px;
   z-index: 1002;
   padding: 6px 10px;
   font: inherit;
@@ -364,7 +359,7 @@ html, body {
 @media (max-width: 600px) {
   .shot-sidebar {
     top: auto;
-    left: 8px;
+    right: 8px;
     width: auto;
     height: 55vh;
   }

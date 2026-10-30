@@ -191,7 +191,7 @@ The pieces:
 | `CameraPath.js` | Interpolation. Every keyframe is resolved to world space at the *current* simulated time, then a Hermite spline with non-uniform Catmull-Rom tangents runs through them. Tangents only use neighbours tied to the same objects. Segments are `direct` (positions on the spline) or `orbit` (the target on the spline, the camera placed by direction and log-distance, the target moving in step with the distance), chosen per keyframe or automatically. |
 | `ShotController.js` | The playhead (video time; drives `SimClock`), play/rewind/speeds, the free and shot-camera views, keyframe editing (changing a keyframe's anchor keeps its view at its own moment), picking objects under the mouse, fixed-step rendering, live takes and files. |
 | `ShotPathOverlay.js` | The free view's drawing of the shot: the camera and target paths (sampled over the shot, each point at its own moment; chunked lines for precision), keyframe markers and a camera gizmo at the playhead. Hidden in the shot camera's view and while recording. |
-| `src/ui/ShotSidebar.js`, `Timeline.js` | The panel on the right. Plain DOM; it only calls the controller (and sets the sun parameters). It is not part of the canvas, so it never appears in recordings. |
+| `src/ui/ShotSidebar.js`, `Timeline.js` | The panel on the left. Plain DOM; it only calls the controller (and sets the sun parameters). It is not part of the canvas, so it never appears in recordings. |
 
 While recording, the path overlay and the tracking markers are hidden, and every frame is rendered at the output size with full quality.
 

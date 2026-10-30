@@ -1,15 +1,20 @@
 // The shot timeline: a ruler in video seconds with the shot's extent, its keyframes and the playhead.
 //
 // Mouse:
-//   click or drag on the ruler   move the playhead (pauses playback)
-//   drag a keyframe              retime it (snaps to frames); a click selects it
-//   wheel                        zoom around the pointer
-//   shift+wheel / drag with the middle button    pan
+//   drag the playhead, or click/drag on the ruler   move the playhead (pauses playback)
+//   drag anywhere else           pan the timeline; a click there moves the playhead
+//   drag a keyframe              retime it (snaps to frames); a click goes to it
+//   drag the green handles       move the shot's start or end (moving the start keeps every
+//                                keyframe at its simulated moment)
+//   wheel                        zoom around the pointer; shift+wheel pans
 // The faint line along the bottom is the time speed (simulated seconds per video second, log scale).
 const HEIGHT = 74
 const RULER = 18
 const KEY_Y = 44
 const KEY_SIZE = 6
+const GRIP_Y = 53 // handles are grabbed below the keyframes
+const GRAB_PX = 6
+const CLICK_PX = 3
 const COLORS = {
   background: '#15171c',
   outside: '#0d0e12',
@@ -20,6 +25,7 @@ const COLORS = {
   selected: '#ff7020',
   playhead: '#ff4050',
   speed: '#40c8ff',
+  handle: '#4cd07a',
 }
 
 export class Timeline {
@@ -65,46 +71,70 @@ export class Timeline {
     return [e.clientX - rect.left, e.clientY - rect.top]
   }
 
+  // What a press at (x, y) grabs: a keyframe, a shot handle, the playhead or (otherwise) the timeline.
+  hit(x, y) {
+    if (y < RULER) return { kind: 'scrub' }
+    const key = this.keyAt(x, y)
+    if (key >= 0) return { kind: 'key', key }
+    if (y >= GRIP_Y) {
+      if (Math.abs(x - this.x(this.shots.duration)) <= GRAB_PX) return { kind: 'end' }
+      if (Math.abs(x - this.x(0)) <= GRAB_PX) return { kind: 'start' }
+    }
+    if (Math.abs(x - this.x(this.shots.playhead)) <= GRAB_PX) return { kind: 'scrub' }
+    return { kind: 'pan' }
+  }
+
   onPointerDown(e) {
     const [x, y] = this.local(e)
     this.canvas.setPointerCapture(e.pointerId)
-    if (e.button === 1 || e.button === 2) {
-      this.drag = { kind: 'pan', x, view: [...this.view] }
-      return
+    const hit = e.button === 0 ? this.hit(x, y) : { kind: 'pan' }
+    this.drag = { ...hit, x, view: [...this.view], moved: false, button: e.button }
+    if (hit.kind === 'key') this.shots.selectKeyframe(hit.key)
+    else if (hit.kind === 'scrub') {
+      this.shots.pause()
+      this.shots.setPlayhead(this.t(x))
     }
-    const key = this.keyAt(x, y)
-    if (key >= 0) {
-      this.shots.selectKeyframe(key)
-      this.drag = { kind: 'key', key, x, moved: false }
-      return
-    }
-    this.shots.pause()
-    this.drag = { kind: 'scrub' }
-    this.shots.setPlayhead(this.t(x))
+    else if (hit.kind === 'pan') this.canvas.style.cursor = 'grabbing'
   }
 
   onPointerMove(e) {
     const [x, y] = this.local(e)
-    if (!this.drag) {
-      this.canvas.style.cursor = this.keyAt(x, y) >= 0 ? 'ew-resize' : 'pointer'
+    const drag = this.drag
+    if (!drag) {
+      const kind = this.hit(x, y).kind
+      this.canvas.style.cursor = kind === 'pan' ? 'grab' : kind === 'scrub' ? 'col-resize' : 'ew-resize'
       return
     }
-    if (this.drag.kind === 'scrub') this.shots.setPlayhead(this.t(x))
-    else if (this.drag.kind === 'pan') {
-      const dt = (x - this.drag.x) / this.width * (this.drag.view[1] - this.drag.view[0])
-      this.view = [this.drag.view[0] - dt, this.drag.view[1] - dt]
+    if (!drag.moved && Math.abs(x - drag.x) <= CLICK_PX) return
+    drag.moved = true
+    const t = this.t(x)
+    if (drag.kind === 'scrub') this.shots.setPlayhead(t)
+    else if (drag.kind === 'pan') {
+      const dt = (x - drag.x) / this.width * (drag.view[1] - drag.view[0])
+      this.view = [drag.view[0] - dt, drag.view[1] - dt]
     }
-    else if (this.drag.kind === 'key' && (this.drag.moved || Math.abs(x - this.drag.x) > 3)) {
-      this.drag.moved = true
-      this.shots.moveKeyframe(this.shots.selected, this.t(x))
+    else if (drag.kind === 'key') this.shots.moveKeyframe(this.shots.selected, t)
+    else if (drag.kind === 'end') this.shots.setDuration(t)
+    else if (drag.kind === 'start') {
+      drag.start = this.shots.clampShotStart(t)
+      this.lastDraw = ''
     }
   }
 
   onPointerUp(e) {
     const drag = this.drag
     this.drag = null
-    if (drag?.kind === 'key' && !drag.moved) this.shots.goToKeyframe(drag.key)
     this.canvas.releasePointerCapture?.(e.pointerId)
+    if (!drag) return
+    const [x] = this.local(e)
+    if (drag.kind === 'key' && !drag.moved) this.shots.goToKeyframe(drag.key)
+    else if (drag.kind === 'start' && drag.moved && drag.start !== undefined) this.shots.moveShotStart(drag.start)
+    else if (drag.kind === 'pan' && !drag.moved && drag.button === 0) {
+      this.shots.pause()
+      this.shots.setPlayhead(this.t(x))
+    }
+    this.canvas.style.cursor = drag.kind === 'pan' ? 'grab' : this.canvas.style.cursor
+    this.lastDraw = ''
   }
 
   onWheel(e) {
@@ -126,21 +156,27 @@ export class Timeline {
   // Redraws when anything shown has changed. Called every animation frame while visible.
   draw() {
     const shots = this.shots
-    if (!this.view || this.fittedDuration !== shots.duration) {
-      this.fit()
+    if (!this.view) this.fit()
+    // Show the whole shot when its end grows out of view (not while a handle is being dragged).
+    if (!this.drag && this.fittedDuration !== shots.duration) {
+      if (shots.duration > this.view[1] && !(this.fittedDuration > this.view[1])) this.fit()
       this.fittedDuration = shots.duration
     }
-    // Keep the playhead in view (unless it is being dragged).
-    if (!this.drag) {
+    // Bring the playhead back into view when it moves out of it (playing or jumping), but not when
+    // the timeline has been panned away from it.
+    if (!this.drag && shots.playhead !== this.lastPlayhead) {
       const span = this.view[1] - this.view[0]
-      if (shots.playhead > this.view[1] || shots.playhead < this.view[0]) {
+      const outside = shots.playhead > this.view[1] || shots.playhead < this.view[0]
+      const wasInside = this.lastPlayhead === undefined || (this.lastPlayhead >= this.view[0] && this.lastPlayhead <= this.view[1])
+      if (outside && (wasInside || !shots.playing)) {
         if (shots.playhead >= 0 && shots.playhead <= shots.duration) this.fit()
         else this.view = [shots.playhead - 0.1 * span, shots.playhead + 0.9 * span]
       }
+      this.lastPlayhead = shots.playhead
     }
     const ratio = window.devicePixelRatio || 1
     const width = this.width
-    const signature = [width, ratio, this.view, shots.playhead, shots.revision, shots.selected].join('|')
+    const signature = [width, ratio, this.view, shots.playhead, shots.revision, shots.selected, this.drag?.start].join('|')
     if (signature === this.lastDraw) return
     this.lastDraw = signature
     const canvas = this.canvas
@@ -193,6 +229,24 @@ export class Timeline {
       g.stroke()
       g.globalAlpha = 1
     }
+
+    // Shot start and end handles (the start shows where it is being dragged to).
+    const handle = (t, dragged) => {
+      const x = Math.round(this.x(t)) + 0.5
+      g.strokeStyle = COLORS.handle
+      g.fillStyle = COLORS.handle
+      g.globalAlpha = dragged ? 0.6 : 1
+      g.lineWidth = 1.5
+      g.beginPath()
+      g.moveTo(x, RULER)
+      g.lineTo(x, HEIGHT)
+      g.stroke()
+      g.fillRect(x - 4, GRIP_Y + 2, 8, HEIGHT - GRIP_Y - 6)
+      g.globalAlpha = 1
+    }
+    const startDrag = this.drag?.kind === 'start' && this.drag.start !== undefined ? this.drag.start : null
+    handle(startDrag ?? 0, startDrag !== null)
+    handle(shots.duration, false)
 
     // Keyframes
     keys.forEach((k, i) => {
