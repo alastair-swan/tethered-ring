@@ -552,7 +552,7 @@ def _write_viz_tile(root: Path, face: str, lod: int, tx: int, ty: int,
     out_height.mkdir(parents=True, exist_ok=True)
 
     png_path = out_color / f'{ty}.png'
-    Image.fromarray(color_rgb, mode='RGB').save(png_path)
+    Image.fromarray(color_rgb).save(png_path)
     ktx2_path = out_color / f'{ty}.ktx2'
     encoded_ktx2 = False
     if g.try_encode_ktx2(png_path, ktx2_path):

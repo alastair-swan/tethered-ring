@@ -72,13 +72,13 @@ def pixel_range_for_bounds(
 def bilinear_resize(src: np.ndarray, out_h: int, out_w: int) -> np.ndarray:
     # Lightweight bilinear resize using Pillow for robustness.
     valid = np.nan_to_num(src, nan=0.0)
-    img = Image.fromarray(valid, mode="F")
+    img = Image.fromarray(valid)
     img = img.resize((out_w, out_h), resample=Image.BILINEAR)
     out = np.array(img, dtype=np.float32)
 
     if np.isnan(src).any():
         mask = (~np.isnan(src)).astype(np.float32)
-        m = Image.fromarray(mask, mode="F").resize((out_w, out_h), resample=Image.BILINEAR)
+        m = Image.fromarray(mask).resize((out_w, out_h), resample=Image.BILINEAR)
         m_arr = np.array(m, dtype=np.float32)
         out[m_arr < 0.5] = np.nan
     return out
@@ -128,10 +128,10 @@ def build_displacement_tile(
         # Legacy XHR convention. This saturates above 5653.5 m and therefore must
         # not be used for very high peaks such as Chimborazo.
         encoded = np.clip(9000.0 + 10.0 * canvas, 0.0, 65535.0).astype(np.uint16)
-        Image.fromarray(encoded, mode="I;16").save(out_path)
+        Image.fromarray(encoded).save(out_path)
     else:
         # Preserve real elevation meters without the legacy uint16 bias ceiling.
-        Image.fromarray(canvas.astype(np.float32), mode="F").save(out_path)
+        Image.fromarray(canvas.astype(np.float32)).save(out_path)
 
 
 if __name__ == "__main__":

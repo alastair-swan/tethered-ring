@@ -150,7 +150,7 @@ def reproject_mercator_to_equirectangular(
         sampled = blended_y[x0, :] * one_minus_wx[:, None] + blended_y[x1, :] * wx[:, None]
         out[row, :, :] = np.clip(sampled, 0.0, 255.0).astype(np.uint8)
 
-    return Image.fromarray(out, mode="RGB")
+    return Image.fromarray(out)
 
 
 def fetch_xyz_mosaic(

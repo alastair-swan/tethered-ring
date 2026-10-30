@@ -70,7 +70,7 @@ def prepare_sources(root: Path) -> tuple[Path, Path]:
         print('[moon] converting LOLA heights from kilometers to meters')
         kilometers = np.asarray(Image.open(height_km), dtype=np.float32)
         meters = np.ascontiguousarray(kilometers * 1000.0)
-        Image.fromarray(meters, mode='F').save(height_m, compression='tiff_lzw')
+        Image.fromarray(meters).save(height_m, compression='tiff_lzw')
         del kilometers, meters
 
     return color, height_m
@@ -124,7 +124,7 @@ def prepare_region_sources(
         with Image.open(height_global) as image:
             cropped = _crop_equirectangular(image, exact_bbox)
             meters = np.asarray(cropped, dtype=np.float32).copy() * 1000.0
-            Image.fromarray(meters, mode='F').save(height_crop, compression='tiff_lzw')
+            Image.fromarray(meters).save(height_crop, compression='tiff_lzw')
 
     return color_crop, height_crop, exact_bbox
 

@@ -557,7 +557,7 @@ def build_tile_assets(face: str, lod: int, tile_x: int, tile_y: int, color_size:
     height_dir.mkdir(parents=True, exist_ok=True)
 
     png_path = color_dir / f'{tile_y}.png'
-    Image.fromarray(color_tile, mode='RGB').save(png_path, quality=95)
+    Image.fromarray(color_tile).save(png_path, quality=95)
 
     encoded_ktx2 = False
     color_file = png_path
