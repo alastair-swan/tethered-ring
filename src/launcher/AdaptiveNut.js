@@ -164,15 +164,19 @@ export class adaptiveNutModel {
     }
     for (const g of Object.values(hardwareGeometries)) g.userData.shared = true // used by every pooled nut
 
-    // Pad geometry for each grappler at the start of the screws (regenerated per speed while running).
+    // Pad geometry for each grappler where the thread begins (regenerated per speed while running), with
+    // the screw's thread layout: the starts it has there (the starts parameter may be 0, for its default)
+    // and where the thread starts (before that the screw is a plain shaft, with no pitch to shape a pad to).
     const templatePads = []
     {
-      const info = makeGrapplerPlacementInfo(dParamWithUnits, 0, grapplerLength, numGrapplers, 0)
+      const layout = tram.screwThreadLayout(dParamWithUnits)
+      const templateDistance = Number.isFinite(layout.threadStartDistance) ? Math.max(0, layout.threadStartDistance) : 0
+      const info = makeGrapplerPlacementInfo(dParamWithUnits, layout, templateDistance, grapplerLength, numGrapplers, 0)
       const firstGrapplerDistance = (bodyLength-grapplerLength) / 2
       for (let i = 0; i < numGrapplers; i++) {
         const distance = firstGrapplerDistance + i * grapplerLength / numGrapplers
         info.generatePlacementInfo(distance, 1)
-        templatePads.push(makeGrapplerGeometry(dParamWithUnits, 0, grapplerLength, numGrapplers, distance, info.offset))
+        templatePads.push(makeGrapplerGeometry(dParamWithUnits, layout, templateDistance, grapplerLength, numGrapplers, info.threadStarts, distance, info.offset))
       }
     }
 
@@ -250,23 +254,24 @@ export class adaptiveNutModel {
   }
 }
 
-function makeGrapplerPlacementInfo(dParamWithUnits, distanceToSledAft, grapplerLength, numGrapplers, additionalRotation) {
+function makeGrapplerPlacementInfo(dParamWithUnits, layout, distanceToSledAft, grapplerLength, numGrapplers, additionalRotation) {
   const p = (name) => dParamWithUnits[name].value
   return new SledGrapplerPlacementInfo(
     p('launcherMassDriverScrewShaftOuterRadius'), p('launcherMassDriverScrewThreadRadius'), p('launcherMassDriverScrewThreadThickness'),
-    p('launcherMassDriverScrewThreadStarts'), p('launcherMassDriverScrewRevolutionsPerSecond'), p('launcherMassDriverForwardAcceleration'),
+    layout.startsAt, p('launcherMassDriverScrewRevolutionsPerSecond'), p('launcherMassDriverForwardAcceleration'),
     p('launcherMassDriver1InitialVelocity'), p('adaptiveNutBodyLength') / 2, distanceToSledAft, grapplerLength, numGrapplers,
     p('adaptiveNutGrapplerMagnetThickness'), p('adaptiveNutBetweenGrapplerFactor'), p('adaptiveNutShaftToGrapplerPad'), additionalRotation,
-    p('adaptiveNutGrapplerMaxRangeOfMotion'), p('adaptiveNutGrapplerTopDeadCenterRotation'), virtualAdaptiveNut.minMaxArray)
+    p('adaptiveNutGrapplerMaxRangeOfMotion'), p('adaptiveNutGrapplerTopDeadCenterRotation'), virtualAdaptiveNut.minMaxArray, layout.threadStartDistance)
 }
 
-function makeGrapplerGeometry(dParamWithUnits, distanceToSledAft, grapplerLength, numGrapplers, grapplerDistance, offset) {
+function makeGrapplerGeometry(dParamWithUnits, layout, distanceToSledAft, grapplerLength, numGrapplers, threadStarts, grapplerDistance, offset) {
   const p = (name) => dParamWithUnits[name].value
   return new SledGrapplerGeometry(
     p('launcherMassDriverScrewShaftOuterRadius'), p('launcherMassDriverScrewThreadRadius'), p('launcherMassDriverScrewThreadThickness'),
-    p('launcherMassDriverScrewThreadStarts'), p('launcherMassDriverScrewRevolutionsPerSecond'), p('launcherMassDriverForwardAcceleration'),
+    threadStarts, p('launcherMassDriverScrewRevolutionsPerSecond'), p('launcherMassDriverForwardAcceleration'),
     p('launcherMassDriver1InitialVelocity'), p('adaptiveNutBodyLength') / 2, distanceToSledAft, grapplerLength, numGrapplers,
-    p('adaptiveNutGrapplerMagnetThickness'), p('adaptiveNutBetweenGrapplerFactor'), p('adaptiveNutShaftToGrapplerPad'), 0, grapplerDistance, offset)
+    p('adaptiveNutGrapplerMagnetThickness'), p('adaptiveNutBetweenGrapplerFactor'), p('adaptiveNutShaftToGrapplerPad'), 0, grapplerDistance, offset,
+    layout.threadStartDistance)
 }
 
 // Grappler pad geometry is regenerated when the nut's speed has changed by this fraction since the
