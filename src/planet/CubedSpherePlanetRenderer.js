@@ -178,6 +178,19 @@ function directionToFaceUV(dir, out) {
   return out;
 }
 
+// The (u,v) of a direction on a given cube face (the same formulas as directionToFaceUV, without
+// choosing the face): for points on a tile's edge, which lie on two faces at a cube seam.
+function directionToUVOnFace(dir, face, out) {
+  const x = dir.x, y = dir.y, z = dir.z;
+  switch (face) {
+    case '+X': case '-X': out.u = -z / x; out.v = face === '+X' ? y / x : -y / x; break;
+    case '+Y': case '-Y': out.u = face === '+Y' ? x / y : -x / y; out.v = -z / y; break;
+    default: out.u = x / z; out.v = face === '+Z' ? y / z : -y / z; break;
+  }
+  out.face = face;
+  return out;
+}
+
 // Intersects a ray from the ellipsoid center along `direction` with an oblate
 // ellipsoid aligned to the Y (polar) axis. Reduces cleanly to a sphere when a==b.
 function rayEllipsoidIntersection(direction, a, b, out) {
@@ -224,29 +237,13 @@ function decodeHeightU16(sample, minMeters, maxMeters) {
 // whose (u,v) parameterization has opposite handedness.
 // -----------------------------------------------------------------------------
 
-// Border vertex indices of a (segments+1)^2 grid tile, per edge, and the indices of their skirt
-// copies, which are appended after the grid in the same edge order.
-function skirtEdges(segments) {
-  const n = segments + 1;
-  const base = n * n;
-  const edges = [
-    Array.from({ length: n }, (_, x) => x),                  // top    (y = 0)
-    Array.from({ length: n }, (_, x) => segments * n + x),   // bottom (y = segments)
-    Array.from({ length: n }, (_, y) => y * n),              // left   (x = 0)
-    Array.from({ length: n }, (_, y) => y * n + segments),   // right  (x = segments)
-  ];
-  return edges.map((border, e) => ({ border, skirt: border.map((_, i) => base + e * n + i) }));
-}
-
 class IndexBufferCache {
   constructor() {
     this.cache = new Map();
   }
 
-  // Grid triangles only (no skirts), used to compute surface normals.
   getGridIndexArray(segments, reversed) {
-    const full = this._getArray(segments, reversed);
-    return full.subarray(0, segments * segments * 6);
+    return this._getArray(segments, reversed);
   }
 
   getIndexAttribute(segments, reversed) {
@@ -277,19 +274,7 @@ class IndexBufferCache {
       }
     }
 
-    // Skirts: one strip per edge joining the border vertices to copies of them pushed down towards
-    // the planet centre (see appendSkirts). Emitted with both windings so they are visible from
-    // either side of whatever gap they cover.
-    for (const edge of skirtEdges(segments)) {
-      for (let i = 0; i < segments; i++) {
-        const a = edge.border[i], b = edge.border[i + 1];
-        const c = edge.skirt[i], d = edge.skirt[i + 1];
-        tri.push(a, b, c, b, d, c, a, c, b, b, c, d);
-      }
-    }
-
-    const maxIndex = vertexCount + 4 * (segments + 1);
-    const array = maxIndex > 65535 ? new Uint32Array(tri) : new Uint16Array(tri);
+    const array = vertexCount > 65535 ? new Uint32Array(tri) : new Uint16Array(tri);
     this.cache.set(key, array);
     return array;
   }
@@ -359,6 +344,8 @@ class Tile {
     // Per-edge coarse-neighbor step [T,B,L,R]. 1 = same/finer (no morph); 2^d = the
     // neighbor is d LODs coarser, so collapse all but every (2^d)th boundary vertex.
     this.edgeSteps = [1, 1, 1, 1];
+    // The coarser visible neighbour across each edge (where edgeSteps > 1), whose heights the edge takes.
+    this.edgeNeighbors = [null, null, null, null];
     // Packed key of edgeSteps used for cheap change detection / rebuild trigger.
     this.edgeMask = 0;
 
@@ -498,8 +485,6 @@ export class CubedSpherePlanetRenderer {
 
     // Caches and scheduling.
     this.indexBufferCache = new IndexBufferCache();
-    this.skirtsVisible = true;
-    this._tmpSkirt = new THREE.Vector3();
     // Tiles that want a load this frame, with priorities computed this frame.
     // Rebuilt every update, so stale priorities and no-longer-wanted tiles
     // never get loaded ahead of what the camera currently needs.
@@ -573,6 +558,8 @@ export class CubedSpherePlanetRenderer {
     this._tmpV2 = new THREE.Vector2();
     this._tmpColor = new THREE.Color();
     this._steps = [1, 1, 1, 1];
+    this._neighbors = [null, null, null, null];
+    this._lastNeighbor = null;
 
     // Shared base material; per-tile clones receive the streamed color map.
     // Material.copy carries side/transparent/opacity/depthWrite, so settings
@@ -1343,8 +1330,6 @@ export class CubedSpherePlanetRenderer {
     this._camDistLocal = this._camLocal.length();
     if (this._camDistLocal > 0) this._camDirLocal.copy(this._camLocal).divideScalar(this._camDistLocal);
 
-    this._updateSkirtVisibility();
-
     this.viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.viewProjection);
 
@@ -1806,6 +1791,32 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     const steps = tile.edgeSteps;
     if (steps[0] > 1 || steps[1] > 1 || steps[2] > 1 || steps[3] > 1) {
       const idx = (x, y) => y * (seg + 1) + x;
+      // The coarse neighbour's own heights at its vertices along the shared edge: this tile's height
+      // data (finer, or from another source) differs there, which would open a crack between the two
+      // tiles. (Neighbours at the same level agree already: their height tiles share their edge samples.)
+      const takeNeighborHeights = (e, xy) => {
+        const n = tile.edgeNeighbors[e];
+        const step = Math.min(steps[e], seg);
+        if (!n || !n.heightSamples || step <= 1 || seg % step !== 0) return;
+        const nSpan = 2 / Math.pow(2, n.lod);
+        for (let i = 0; i <= seg; i += step) {
+          const [x, y] = xy(i);
+          cubeToDirection(tile.face, u0 + tileSpan * x / seg, v0 + tileSpan * y / seg, dir);
+          rayEllipsoidIntersection(dir, this.a, this.b, pos);
+          ellipsoidNormal(pos, this.a, this.b, nor);
+          directionToUVOnFace(dir, n.face, this._tmpFaceUV);
+          const nu = (this._tmpFaceUV.u + 1) / nSpan - n.x, nv = (this._tmpFaceUV.v + 1) / nSpan - n.y;
+          const h = this._sampleHeight(n, nu, nv) * displacementScale;
+          const index = idx(x, y), i3 = index * 3;
+          if (heights) heights[index] = h;
+          pos.addScaledVector(nor, h);
+          positions[i3] = pos.x - cx; positions[i3 + 1] = pos.y - cy; positions[i3 + 2] = pos.z - cz;
+        }
+      };
+      takeNeighborHeights(0, (i) => [i, 0]);
+      takeNeighborHeights(1, (i) => [i, seg]);
+      takeNeighborHeights(2, (i) => [0, i]);
+      takeNeighborHeights(3, (i) => [seg, i]);
       const lerp = (i, a, b, t) => {
         for (const p of seaPositions ? [positions, seaPositions] : [positions]) {
           const i3 = i * 3, a3 = a * 3, b3 = b * 3;
@@ -1837,23 +1848,14 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
 
     // The initial normals describe only the smooth ellipsoid. Recompute them from
     // the displaced triangles so kilometer-scale relief participates in the
-    // same directional lighting as the synthetic fine regolith normals. This is
-    // done on the grid alone so the skirts cannot bend the border normals.
-    const grid = new THREE.BufferGeometry();
-    grid.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    grid.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-    grid.setIndex(new THREE.BufferAttribute(this.indexBufferCache.getGridIndexArray(seg, reversed), 1));
-    grid.computeVertexNormals();
-
+    // same directional lighting as the synthetic fine regolith normals.
     const geometry = new THREE.BufferGeometry();
-    const withSkirts = this._appendSkirts(tile, positions, grid.attributes.normal.array, uvs, seg);
-    geometry.setAttribute('position', new THREE.BufferAttribute(withSkirts.positions, 3));
-    geometry.setAttribute('normal', new THREE.BufferAttribute(withSkirts.normals, 3));
-    geometry.setAttribute('uv', new THREE.BufferAttribute(withSkirts.uvs, 2));
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     geometry.setIndex(this.indexBufferCache.getIndexAttribute(seg, reversed));
-    this._applySkirtDrawRange(geometry);
+    geometry.computeVertexNormals();
     geometry.computeBoundingSphere();
-    grid.dispose();
     geometry.userData.waterGeometry = seaPositions
       ? this._buildWaterGeometry(seaPositions, seaNormals, uvs, heights, seg, reversed)
       : null;
@@ -2121,73 +2123,6 @@ varying vec3 vDaylightUp;`)
     }
   }
 
-  // Skirts are only drawn while the camera is above the terrain. Some scenes put the camera below
-  // the surface (tunnels, underwater launch tubes); from there the tiles' back faces are culled, so
-  // the terrain is see-through, but double-sided skirts would show up as walls along every tile edge.
-  _updateSkirtVisibility() {
-    let underground = false;
-    if (this._camDistLocal > 0) {
-      const surface = rayEllipsoidIntersection(this._camDirLocal, this.a, this.b, this._tmpSkirt);
-      const terrain = this._sampleTerrainHeightAtDirection(this._camDirLocal);
-      const surfaceRadius = surface.length() + (terrain ? terrain.heightMeters : 0);
-      underground = this._camDistLocal < surfaceRadius;
-    }
-    const visible = !underground;
-    if (visible === this.skirtsVisible) return;
-    this.skirtsVisible = visible;
-    for (const tile of this.tiles.values()) {
-      if (tile.geometry) this._applySkirtDrawRange(tile.geometry);
-    }
-  }
-
-  _applySkirtDrawRange(geometry) {
-    const seg = this.segments;
-    geometry.setDrawRange(0, this.skirtsVisible ? Infinity : seg * seg * 6);
-  }
-
-  // Skirts hide the cracks that open between neighbouring tiles whose edges do not match exactly:
-  // different LODs (most visibly while the camera moves and tiles are still being swapped or
-  // edge-morphed), or height samples that differ slightly across tile boundaries. Each border
-  // vertex is duplicated and pushed towards the planet centre; the strip between them is coloured
-  // like the tile edge, so a gap shows terrain colour instead of the atmosphere or space behind.
-  _appendSkirts(tile, positions, normals, uvs, seg) {
-    const n = seg + 1;
-    const gridCount = n * n;
-    const skirtCount = 4 * n;
-    const outPositions = new Float32Array((gridCount + skirtCount) * 3);
-    const outNormals = new Float32Array((gridCount + skirtCount) * 3);
-    const outUvs = new Float32Array((gridCount + skirtCount) * 2);
-    outPositions.set(positions);
-    outNormals.set(normals);
-    outUvs.set(uvs);
-
-    // Deep enough to cover a one-level LOD difference in relief: half a grid segment of this
-    // tile's arc plus the terrain range scaled by the displacement multiplier, capped.
-    const tileArc = (2 / Math.pow(2, tile.lod)) * (Math.PI / 4) * this.meanRadius;
-    const relief = Math.abs(this.heightMaxMeters - this.heightMinMeters) * Math.abs(this.displacementScaleMultiplier);
-    const depth = Math.min(0.5 * tileArc / seg + 0.05 * relief, 50000) + 10;
-
-    const cx = tile.center.x, cy = tile.center.y, cz = tile.center.z;
-    let k = gridCount;
-    for (const edge of skirtEdges(seg)) {
-      for (const v of edge.border) {
-        const v3 = v * 3;
-        const px = positions[v3], py = positions[v3 + 1], pz = positions[v3 + 2];
-        // Radial direction from the planet centre, computed in float64 from absolute coordinates.
-        const ax = px + cx, ay = py + cy, az = pz + cz;
-        const inv = 1 / Math.hypot(ax, ay, az);
-        const k3 = k * 3;
-        outPositions[k3] = px - ax * inv * depth;
-        outPositions[k3 + 1] = py - ay * inv * depth;
-        outPositions[k3 + 2] = pz - az * inv * depth;
-        outNormals[k3] = normals[v3]; outNormals[k3 + 1] = normals[v3 + 1]; outNormals[k3 + 2] = normals[v3 + 2];
-        outUvs[k * 2] = uvs[v * 2]; outUvs[k * 2 + 1] = uvs[v * 2 + 1];
-        k++;
-      }
-    }
-    return { positions: outPositions, normals: outNormals, uvs: outUvs };
-  }
-
   // Determines whether the forward index winding produces inward-facing triangles
   // for this tile (in which case the reversed winding is needed).
   _needsReversedWinding(positions, normals, seg) {
@@ -2330,8 +2265,12 @@ varying vec3 vDaylightUp;`)
     }
     for (let d = 1; tile.lod - d >= this.rootLod; d++) {
       const n = this._getTile(nfaceIndex, tile.lod - d, nx >> d, ny >> d);
-      if (n && n.visibleFrame === this.frame) return 1 << d;
+      if (n && n.visibleFrame === this.frame) {
+        this._lastNeighbor = n;
+        return 1 << d;
+      }
     }
+    this._lastNeighbor = null;
     return 1;
   }
 
@@ -2341,14 +2280,16 @@ varying vec3 vDaylightUp;`)
     const steps = this._steps;
     for (const tile of this.visibleList) {
       if (!tile.ready) continue;
-      steps[0] = this._neighborStep(tile, 0, -1); // T
-      steps[1] = this._neighborStep(tile, 0, 1);  // B
-      steps[2] = this._neighborStep(tile, -1, 0); // L
-      steps[3] = this._neighborStep(tile, 1, 0);  // R
+      const neighbors = this._neighbors;
+      steps[0] = this._neighborStep(tile, 0, -1); neighbors[0] = this._lastNeighbor; // T
+      steps[1] = this._neighborStep(tile, 0, 1);  neighbors[1] = this._lastNeighbor; // B
+      steps[2] = this._neighborStep(tile, -1, 0); neighbors[2] = this._lastNeighbor; // L
+      steps[3] = this._neighborStep(tile, 1, 0);  neighbors[3] = this._lastNeighbor; // R
       const mask = steps[0] | (steps[1] << 5) | (steps[2] << 10) | (steps[3] << 15);
-      if (mask !== tile.edgeMask) {
+      if (mask !== tile.edgeMask || neighbors.some((n, e) => n !== tile.edgeNeighbors[e])) {
         tile.edgeMask = mask;
         tile.edgeSteps = steps.slice();
+        tile.edgeNeighbors = neighbors.slice();
         this._replaceGeometry(tile);
       }
     }
