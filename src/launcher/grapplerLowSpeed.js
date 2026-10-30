@@ -26,16 +26,19 @@ const wrap = (x, m) => x - m * Math.floor(x / m + 0.5)
 // step from which it follows the lattice }.
 export function lowSpeedGrips(plan) {
   const K = plan.lastStep, hop = 2 * plan.half, N = plan.samplesAt(0).length
-  // Opportunities: per grappler, the stretches [from, to] over which a flight is within its travel and it
-  // may grip.
+  // Opportunities: per grappler, the stretches [from, to] over which a flight is within its travel (and it
+  // is over the thread). It can only land where the flights drift past slowly enough (landable), but once
+  // gripping, holds on however fast they go.
   const opportunities = Array.from({ length: N }, () => [])
   const open = Array.from({ length: N }, () => new Map())
+  const landable = Array.from({ length: N }, () => new Uint8Array(K + 1))
   for (let k = 0; k <= K + 1; k++) {
     const samples = k <= K ? plan.samplesAt(k * plan.grid) : null
     for (let i = 0; i < N; i++) {
       const here = new Set()
       const s = samples?.[i]
-      if (s && s.engageable && Math.abs(s.rate * s.n) <= plan.fastestDrift) {
+      if (s && Math.abs(s.rate * s.n) <= plan.fastestDrift) landable[i][k] = 1
+      if (s && s.engageable) {
         const angle = (s.phase + 0.5) / s.n
         for (let m = 0; m < s.n; m++) if (Math.abs(wrap(angle - m / s.n, 1)) <= plan.holdLimit + 1e-9) here.add(Math.round(m / s.n * 1e6))
       }
@@ -53,20 +56,24 @@ export function lowSpeedGrips(plan) {
   for (let k = K; k >= 0; k--) fewestFrom[k] = Math.min(engagedByLattice[k], fewestFrom[k + 1])
   // The layers, built to an horizon that grows until the handover is found within it.
   for (let horizon = Math.min(K, Math.round(10 / plan.grid)); ; horizon = Math.min(K, horizon * 2)) {
-    const result = layersTo(horizon, opportunities, N, K, hop, fewestFrom)
+    const result = layersTo(horizon, opportunities, landable, N, K, hop, fewestFrom)
     if (result || horizon >= K) return result ?? { handover: K + 1, grips: result?.grips ?? Array.from({ length: N }, () => []), joins: new Array(N).fill(K + 1) }
   }
 }
 
-function layersTo(horizon, opportunities, N, K, hop, fewestFrom) {
+function layersTo(horizon, opportunities, landable, N, K, hop, fewestFrom) {
   const busy = Array.from({ length: N }, () => [])
   const freeFor = (i, from, to) => busy[i].every(([a, b]) => to + hop < a || from - hop > b)
-  // The grip that can be under way at grid step k lasting the longest: { i, flight, from, to } or null.
+  // The grip that can start at grid step k lasting the longest: { i, flight, from, to } or null.
   const bestGrip = (k) => {
     let best = null
     for (let i = 0; i < N; i++) {
+      if (!landable[i][k]) continue
       for (const o of opportunities[i]) {
         if (o.from > k || o.to <= k) continue
+        // (One grip per opportunity: a second, before or after one it already has on the flight, would
+        // have it let go of the flight only to take it again.)
+        if (busy[i].some(([a, b, flight]) => Math.abs(flight - o.flight) < 1e-9 && o.from <= a && b <= o.to)) continue
         let to = o.to
         for (const [a] of busy[i]) if (a - hop > k && a - hop - 1 < to) to = a - hop - 1
         if (to <= k || !freeFor(i, k, to)) continue
@@ -84,7 +91,7 @@ function layersTo(horizon, opportunities, N, K, hop, fewestFrom) {
       if (!grip) { k++; continue }
       while (grip) {
         chain.push(grip)
-        busy[grip.i].push([grip.from, grip.to])
+        busy[grip.i].push([grip.from, grip.to, grip.flight])
         if (grip.to >= horizon) { k = horizon; break }
         // The next lands as late as it can while this one still holds.
         let next = null
