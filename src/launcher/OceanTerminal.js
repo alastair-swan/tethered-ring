@@ -213,8 +213,7 @@ export class OceanTerminal {
       p.setY(i, shaft.top - (shaft.top - y) * (span - drop) / span)
     }
     p.needsUpdate = true
-    this.shaft.geometry.computeBoundingSphere()
-    this.shaft.geometry.computeVertexNormals()
+    this.shaft.geometry.computeBoundingSphere()   // (its walls are vertical, so their normals stay as they are)
     this.shaft.position.set(-shaft.x, 0, -shaft.z)
 
     // The mooring chains: two from each anchor marker, splayed diagonally out from the ends.
