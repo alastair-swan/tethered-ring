@@ -1983,6 +1983,7 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
       side: THREE.BackSide,
     });
     material.onBeforeCompile = (shader) => {
+      shader.uniforms.seaSlopeVariance = seaWaveUniforms.seaSlopeVariance;
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
 attribute float seaDepth;
@@ -1999,7 +2000,7 @@ ${seaSkyReflectionGlsl}`)
         .replace('#include <opaque_fragment>', `{
   vec3 view = normalize(vViewPosition);
   vec3 up = normalize(vNormal);
-  outgoingLight = mix(diffuseColor.rgb, seaSkyReflection(reflect(-view, up)), seaReflectance(abs(dot(up, view)), length(vViewPosition)));
+  outgoingLight = mix(diffuseColor.rgb, seaSkyReflection(reflect(-view, up), sqrt(seaSlopeVariance)), seaReflectance(abs(dot(up, view))));
 }
 #include <opaque_fragment>`);
     };
@@ -2015,7 +2016,7 @@ ${seaSkyReflectionGlsl}`)
   // - The surface: wind-driven waves (seaWaves.js) that reflect the sky (by Fresnel's law, little when
   //   looked into and nearly all at grazing angles; the sky by the atmosphere's own model) and glint
   //   in the sun (Blinn-Phong, as rough as the waves too fine to draw), with whitecaps in strong wind.
-//   Far from the camera the sky's reflection fades (seaWaves.js: seaReflectance); the glint does not.
+//   On a rough sea the reflection is limited by the waves' slopes (seaWaves.js: seaReflectanceGlsl).
   // Since a glint is far brighter than the water's opacity allows in normal blending, the opacity is
   // raised to at least the brightness, with the colour divided by it: the same result over what is
   // behind, without clamping. Where there is sea ice at the simulated date (seaIce.js), it covers the
@@ -2128,9 +2129,9 @@ material.specularStrength *= 1.0 - seaIce; // ice is matte: no sun glint
 material.specularShininess = clamp(2.0 / (seaUnresolved + 2e-4) - 2.0, 4.0, 8000.0);`)
         .replace('#include <opaque_fragment>', `{
   vec3 view = normalize(vViewPosition);
-  float fresnel = seaReflectance(dot(normal, view), seaViewDistance) * (1.0 - seaIce);
+  float fresnel = seaReflectance(dot(normal, view)) * (1.0 - seaIce);
   vec3 water = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
-  vec3 light = (1.0 - fresnel) * seaWaterAlpha * water + fresnel * seaSkyReflection(reflect(-view, normal)) + reflectedLight.directSpecular;
+  vec3 light = (1.0 - fresnel) * seaWaterAlpha * water + fresnel * seaSkyReflection(reflect(-view, normal), sqrt(seaUnresolved)) + reflectedLight.directSpecular;
   float alpha = (1.0 - fresnel) * seaWaterAlpha + fresnel;
   if (seaFoamCover > 0.0) {
     // White water: matte, lit by the sun and sky (sunAndSkyLight.js) and the night light.
@@ -2138,7 +2139,7 @@ material.specularShininess = clamp(2.0 / (seaUnresolved + 2e-4) - 2.0, 4.0, 8000
     #if NUM_DIR_LIGHTS > 0
       irradiance += slDirect * directionalLights[0].color * max(dot(normal, directionalLights[0].direction), 0.0);
     #endif
-    light = mix(light, 0.75 * RECIPROCAL_PI * irradiance, seaFoamCover);
+    light = mix(light, 0.6 * RECIPROCAL_PI * irradiance, seaFoamCover);
     alpha = mix(alpha, 1.0, seaFoamCover);
   }
   light *= 1.0 - seaImageryLand;

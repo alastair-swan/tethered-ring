@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { ecefToGeodetic } from '../physics/geodesy.js'
 import { fbmGlsl, noiseOffsets, SEA_SURFACE_FREQUENCIES, seaSurfaceLookGlsl } from './seaNoise.js'
 import { SeaDarkening } from './seaDarkening.js'
-import { seaSkyReflectionGlsl } from './seaWaves.js'
+import { seaSkyReflectionGlsl, seaWaveUniforms } from './seaWaves.js'
 import '../scene/sunAndSkyLight.js' // registers <sun_and_sky_light>, which seaSkyReflectionGlsl uses
 import { WaterFog } from './waterFog.js'
 
@@ -71,6 +71,7 @@ export class Ocean {
     this.material.onBeforeCompile = (shader) => {
       shader.uniforms.seaRippleOffset = { value: this.rippleOffsets }
       shader.uniforms.seaUndersideOpaque = this.opaque
+      shader.uniforms.seaSlopeVariance = seaWaveUniforms.seaSlopeVariance
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
 varying vec3 vSeaLocal;
@@ -107,7 +108,7 @@ ${seaSkyReflectionGlsl}`)
 if (seaUndersideOpaque > 0.5) {
   vec3 view = normalize(vSeaView);
   vec3 up = normalize(vSeaNormal);
-  outgoingLight = mix(outgoingLight, seaSkyReflection(reflect(-view, up)), seaReflectance(abs(dot(up, view)), length(vSeaView)));
+  outgoingLight = mix(outgoingLight, seaSkyReflection(reflect(-view, up), sqrt(seaSlopeVariance)), seaReflectance(abs(dot(up, view))));
 }
 #include <opaque_fragment>`)
     }

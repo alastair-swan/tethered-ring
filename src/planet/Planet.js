@@ -4,7 +4,7 @@ import { loadSeaIce, setSeaIceDayOfYear, setSeaIceVisible } from './seaIce.js';
 import atmosphereVertexShader from '../shaders/atmosphere.vert.glsl?raw';
 import atmosphereFragmentShader from '../shaders/atmosphere.frag.glsl?raw';
 import './aerialPerspective.js'; // registers <atmosphere_common>
-import { SEA_REFLECTION_DEFINES, updateSeaWaves } from './seaWaves.js';
+import { seaWaveUniforms, updateSeaWaves } from './seaWaves.js';
 
 // Top of the atmosphere shell above sea level (m), where the sky's scattering stops. High enough that
 // the air left above it would not show: a line of sight grazing the top crosses ~1100 km of air at
@@ -242,8 +242,9 @@ export class Planet {
       new THREE.SphereGeometry(1, 256, 128),
       new THREE.ShaderMaterial({
         // (The sea it draws near the horizon reflects the sky as the sea surface does: seaWaves.js.)
-        uniforms: this.atmosphereUniforms,
-        defines: planetSpec.hasOcean === true ? { ...SEA_REFLECTION_DEFINES } : {},
+        // (The sea it draws near the horizon reflects the sky as the sea surface does: seaWaves.js.)
+        uniforms: { ...this.atmosphereUniforms, seaSlopeVariance: seaWaveUniforms.seaSlopeVariance },
+        defines: planetSpec.hasOcean === true ? { SEA_REFLECTION: '' } : {},
         vertexShader: atmosphereVertexShader,
         fragmentShader: atmosphereFragmentShader,
         side: THREE.BackSide,

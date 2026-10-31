@@ -16,6 +16,9 @@ uniform vec4 atmoCamera;   // xyz: stretched camera position relative to the pla
 uniform vec4 atmoPole;     // xyz: polar axis (world); w: a/b - 1
 uniform vec4 atmoParams;   // x: |C'|^2 - a^2 (ground); y: exposure; z: a (m); w: top radius (m)
 uniform vec3 atmoSun;      // direction to the sun (world)
+#ifdef SEA_REFLECTION
+uniform float seaSlopeVariance; // the sea's mean square slope (src/planet/seaWaves.js)
+#endif
 varying vec3 vWorldPosition;
 
 const float sunCosRadius = 0.999989;           // cos(0.27 degrees)
@@ -56,18 +59,18 @@ void main() {
     vec3 up = normalize(hit);
     float lit = smoothstep(-0.1, 0.1, dot(up, atmoSun));
     vec3 sea = GROUND_COLOR * lit;
-  #ifdef SEA_REFLECTION_NEAR
-    // The sea reflects the sky, by Fresnel's law, fading with distance, as the sea surface does
-    // (src/planet/seaWaves.js, seaReflectance), which is most of what it shows near the horizon.
-    vec3 r = reflect(d, up);
+  #ifdef SEA_REFLECTION
+    // The sea reflects the sky, by Fresnel's law averaged over its slopes, as the sea surface does
+    // (src/planet/seaWaves.js, seaReflectanceGlsl).
+    vec3 r = normalize(reflect(d, up) + 2.0 * sqrt(seaSlopeVariance) * up);
     r = normalize(r + max(0.02 - dot(r, up), 0.0) * up);
     vec3 rs = r + atmoPole.w * dot(r, atmoPole.xyz) * atmoPole.xyz;
     float r0, r1;
     if (atmoRoots(dot(rs, rs), dot(hit, rs), dot(hit, hit) - atmoParams.w * atmoParams.w, r0, r1)) {
       vec3 skyLight, skyTransmittance;
       atmoScatter(hit, rs, r, max(r0, 0.0), r1, atmoSun, a, 6, skyLight, skyTransmittance);
-      float fresnel = (0.02 + 0.98 * pow(1.0 - abs(dot(d, up)), 5.0))
-        * mix(1.0, SEA_REFLECTION_FAR_SHARE, smoothstep(SEA_REFLECTION_NEAR, SEA_REFLECTION_FAR, g0));
+      float facing = sqrt(min(dot(d, up) * dot(d, up) + seaSlopeVariance, 1.0));
+      float fresnel = 0.02 + 0.98 * pow(1.0 - facing, 5.0);
       sea = mix(sea, 1.0 - exp(-skyLight), fresnel);
     }
   #endif

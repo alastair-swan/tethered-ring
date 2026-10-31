@@ -42,7 +42,7 @@ const GUSTED_WAVELENGTH = 2
 const SWELL_SLOPE = 0.02 // RMS slope of the swell
 // Gust and whitecap patches: noise frequencies (1/m), and how long each pattern lasts (s).
 export const GUST_FREQUENCIES = [1 / 400, 1 / 150]
-export const FOAM_FREQUENCIES = [1 / 6, 1 / 2.2, 1 / 0.8]
+export const FOAM_FREQUENCIES = [1 / 3, 1 / 1.2, 1 / 0.45]
 const GUST_SECONDS = 25
 const FOAM_SECONDS = 5
 const FOAM_NOISE_SD = 0.247 // of the 3-octave noise (seaNoise.js fbm)
@@ -86,18 +86,11 @@ export const seaWaveUniforms = {
   seaWavePhase: { value: new Float32Array(WAVE_COUNT) },
   seaBandSlope: { value: new Float32Array(WAVE_BANDS) },
   seaWind: { value: new THREE.Vector4(1, 0, 0, 0) },        // xyz: where the wind blows to (renderer frame); w: speed (m/s)
-  seaFoam: { value: new THREE.Vector4(10, 0, 0, 0) },       // x: noise threshold; y: coverage; z: pattern cross-fade
+  seaFoam: { value: new THREE.Vector4(0, 0, 0, 0) },        // x: the noise's SD; y: coverage; z: pattern cross-fade
   seaFoamSlice: { value: [new THREE.Vector3(), new THREE.Vector3()] },
   seaGust: { value: new THREE.Vector4(0, 0, 0, 0) },        // z: pattern cross-fade
   seaGustSlice: { value: [new THREE.Vector3(), new THREE.Vector3()] },
-}
-
-// The standard normal quantile (Abramowitz and Stegun 26.2.23), for 0 < p < 1.
-function probit(p) {
-  const q = p < 0.5 ? p : 1 - p
-  const t = Math.sqrt(-2 * Math.log(q))
-  const x = t - (2.515517 + 0.802853 * t + 0.010328 * t * t) / (1 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t)
-  return p < 0.5 ? -x : x
+  seaSlopeVariance: { value: 0.03 },                        // the sea's mean square slope (see seaReflectanceGlsl)
 }
 
 // A whole-lattice offset for pattern number n (so the noise stays seamless across tiles).
@@ -124,9 +117,10 @@ export function updateSeaWaves(t, direction, speed) {
     const swell = b < 2 ? SWELL_SLOPE * SWELL_SLOPE / 2 : 0
     u.seaBandSlope.value[b] = Math.sqrt(mss * w / total + swell)
   })
+  u.seaSlopeVariance.value = mss + SWELL_SLOPE * SWELL_SLOPE
   u.seaWind.value.set(direction.x, direction.y, direction.z, speed)
   const coverage = speed > 3.5 ? Math.min(0.2, 3.84e-6 * Math.pow(speed, 3.41)) : 0
-  u.seaFoam.value.set(coverage > 0 ? FOAM_NOISE_SD * probit(1 - coverage) : 10, coverage, 0, 0)
+  u.seaFoam.value.set(FOAM_NOISE_SD, coverage, 0, 0)
   for (const [vec, slices, seconds] of [[u.seaFoam.value, u.seaFoamSlice.value, FOAM_SECONDS], [u.seaGust.value, u.seaGustSlice.value, GUST_SECONDS]]) {
     const n = Math.floor(t / seconds)
     const f = t / seconds - n
@@ -136,31 +130,36 @@ export function updateSeaWaves(t, direction, speed) {
   }
 }
 
-// The sky's reflection in the sea is full out to the first distance (m) from the camera and falls to
-// SKY_REFLECTION_FAR of it by the second, so that from afar the sea keeps the imagery's colour (and its
-// coastline, drawn from the imagery's coarse pixels, does not stand out).
-const SKY_REFLECTION_RANGE = [4000, 30000]
-const SKY_REFLECTION_FAR = 0.15
-// The same for the sea the sky shader draws near the horizon (atmosphere.frag.glsl), as defines.
-export const SEA_REFLECTION_DEFINES = {
-  SEA_REFLECTION_NEAR: SKY_REFLECTION_RANGE[0].toFixed(1),
-  SEA_REFLECTION_FAR: SKY_REFLECTION_RANGE[1].toFixed(1),
-  SEA_REFLECTION_FAR_SHARE: SKY_REFLECTION_FAR.toFixed(2),
+// How much sky a rough sea reflects. A wave face tilted away from the viewer would reflect nearly all
+// of the sky at a grazing angle, but on a rough sea those faces are hidden behind the ones tilted
+// towards the viewer, which are seen less obliquely: averaged over the sea's slopes, the angle the
+// surface is seen at is about acos(sqrt(cos^2 + mean square slope)), so the reflectance near the
+// horizon is about 30% in a moderate breeze, and more only when it is calm. Those faces also reflect
+// sky from higher up, which is darker and bluer than at the horizon. GLSL, with seaWaveUniforms'
+// seaSlopeVariance (the sea's mean square slope).
+export const seaReflectanceGlsl = `
+uniform float seaSlopeVariance;
+
+// The share of the sky reflected, seen at |cos| facing of the angle to the (drawn) normal.
+float seaReflectance(float facing) {
+  float c = sqrt(min(facing * facing + seaSlopeVariance, 1.0));
+  return 0.02 + 0.98 * pow(1.0 - c, 5.0);
 }
+`
 
 // GLSL for lit materials (after their lights pars chunk, with vViewPosition declared):
-// seaSkyReflection(r), the sky seen in direction r (view space), and seaReflectance(cosine, distance),
-// the share of it the water reflects (Fresnel, with the fade above).
-export const seaSkyReflectionGlsl = `
+// seaSkyReflection(r, rough), the sky seen in direction r (view space), tilted up by rough (the RMS
+// slope of the waves not drawn there), and seaReflectance (above).
+export const seaSkyReflectionGlsl = seaReflectanceGlsl + `
 // The sky seen from this point in direction r (view space), as the sky is drawn (atmosphereCommon.glsl,
 // with sunAndSkyLight.js's uniforms). Reflections that dip below the horizon (off the back of a wave)
 // see the sky just above it.
-vec3 seaSkyReflection(vec3 r) {
+vec3 seaSkyReflection(vec3 r, float rough) {
   if (slParams.x < 0.5 || slParams.y < 0.5) return vec3(0.0);
   vec3 o = (vec4(-vViewPosition, 0.0) * viewMatrix).xyz;
   vec3 p = slCamera.xyz + o + slPole.w * dot(o, slPole.xyz) * slPole.xyz;
   vec3 up = normalize(p);
-  vec3 d = (vec4(r, 0.0) * viewMatrix).xyz;
+  vec3 d = normalize((vec4(r, 0.0) * viewMatrix).xyz + 2.0 * rough * up);
   d = normalize(d + max(0.02 - dot(d, up), 0.0) * up);
   vec3 ds = d + slPole.w * dot(d, slPole.xyz) * slPole.xyz;
   float top = slParams.z + 100000.0;
@@ -169,11 +168,6 @@ vec3 seaSkyReflection(vec3 r) {
   vec3 light, transmittance;
   atmoScatter(p, ds, d, max(t0, 0.0), t1, slSun, slParams.z, 6, light, transmittance);
   return 1.0 - exp(-light);
-}
-
-float seaReflectance(float facing, float viewDistance) {
-  return (0.02 + 0.98 * pow(1.0 - clamp(facing, 0.0, 1.0), 5.0))
-    * mix(1.0, ${SKY_REFLECTION_FAR.toFixed(2)}, smoothstep(${SKY_REFLECTION_RANGE[0].toFixed(1)}, ${SKY_REFLECTION_RANGE[1].toFixed(1)}, viewDistance));
 }
 `
 
@@ -276,8 +270,13 @@ vec3 seaWaveSlope(vec3 local, vec3 up, float gust, out float unresolved) {
 // Whitecap cover (0..1) at a point, given the gust factor; footprint: the size of a pixel there (m).
 float seaWhitecaps(vec3 local, float viewDistance, float gust, float footprint) {
   if (seaFoam.y <= 0.0) return 0.0;
-  float coverage = clamp(seaFoam.y * gust * gust, 0.0, 0.5);
-  float pattern = smoothstep(seaFoam.x / gust, seaFoam.x / gust + 0.12, seaFoamSliced(local, viewDistance, seaFoamSlice, seaFoam.z));
+  float coverage = clamp(seaFoam.y * gust, 0.0, 0.2);
+  // The noise is close to normal: the threshold that leaves the coverage above it (the normal
+  // quantile, Abramowitz and Stegun 26.2.23), with soft, lacy edges below a dense core.
+  float t = sqrt(-2.0 * log(coverage));
+  float threshold = seaFoam.x * (t - (2.515517 + 0.802853 * t + 0.010328 * t * t) / (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t));
+  float n = seaFoamSliced(local, viewDistance, seaFoamSlice, seaFoam.z);
+  float pattern = smoothstep(threshold - 0.05, threshold + 0.25, n) * 0.85;
   // Too small to see: their average cover.
   return mix(pattern, coverage, smoothstep(0.5, 3.0, footprint));
 }
