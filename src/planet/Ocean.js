@@ -93,8 +93,8 @@ export class Ocean {
     const geometry = discGeometry()
     // Seen from below (back faces), lit by the daylight coming through it rather than shaded: inside
     // Snell's window mostly clear, with the same ripples as the surface seen from above; outside it a
-    // mirror of the water (see undersideGlsl). (A lit material only for the sky's uniforms, used from
-    // above: its colour is not shaded.)
+    // mirror of the water (see undersideGlsl). (Lit materials only for the sky's uniforms, used from
+    // above by the mirror mesh below: their colour is not shaded.)
     this.material = new THREE.MeshLambertMaterial({
       color: UNDERSIDE_COLOR, transparent: true, depthWrite: false, side: THREE.BackSide,
     })
@@ -112,7 +112,9 @@ export class Ocean {
     // Outside Snell's window the underside is opaque, and this copy of the disc draws that part of it in
     // the opaque pass, writing depth, so that it hides what is above the surface there even if that is
     // drawn after the translucent disc (e.g. the tube, or lines drawn late). The translucent disc draws
-    // over it in the same colour.
+    // over it in the same colour. From above the sea it is the whole disc, as an opaque backstop (see
+    // update). (Two meshes rather than one material switched between opaque and translucent, which
+    // three.js compiles as two programs: a stall when the camera first crosses the surface.)
     this.mirrorMaterial = new THREE.MeshLambertMaterial({ color: UNDERSIDE_COLOR, side: THREE.BackSide })
     this.mirrorMaterial.onBeforeCompile = (shader) => this.patchShader(shader, true)
     this.mirrorMaterial.customProgramCacheKey = () => 'seaUndersideMirror'
@@ -214,18 +216,15 @@ if (seaUndersideOpaque > 0.5) {
     SeaDarkening.update(above, _camera, this.ellipsoid, this.parent.getWorldQuaternion(_quaternion))
 
     // The disc is the sea's underside: seen from under the surface, rippled and translucent within
-    // Snell's window and a mirror of the water outside it (the mirror mesh); from above, an opaque backstop for rays that dip under the surface and would come back out of it
-    // beyond the horizon (the Earth curves away), so the sky never shows through the sea.
-    this.mesh.visible = true
-    this.mirror.visible = !above
+    // Snell's window (the translucent mesh, drawn after the translucent things it covers) and a mirror of
+    // the water outside it (the mirror mesh, opaque); from above, an opaque backstop (the mirror mesh
+    // alone) for rays that dip under the surface and would come back out of it beyond the horizon (the
+    // Earth curves away), so the sky never shows through the sea. Being opaque and drawn in the opaque
+    // pass, it is in place before anything translucent in front of it (e.g. the cable lines) is blended
+    // over it; otherwise they would blend with the sky behind it and glow against the dark water.
+    this.mesh.visible = !above
+    this.mirror.visible = true
     this.opaque.value = above ? 1 : 0
-    // As a backstop it is opaque and drawn in the opaque pass, so it is in place before anything
-    // translucent in front of it (e.g. the cable lines) is blended over it; otherwise they would blend
-    // with the sky behind it and glow against the dark water. As the underside seen from below it is
-    // translucent and drawn after the translucent things it covers.
-    this.material.transparent = !above
-    this.material.depthWrite = above
-    this.mesh.renderOrder = above ? 0 : 2
     // Rebuild only when the camera has moved by a noticeable fraction of its height above the sea
     // (the innermost ring is 5% of it), has crossed the surface, or the visibility has changed.
     const height = Math.abs(geo.alt)
