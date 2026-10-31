@@ -5,6 +5,7 @@ import { googleEarthStudioProvidedBackground } from './googleEarthStudioProvided
 import { toMarsFromEarthLauncherArchitecture } from './toAFromBLauncherArchitecture.js'
 import { toVenusFromEarthLauncherArchitecture } from './toVenusFromEarthLauncherArchitecture.js'
 import { toMarsFromMoonLauncherArchitecture } from './toAFromBLauncherArchitecture.js'
+import { grapplerSequencingModes } from '../params/parameterDefinitions.js'
 
 export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
 
@@ -157,7 +158,10 @@ export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
   //launchSledUpwardsOffset
   //launchSledForwardsOffset
   //launchSledNumModels
-  
+  //guidParamWithUnits['adaptiveNutGrapplerSequencingMode'].value = grapplerSequencingModes.Original
+  guidParamWithUnits['adaptiveNutGrapplerSequencingMode'].value = grapplerSequencingModes.OriginalConstantRate
+  //guidParamWithUnits['adaptiveNutGrapplerSequencingMode'].value = grapplerSequencingModes.Scheduled
+
   //guidParamWithUnits['launcherMassDriverScrewRotationRate'].value = 200
 
   // Grappler Parameters
@@ -223,24 +227,24 @@ export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
   nonGUIParams['planet2StartupChart'] = true
 
   // Bright reference marker centered 200 m above Chimborazo's 6,263 m summit.
-  nonGUIParams['debugGeodeticMarkers'] = [
-    {
-      name: 'Chimborazo peak',
-      lat: -1.4693,
-      lon: -78.8171,
-      altitude: 6263,
-      radius: 100,
-      color: 0xff00ff
-    },
-    {
-      name: 'Mauna Kea peak',
-      lat: 19.8207,
-      lon: -155.4680,
-      altitude: 10405,
-      radius: 5000,
-      color: 0x00ffff
-    }
-  ]
+  // nonGUIParams['debugGeodeticMarkers'] = [
+  //   {
+  //     name: 'Chimborazo peak',
+  //     lat: -1.4693,
+  //     lon: -78.8171,
+  //     altitude: 6263,
+  //     radius: 100,
+  //     color: 0xff00ff
+  //   },
+  //   {
+  //     name: 'Mauna Kea peak',
+  //     lat: 19.8207,
+  //     lon: -155.4680,
+  //     altitude: 10405,
+  //     radius: 5000,
+  //     color: 0x00ffff
+  //   }
+  // ]
 
   // Keep base LOD responsive while still allowing detail refinement.
   nonGUIParams['tileSegments'] = 24

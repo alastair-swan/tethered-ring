@@ -5,8 +5,7 @@ import * as tram from '../utils/tram.js'
 import { quaternionFromFrame } from '../curves/SuperCurves.js'
 import { MovingVirtualObject, curveFrameAtTime, parameterSignature } from './VirtualObject.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
-import { scheduledGrapplerPose } from './grapplerSwitchover.js'
-import { GrapplerSchedule, effectivePhase } from './grapplerSchedule.js'
+import { grapplerPose, followingAngle, GrapplerSchedule, effectivePhase } from './grapplerPlacement.js'
 
 const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
 const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
@@ -24,8 +23,7 @@ const INNER_MIDDLE_OUTER = [
 const HARDWARE_PARTS = ['pivot', 'post', 'strut', 'cylinder']
 // Pixel-size LOD thresholds, measured on the nut's width.
 // A grappler's angle (radians, from the middle of its travel, fixed to the nut, within [-pi, pi)) if
-// following the nearest flight, from its placement info.
-const followingAngle = (info) => ((info.offset.θ + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI
+// following the nearest flight, comes from followingAngle in grapplerPlacement.js.
 
 const PADS_MIN_PIXELS = 6       // pads are ~1 px across here
 const HARDWARE_MIN_PIXELS = 60  // ball joints and pistons are a few cm: ~2 px across here
@@ -267,6 +265,11 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     v.launcherMassDriverScrewUpwardsOffset = p('launcherMassDriverScrewUpwardsOffset')
     v.padLiftActuation = p('adaptiveNutGrapplerPadLiftAwayDistance')
     v.switchoverTime = p('adaptiveNutGrapplerSwitchoverTime')
+    // Which algorithm sequences the grapplers (see grapplerPlacement.js), and the 'original' algorithm's
+    // switchover portions.
+    v.sequencingMode = p('adaptiveNutGrapplerSequencingMode')
+    v.padLiftPortion = p('adaptiveNutGrapplerPadLiftAwayPortion')
+    v.padTwistPortion = p('adaptiveNutGrapplerPadTwistPortion')
     v.maxLead = p('adaptiveNutMaxLead')
     v.maxLeadAcceleration = p('adaptiveNutMaxLeadAcceleration') * p('launcherMassDriverForwardAcceleration')
     const r1 = v.launcherMassDriverScrewThreadRadius
@@ -326,7 +329,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
   // behind where the forward acceleration alone would put them.
   static leadTime(timeLaunched, deltaT) {
     const v = virtualAdaptiveNut
-    if (!v.schedules || !v.threadLayout || !(v.maxLeadAcceleration > 0) || !(v.maxLead > 0) || !(v.adaptiveNutNumGrapplers > 0)) return 0
+    if (v.sequencingMode !== 'scheduled' || !v.schedules || !v.threadLayout || !(v.maxLeadAcceleration > 0) || !(v.maxLead > 0) || !(v.adaptiveNutNumGrapplers > 0)) return 0
     const rps = v.screwRevolutionsPerSecond
     const lead = v.gripSchedule((((timeLaunched * rps) % 1) + 1) % 1).leadAt(deltaT)
     if (lead === 0) return 0
@@ -431,18 +434,20 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     const speed = Math.sqrt(Math.max(1, initialVelocity**2 + 2 * acceleration * Math.max(0, distanceToSledAft)))
     const info = makeInfo(distanceToSledAft, additionalRotation)
     info.nutSpeed = speed
-    const schedule = v.gripSchedule((((this.timeLaunched * screwRevolutionsPerSecond) % 1) + 1) % 1)
+    const schedule = v.sequencingMode === 'scheduled'
+      ? v.gripSchedule((((this.timeLaunched * screwRevolutionsPerSecond) % 1) + 1) % 1)
+      : null
     const grapplerOffset = []
     const grapplerPoses = []
     const grapplerThreadPitch = []
     const grapplerThreadStarts = []
     for (let i = 0, grapplerDistance = firstGrapplerDistance; i<numGrapplers; i++, grapplerDistance += grapplerSpacing) {
       info.generatePlacementInfo(grapplerDistance, v.adaptiveNutGrapplerRangeFactor)
-      // Which flight it grips, or where it is in a hop between them (grapplerSchedule.js,
-      // grapplerSwitchover.js); off the screws, parked.
+      // Which flight it grips, or where it is in a hop between them (grapplerPlacement.js selects the
+      // sequencing algorithm); off the screws, parked.
       info.alpha = followingAngle(info)
       grapplerPoses[i] = onScrews
-        ? scheduledGrapplerPose(schedule, i, deltaT, info, v.switchoverTime, {})
+        ? grapplerPose(v.sequencingMode, { info, i, deltaT, schedule, switchoverTime: v.switchoverTime, padLiftPortion: v.padLiftPortion, padTwistPortion: v.padTwistPortion }, {})
         : { lift: 1, raise: 1, neutral: 1, alpha: 0, attached: false }
       grapplerOffset[i] = info.offset
       grapplerThreadPitch[i] = info.threadPitch
