@@ -1,0 +1,109 @@
+import * as THREE from 'three'
+import { hash } from '../../physics/weatherNoise.js'
+
+// Tileable 3D noise textures for the clouds' shapes, made once (deterministically) at start-up:
+//   shape (SHAPE_SIZE^3): R Perlin-Worley (billowy fractal noise, its gaps carved by Worley noise),
+//     G, B, A Worley noise at 4, 8 and 16 cells across the tile, for eroding it at finer scales;
+//   detail (DETAIL_SIZE^3): R, G, B Worley noise at 4, 8 and 16 cells, for wispy edges.
+// Worley noise here is 1 - the distance to the nearest of one random point per cell (so it is high in
+// the cells' middles: puffs, not cracks). Both wrap, so the renderer tiles them over the planet.
+
+const SHAPE_SIZE = 64
+const DETAIL_SIZE = 32
+const QUANTILES = 32
+
+// Worley noise (1 - nearest distance, in cell units, clamped) with `cells` cells across the tile.
+function worley(x, y, z, cells, seed) {
+  const px = x * cells, py = y * cells, pz = z * cells
+  const cx = Math.floor(px), cy = Math.floor(py), cz = Math.floor(pz)
+  let best = 9
+  for (let dz = -1; dz <= 1; dz++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const ix = cx + dx, iy = cy + dy, iz = cz + dz
+        const wx = ((ix % cells) + cells) % cells, wy = ((iy % cells) + cells) % cells, wz = ((iz % cells) + cells) % cells
+        const fx = ix + hash(wx, wy, wz, seed), fy = iy + hash(wx, wy, wz, seed + 1), fz = iz + hash(wx, wy, wz, seed + 2)
+        const d = (fx - px) ** 2 + (fy - py) ** 2 + (fz - pz) ** 2
+        if (d < best) best = d
+      }
+    }
+  }
+  return 1 - Math.min(1, Math.sqrt(best))
+}
+
+const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10)
+
+// Gradient (Perlin) noise in about [-1, 1] with `cells` cells across the tile.
+function perlin(x, y, z, cells, seed) {
+  const px = x * cells, py = y * cells, pz = z * cells
+  const cx = Math.floor(px), cy = Math.floor(py), cz = Math.floor(pz)
+  const fx = px - cx, fy = py - cy, fz = pz - cz
+  let sum = 0
+  for (let k = 0; k < 8; k++) {
+    const dx = k & 1, dy = (k >> 1) & 1, dz = k >> 2
+    const ix = (((cx + dx) % cells) + cells) % cells, iy = (((cy + dy) % cells) + cells) % cells, iz = (((cz + dz) % cells) + cells) % cells
+    // A gradient from the 12 edge directions of a cube.
+    const g = Math.floor(hash(ix, iy, iz, seed) * 12)
+    const gx = g < 4 ? (g & 1 ? -1 : 1) : g < 8 ? 0 : (g & 1 ? -1 : 1)
+    const gy = g < 4 ? (g & 2 ? -1 : 1) : g < 8 ? (g & 1 ? -1 : 1) : 0
+    const gz = g < 4 ? 0 : g < 8 ? (g & 2 ? -1 : 1) : (g & 2 ? -1 : 1)
+    const dot = gx * (fx - dx) + gy * (fy - dy) + gz * (fz - dz)
+    sum += (dx ? fade(fx) : 1 - fade(fx)) * (dy ? fade(fy) : 1 - fade(fy)) * (dz ? fade(fz) : 1 - fade(fz)) * dot
+  }
+  return sum * 1.5
+}
+
+const remap = (v, a, b, c, d) => c + (v - a) / (b - a) * (d - c)
+
+function texture3d(size, fill) {
+  const data = new Uint8Array(size * size * size * 4)
+  for (let z = 0; z < size; z++) {
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const o = ((z * size + y) * size + x) * 4
+        const v = fill((x + 0.5) / size, (y + 0.5) / size, (z + 0.5) / size)
+        for (let c = 0; c < 4; c++) data[o + c] = Math.round(Math.min(1, Math.max(0, v[c] ?? 0)) * 255)
+      }
+    }
+  }
+  const t = new THREE.Data3DTexture(data, size, size, size)
+  t.format = THREE.RGBAFormat
+  t.minFilter = t.magFilter = THREE.LinearFilter
+  t.wrapS = t.wrapT = t.wrapR = THREE.RepeatWrapping
+  t.generateMipmaps = false
+  t.needsUpdate = true
+  return t
+}
+
+let cached = null
+
+/** The clouds' noise textures ({ shape, detail, shapeStats: the shape value's mean and quantiles }), made on first use. */
+export function cloudNoiseTextures() {
+  if (cached) return cached
+  const shape = texture3d(SHAPE_SIZE, (x, y, z) => {
+    let p = 0, amplitude = 1, total = 0
+    for (let o = 0; o < 4; o++) {
+      p += amplitude * perlin(x, y, z, 4 << o, 100 + o)
+      total += amplitude
+      amplitude *= 0.5
+    }
+    p = p / total * 0.5 + 0.5
+    const w = [worley(x, y, z, 4, 10), worley(x, y, z, 8, 20), worley(x, y, z, 16, 30)]
+    const wFbm = w[0] * 0.625 + w[1] * 0.25 + w[2] * 0.125
+    return [remap(p, wFbm - 1, 1, 0, 1), w[0], w[1], w[2]]
+  })
+  const detail = texture3d(DETAIL_SIZE, (x, y, z) => [worley(x, y, z, 4, 40), worley(x, y, z, 8, 50), worley(x, y, z, 16, 60), 1])
+  // The distribution of the shape value the renderer uses (R remapped by the Worley octaves), so a
+  // cover can be turned into the threshold that leaves that fraction cloudy.
+  const d = shape.image.data
+  const values = new Float32Array(d.length / 4)
+  for (let i = 0; i < values.length; i++) {
+    const r = d[i * 4] / 255, fbm = (d[i * 4 + 1] * 0.625 + d[i * 4 + 2] * 0.25 + d[i * 4 + 3] * 0.125) / 255
+    values[i] = remap(r, fbm - 1, 1, 0, 1)
+  }
+  values.sort()
+  const mean = values.reduce((s, v) => s + v, 0) / values.length
+  const quantiles = Array.from({ length: QUANTILES + 1 }, (_, i) => values[Math.min(values.length - 1, Math.round(i / QUANTILES * (values.length - 1)))])
+  cached = { shape, detail, shapeStats: { mean, quantiles } }
+  return cached
+}

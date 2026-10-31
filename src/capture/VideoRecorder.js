@@ -4,7 +4,9 @@
 //
 // Output is written straight to disk when the File System Access API is available (Chrome/Edge),
 // which keeps multi-gigabyte high-bitrate recordings out of memory. Other browsers buffer the file in
-// memory and download it when recording finishes.
+// memory and download it when recording finishes. A caller can also hand in its own WritableStream
+// (`writable`): the render queue writes into a chosen folder that way, and the command-line renderer
+// streams the file out of the browser.
 import {
   Output,
   Mp4OutputFormat,
@@ -99,8 +101,10 @@ function downloadBlob(blob, fileName) {
 }
 
 export class VideoRecorder {
-  // options: { canvas, width, height, fps, codec, container, bitrate, fileName, saveToDisk }
-  // codec must already be resolved with resolveCodec(); container is 'mp4' or 'mkv'.
+  // options: { canvas, width, height, fps, codec, container, bitrate, fileName, saveToDisk, writable }
+  // codec must already be resolved with resolveCodec(); container is 'mp4' or 'mkv'. `writable`
+  // (optional) is a WritableStream taking mediabunny's { type: 'write', data, position } chunks, such
+  // as a FileSystemWritableFileStream: the file goes there, without a save dialog.
   constructor(options) {
     this.options = { ...options }
     this.frameCount = 0
@@ -119,7 +123,11 @@ export class VideoRecorder {
   // directly from the click handler: browsers only show the dialog during a user gesture.
   // Returns false if the user cancelled the dialog.
   async prepareTarget() {
-    const { container, saveToDisk } = this.options
+    const { container, saveToDisk, writable } = this.options
+    if (writable) {
+      this.fileTarget = { target: new StreamTarget(writable, { chunked: true }), writable, name: this.fileName }
+      return true
+    }
     if (!saveToDisk || typeof window.showSaveFilePicker !== 'function') return true
     try {
       this.fileTarget = await openFileTarget(this.fileName, container)

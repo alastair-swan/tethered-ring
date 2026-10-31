@@ -153,10 +153,10 @@ class SledGrapplerPlacementInfo {
 
     const rotations = this.additionalRotation + this.revolutionsPerSecond * time
     // How fast this grappler's thread phase drifts (rotations per second) as the nut moves on at
-    // nutSpeed (the additional rotation is the screw's turning: revolutionsPerSecond).
-    const rateStep = 1e-3
-    const later = threadTime(this.distanceToSledAft + gPlus + shift + this.nutSpeed * rateStep, this.initialVelocity, this.initialDistance, this.acceleration)
-    this.rotationRate = this.revolutionsPerSecond * (1 + (later - time) / rateStep)
+    // nutSpeed (the additional rotation is the screw's turning: revolutionsPerSecond). Exactly: the
+    // thread time changes by 1 / threadSpeed per metre. (A finite difference here is out by about
+    // acceleration * step / (2 * speed), as large as the drift itself at the fast end.)
+    this.rotationRate = this.revolutionsPerSecond * (1 + this.nutSpeed / Math.min(-1e-9, rateOfChangeInForwardDisplacement))
     // Calculate the maximum theoretical value for rotationAwayFromMidPoint
     const maxRotationAwayFromMidPoint = 0.5 / threadStarts
 

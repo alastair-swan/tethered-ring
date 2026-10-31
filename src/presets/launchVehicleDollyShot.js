@@ -3,8 +3,8 @@ import { setAllShowsToFalse } from "./cameraShotHelperFunctions.js"
 import { planetSetup } from './planetSetup.js'
 
 export function launchVehicleDollyShot(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the new_zealand regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'new_zealand'] })
+  // Near the new_zealand regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['new_zealand'] })
 
   setAllShowsToFalse(guidParamWithUnits)
   guidParamWithUnits['showLogo'].value = true // It will automatically turn off later to indicate that the launch delay timer is about to expire...

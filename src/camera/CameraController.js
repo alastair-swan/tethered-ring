@@ -10,7 +10,8 @@ const _q = new THREE.Quaternion()
 
 // Everything that moves the camera: orbit controls, object tracking, tweened moves, the zoom/climb
 // animations and the follow-elevator/transit modes. All motion is driven by simulated time so it
-// behaves identically in real time and in fixed-step recording.
+// behaves identically in real time and in fixed-step recording, except that tweened moves keep
+// going while the simulation is paused (see tweenClockMs).
 //
 // The orbit controls are a modified copy of three's OrbitControls with an `upDirection`, so the
 // camera can orbit around a local vertical anywhere on the planet instead of the world Y axis.
@@ -26,6 +27,11 @@ export class CameraController {
     this.tweens = new TWEEN.Group()
     this.tweeningTime = 2000 // ms
     this.tweeningActive = false
+    // Clock for tweened moves (number keys, P, ...). It follows simulated time while that moves (so a
+    // live take records a move at the shot's pace), wall-clock time while paused, and never runs
+    // backwards, so a move still completes while the shot playhead is paused, rewinding or jumped.
+    this.tweenClockMs = 0
+    this.lastWallMs = null
 
     this.controls = new OrbitControls(camera, domElement)
     this.controls.enableDamping = true
@@ -120,15 +126,15 @@ export class CameraController {
   }
 
   // Smoothly moves the orbit target to `point`, re-orienting "up" to the local vertical.
-  tweenTo(point, simTimeMs = this.simTimeMs ?? 0) {
+  tweenTo(point, startMs = this.tweenClockMs) {
     if (!point) return
     const c = this.controls
     const up = this.lockUpToRingAxis ? this.ringAxis.clone() : point.clone().normalize()
     this.tweeningActive = true
-    new TWEEN.Tween(c.target, this.tweens).to(point.clone(), this.tweeningTime).start(simTimeMs).onComplete(() => { this.tweeningActive = false })
+    new TWEEN.Tween(c.target, this.tweens).to(point.clone(), this.tweeningTime).start(startMs).onComplete(() => { this.tweeningActive = false })
     if (!this.stationaryTracking) {
-      new TWEEN.Tween(c.upDirection, this.tweens).to(up, this.tweeningTime).start(simTimeMs)
-      new TWEEN.Tween(this.camera.up, this.tweens).to(up.clone(), this.tweeningTime).start(simTimeMs)
+      new TWEEN.Tween(c.upDirection, this.tweens).to(up, this.tweeningTime).start(startMs)
+      new TWEEN.Tween(this.camera.up, this.tweens).to(up.clone(), this.tweeningTime).start(startMs)
     }
   }
 
@@ -180,7 +186,10 @@ export class CameraController {
   // ---- Per-frame update ----------------------------------------------------------------------
 
   update(simTime, dt) {
-    this.simTimeMs = simTime * 1000
+    const wallMs = performance.now()
+    const wallDt = this.lastWallMs === null ? 0 : Math.min(0.1, Math.max(0, (wallMs - this.lastWallMs) / 1000))
+    this.lastWallMs = wallMs
+    this.tweenClockMs += 1000 * (dt !== 0 ? Math.abs(dt) : wallDt)
     const c = this.controls
     if (this.playbackActive) {
       this.updateClippingPlanes()
@@ -216,7 +225,7 @@ export class CameraController {
       c.target.applyAxisAngle(this.followTransitAxis, angle)
     }
 
-    this.tweens.update(this.simTimeMs)
+    this.tweens.update(this.tweenClockMs)
     c.update()
     this.updateClippingPlanes()
   }

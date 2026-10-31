@@ -103,6 +103,7 @@ export class virtualMassDriverRail extends VirtualObject {
   static unallocatedModels = []
   static className = 'virtualMassDriverRails'
   static modelsAreRecyleable = false  // each rail segment is built for its own stretch of the curve
+  static highlightClass = 'massDriver'
   static isDynamic = false
 
   static isTeardownRequired(dParamWithUnits) {

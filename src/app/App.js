@@ -17,9 +17,20 @@ import { SubPixelFade } from '../scene/SubPixelFade.js'
 import { Ocean } from '../planet/Ocean.js'
 import { MooringCables } from '../launcher/MooringCables.js'
 import { StructureLines } from '../scene/structureLines.js'
+import { Highlights } from '../scene/Highlights.js'
 import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
 import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
+import { Sailboats } from '../scene/Sailboats.js'
+import { Clouds } from '../planet/clouds/Clouds.js'
+import { ViewStatus, applyViewState } from '../ui/ViewStatus.js'
+import { setWeatherDate, windAt } from '../scene/seaPlacement.js'
+import { ContainerShips } from '../scene/ContainerShips.js'
+import { OceanTerminal } from '../launcher/OceanTerminal.js'
+
+// The Earth's global tile sets the A/B control switches between (folders under assets/; see docs/ASSETS.md).
+const EARTH_TILE_SETS = { 'Blue Marble, GMTED/GEBCO (earth_hires)': 'earth_hires', 'Original (earth)': 'earth' }
+import { AerialPerspective } from '../planet/aerialPerspective.js'
 import { RingAssembly } from './RingAssembly.js'
 import { transitSystem } from '../transit/transitsystems.js'
 import * as Launcher from '../launcher/launcher.js'
@@ -34,30 +45,37 @@ import { ILLUSTRATION_SETTINGS } from './illustrationSettings.js'
 import { downloadText, specsCsv } from './exports.js'
 import * as kmlutils from '../export/kmlutils.js'
 import { ShotController } from '../shots/ShotController.js'
+import { ShotSidebar } from '../ui/ShotSidebar.js'
 import cameraPresets from '../data/cameraPresets.json' with { type: 'json' }
 import { placeAtHeightInRingPlane } from '../ring/ringGeometry.js'
+import { standInScene, warmPrograms } from '../scene/precompile.js'
 import mountainList from '../data/mountainList.json' with { type: 'json' }
 import googleEarthProjectFile from '../data/googleEarthStudioSampleProjectFile.json' with { type: 'json' }
 
 const LOGO_DURATION = 20 // s of simulated time before the logo hides and preset start actions run
 const RING_RAISE_RATE = 0.25 // fraction of full raise per second (R/L keys)
 const TUBE_DEPLOY_RATE = 0.0025 // fraction per second
+const PRECOMPILE_INTERVAL = 120 // frames between background compiles of new shader programs (precompileShaders)
 
 // The application: builds the scene from the selected preset, owns the per-frame update, and
 // exposes the actions used by the GUI and keyboard shortcuts.
 //
 // Frame structure (see frame()):
-//   clock.tick() -> step(dt): advance animations at clock.time -> render()
+//   shots.tick() (the shot playhead moves the clock) -> step(dt): advance animations at clock.time -> render()
 // Recording and shot playback drive step()/render() themselves with a fixed time step.
 const _sunDirection = new THREE.Vector3()
+const _seaCamera = new THREE.Vector3()
+const _seaWind = new THREE.Vector3()
 const _sunPlanet = new THREE.Vector3()
 const _sunWorld = new THREE.Vector3()
 const _sunTarget = new THREE.Vector3()
 
 export class App {
-  constructor(container, { presetId, enableVR = false, quality } = {}) {
+  constructor(container, { presetId, enableVR = false, quality, antialias = true, view = null } = {}) {
+    this.initialView = view
     this.container = container
     this.enableVR = enableVR
+    this.antialias = antialias
     this.presetId = findPreset(presetId) ? presetId : DEFAULT_PRESET_ID
     this.clock = new SimClock()
     this.specs = {}
@@ -88,10 +106,13 @@ export class App {
     await this.loadBackgroundImage()
     this.buildGui()
     this.shots = new ShotController(this)
-    this.shots.buildGui(this.gui.gui)
+    this.sidebar = new ShotSidebar(this)
     this.installInput()
     this.quality.apply()
     window.addEventListener('resize', () => this.onResize())
+    this.viewStatus = new ViewStatus(this, this.presetParameters)
+    this.viewStatus.setVisible(this.d.showViewStatus.value)
+    if (this.initialView) applyViewState(this, this.initialView)
     await this.shots.resumePendingShot()
     return this
   }
@@ -101,6 +122,8 @@ export class App {
     this.store = new ParameterStore(createParameterDefinitions())
     this.preset = applyPreset(this.presetId, this.store.definitions, this.nonGUIParams)
     this.store.derive()
+    // The parameters as the preset left them, for the view status's list of changes (src/ui/ViewStatus.js).
+    this.presetParameters = this.store.snapshot()
     this.planetSpec = tram.getPlanetSpec(this.store.get('planetName'))
     this.planetRadius = tram.radiusAtLatitude(0, this.planetSpec.ellipsoid)
     this.isLunarSimulation = this.store.get('planetName') === 'Moon'
@@ -111,7 +134,7 @@ export class App {
 
   buildRenderer() {
     const canvas = this.container.querySelector('canvas')
-    this.renderer = createRenderer(canvas, { alpha: this.d.enableBackgroundAlpha.value, enableVR: this.enableVR })
+    this.renderer = createRenderer(canvas, { alpha: this.d.enableBackgroundAlpha.value, enableVR: this.enableVR, antialias: this.antialias })
     this.renderer.setClearColor(0x000000, this.d.enableBackgroundAlpha.value ? 0 : 1)
     this.nonGUIParams.renderer = this.renderer
     this.nonGUIParams.maxTextureAnisotropy = this.renderer.capabilities.getMaxAnisotropy()
@@ -152,6 +175,8 @@ export class App {
     this.overlays.setLogoVisible(this.d.showLogo.value)
     this.overlays.setChartVisible(this.d.showXYChart.value)
     this.overlays.redrawChartFrame()
+    this.highlights = new Highlights()
+    this.highlights.configure(this.d)
 
     this.setImageryAttribution()
     for (const marker of n.debugGeodeticMarkers ?? []) {
@@ -205,7 +230,7 @@ export class App {
       fastCameraSpeed: n.planet2FastCameraSpeed,
       maxLodWhileFast: n.planet2MaxLodWhileFast,
       debugMode: n.planet2DebugMode,
-      // Credits for the planet imagery that loaded (regional tile sets are used only where present).
+      // Credits for the planet imagery on screen.
       onAttribution: (text) => this.setImageryAttribution(text),
     })
     this.planetCoordSys.add(this.planet.surface, this.planet.atmosphere)
@@ -213,6 +238,16 @@ export class App {
     StructureLines.setHaze(this.planet.atmosphereUniforms)
     StructureLines.setGlowDistance(d.structureGlowDistance.value)
     this.planet.setVisible(d.showEarthsSurface.value)
+    this.planet.setSeaIceVisible(d.showSeaIce.value)
+    if (this.planetSpec.name === 'Earth' && this.planetSpec.hasOcean) {
+      this.clouds = new Clouds(this.planet, this.planetCoordSys)
+      this.clouds.enabled = d.showClouds.value
+      this.sailboats = new Sailboats(this.planet, this.planetCoordSys, this.planetSpec.ellipsoid)
+      this.sailboats.setVisible(d.showSailboats.value)
+      if (this.lighting.enableLocalShadows()) this.sailboats.setShadowLight(this.lighting.sunLight)
+      this.containerShips = new ContainerShips(this.planet, this.planetCoordSys, this.planetSpec.ellipsoid)
+      this.containerShips.setVisible(d.showContainerShips.value)
+    }
     this.planet.setAtmosphereVisible(d.showEarthsAtmosphere.value)
     this.ocean = null
     if (this.planetSpec.hasOcean) {
@@ -411,6 +446,12 @@ export class App {
     const qualityChoice = { quality: this.quality.mode }
     const qualityOptions = { 'Auto (adapts resolution)': 'auto', ...Object.fromEntries(Object.entries(QUALITY_PRESETS).map(([k, v]) => [v.label, k])) }
     sceneFolder.add(qualityChoice, 'quality', qualityOptions).name('Graphics quality').onChange((mode) => this.quality.setMode(mode))
+    // Temporary: compares the Earth's two global tile sets from the same view (T switches too).
+    if (this.planetSpec.name === 'Earth') {
+      const planet = this.planet, app = this
+      const choice = { get tiles() { return planet.baseTiles }, set tiles(name) { app.setEarthTiles(name) } }
+      sceneFolder.add(choice, 'tiles', EARTH_TILE_SETS).name('Earth imagery (A/B, T)').listen()
+    }
     const actions = {
       downloadSpecs: () => this.downloadSpecs(),
       downloadKml: () => this.downloadKml(),
@@ -473,6 +514,7 @@ export class App {
       earthEquatorObjectUpdate: () => this.ring.updateMarkers(),
       adjustTetherOpacity: () => this.ring.setTetherUniforms(),
       adjustStructureGlow: visibility((p) => StructureLines.setGlowDistance(p.structureGlowDistance.value)),
+      adjustHighlights: visibility((p) => this.highlights.configure(p)),
       updateXYChart: visibility((p) => this.overlays.setChartVisible(p.showXYChart.value)),
       updateLogoSprite: visibility((p) => this.overlays.setLogoVisible(p.showLogo.value)),
       updateCamerFieldOfView: visibility((p) => { this.camera3d.fov = p.cameraFieldOfView.value; this.camera3d.updateProjectionMatrix() }),
@@ -485,6 +527,12 @@ export class App {
       adjustEarthTextureOpacity: visibility((p) => this.planet.setOpacity(p.earthTextureOpacity.value)),
       adjustEarthSurfaceVisibility: visibility((p) => { this.planet.setVisible(p.showEarthsSurface.value); this.applyOceanSettings(p) }),
       adjustOcean: visibility((p) => this.applyOceanSettings(p)),
+      adjustSeaIce: visibility((p) => this.planet.setSeaIceVisible(p.showSeaIce.value)),
+      adjustSailboats: visibility((p) => this.sailboats?.setVisible(p.showSailboats.value)),
+      adjustClouds: visibility((p) => { if (this.clouds) this.clouds.enabled = p.showClouds.value }),
+      adjustViewStatus: visibility((p) => this.viewStatus?.setVisible(p.showViewStatus.value)),
+      adjustContainerShips: visibility((p) => this.containerShips?.setVisible(p.showContainerShips.value)),
+      adjustOceanTerminal: visibility((p) => this.oceanTerminal?.setVisible(p.showLauncherOceanTerminal.value)),
       adjustEarthAtmosphereVisibility: visibility((p) => this.planet.setAtmosphereVisible(p.showEarthsAtmosphere.value)),
       adjustTerrainExaggeration: visibility((p) => this.planet.setDisplacementScale((this.nonGUIParams.planet2DisplacementScaleMultiplier ?? 1) * p.terrainExaggeration.value)),
       adjustBackgroundOpacity: visibility((p) => this.renderer.setClearAlpha(p.enableBackgroundAlpha.value ? 0 : 1)),
@@ -496,8 +544,8 @@ export class App {
     this.store.derive()
     const handlers = this.parameterHandlers()
     for (const name of ['adjustEarthSurfaceVisibility', 'adjustEarthAtmosphereVisibility', 'adjustEarthTextureOpacity', 'adjustEarthTextureSidedness',
-      'adjustTerrainExaggeration', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
-      'updateOrbitControlsRotateSpeed', 'adjustTetherOpacity', 'adjustStructureGlow', 'adjustBackgroundOpacity']) handlers[name]()
+      'adjustTerrainExaggeration', 'adjustSeaIce', 'adjustSailboats', 'adjustContainerShips', 'adjustClouds', 'adjustOceanTerminal', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
+      'updateOrbitControlsRotateSpeed', 'adjustTetherOpacity', 'adjustStructureGlow', 'adjustHighlights', 'adjustBackgroundOpacity']) handlers[name]()
     this.rebuildRing()
     this.ring.adjustLatLon(0)
     this.gui.refresh()
@@ -507,6 +555,7 @@ export class App {
     const r = this.ring
     this.ecv = new tram.elevatorCarVariables(this.planetSpec, this.d, r.crv)
     this.transitSystem.update(this.d, r.refCoordSys, this.specs, false, r.crv, this.planetRadius, r.mainRingCurve, this.clock.time)
+    this.shots?.onSceneChanged()
   }
 
   updateLauncher() {
@@ -514,6 +563,7 @@ export class App {
     const r = this.ring
     this.launchSystem.update(this.d, this.clock.time, this.planetCoordSys, this.planetSpec, r.refCoordSys, r.mainRingCurve, r.crv, this.specs, false, '')
     this.launchSystem.drawLaunchTrajectoryLine(this.d, this.planetCoordSys)
+    this.shots?.onSceneChanged()
   }
 
   recomputeLaunchTrajectory({ curvesOnly = false } = {}) {
@@ -529,6 +579,7 @@ export class App {
     const kml = this.ring.rebuild({ genSpecs, genKMLFile: genKML })
     this.camera.ringAxis.set(0, 1, 0).applyQuaternion(this.ring.ringToPlanetRotation)
     this.updateTransitSystem()
+    this.shots?.onSceneChanged()
     let launcherKml = ''
     if (this.launchSystem) {
       const r = this.ring
@@ -576,6 +627,18 @@ export class App {
     this.rebuildRing()
   }
 
+  // Switches the Earth's global tile set in place (see Planet.setBaseTiles), for A/B comparisons.
+  setEarthTiles(name) {
+    if (this.planetSpec.name !== 'Earth') return
+    this.planet.setBaseTiles(name)
+    console.info(`[planet] Earth imagery: ${this.planet.baseTiles}`)
+  }
+
+  toggleEarthTiles() {
+    const names = Object.values(EARTH_TILE_SETS)
+    this.setEarthTiles(names[(names.indexOf(this.planet.baseTiles) + 1) % names.length])
+  }
+
   switchPreset(id) {
     const url = new URL(window.location.href)
     url.searchParams.set('preset', id)
@@ -609,8 +672,10 @@ export class App {
 
   frame() {
     if (this.shots.busy) return // a recording/playback loop is driving the frames
-    this.quality.onFrame(performance.now())
-    const dt = this.clock.tick()
+    const now = performance.now()
+    this.quality.onFrame(now)
+    // The shot playhead decides the simulated time (playing, paused, rewinding or scrubbed).
+    const dt = this.shots.tick(now)
     this.step(dt)
     this.render()
   }
@@ -620,6 +685,8 @@ export class App {
     const t = this.clock.time
     const d = this.d
     if (this.vr) this.vr.update()
+    // The shot camera is placed first, so the objects near it get their models in this frame.
+    this.shots.beforeStep()
 
     if (!this.logoTimerDone && t > LOGO_DURATION) {
       this.logoTimerDone = true
@@ -649,6 +716,11 @@ export class App {
     this.camera.playbackActive = this.shots.drivesCamera || googleEarthDrives
     this.camera.update(t, dt)
     this.planet.update(this.camera3d)
+    this.updateSea(t)
+    this.sailboats?.update(t, this.camera3d)
+    this.containerShips?.update(t, this.camera3d)
+    this.updateLauncherTraffic()
+    if (this.sailboats?.shadowFocus) this.lighting.setLocalShadowFocus(this.sailboats.shadowFocus)
     // The water surface follows the camera; under it the view switches to the underwater look (see
     // render()), with the evacuated tube kept dry.
     this.ocean?.update(this.camera3d, (point, maxDistance) => this.launchSystem?.tubeNear(point, maxDistance) ?? null)
@@ -658,6 +730,7 @@ export class App {
     }
     MooringCables.refreshSome()
     this.updateSun()
+    this.updateOceanTerminal(t)
     this.lighting.followCameraTarget(this.camera.controls.target)
 
     if (this.trackPointLogger) {
@@ -689,10 +762,77 @@ export class App {
     this.store.derive()
   }
 
-  // Sun direction for the start date plus the simulated time.
+  // The sea's waves (Planet.updateSea) in the wind at the camera's point on the sea, the same wind the
+  // boats sail in (seaPlacement.windAt).
+  updateSea(t) {
+    if (!this.planetSpec.hasOcean) return
+    const p = this.planetCoordSys.worldToLocal(this.camera3d.getWorldPosition(_seaCamera))
+    const g = tram.ecefToGeodetic(p.x, p.y, p.z, this.planetSpec.ellipsoid)
+    const wind = windAt(g.lat, g.lon)
+    // East and north there, from nearby points (planet axes).
+    const at = (lat, lon) => { const q = tram.geodeticToECEF(lat, lon, 0, this.planetSpec.ellipsoid); return new THREE.Vector3(q.x, q.y, q.z) }
+    const here = at(g.lat, g.lon)
+    const east = at(g.lat, g.lon + 1e-3).sub(here).normalize()
+    const north = at(g.lat + 1e-3, g.lon).sub(here).normalize()
+    _seaWind.copy(east).multiplyScalar(wind.east).addScaledVector(north, wind.north)
+    if (_seaWind.lengthSq() < 1e-12) _seaWind.copy(east)
+    this.planetCoordSys.updateWorldMatrix(true, false)
+    _seaWind.transformDirection(this.planetCoordSys.matrixWorld)
+    this.planet.updateSea(t, _seaWind, wind.speed)
+  }
+
+  // Ships around the launcher, where the scenes look (ContainerShips.setLauncherTraffic), whenever the
+  // launcher's start moves.
+  updateLauncherTraffic() {
+    const start = this.containerShips && this.launchSystem?.startPoint()
+    if (!start || this._launcherTrafficStart?.equals(start)) return
+    this._launcherTrafficStart = start
+    const track = this.launchSystem.pathPoints(1000).map((p) => {
+      const g = tram.ecefToGeodetic(p.x, p.y, p.z, this.planetSpec.ellipsoid)
+      return [g.lat, g.lon, g.alt]
+    })
+    this.containerShips.setLauncherTraffic(track)
+  }
+
+  // The ocean terminal at the launcher's breech, if the breech is under the sea (OceanTerminal.place).
+  updateOceanTerminal(t) {
+    const breech = this.planetSpec.hasOcean && this.d.showLauncherOceanTerminal.value ? this.launchSystem?.startFrame() : null
+    if (!breech) {
+      this.oceanTerminal?.setVisible(false)
+      return
+    }
+    this.oceanTerminal ??= new OceanTerminal({
+      parent: this.planetCoordSys,
+      ellipsoid: this.planetSpec.ellipsoid,
+      sampleHeight: (lat, lon) => this.planet.sampleTerrainHeight(lat, lon),
+      containerShips: this.containerShips ?? null,
+    })
+    this.oceanTerminal.setVisible(true)
+    this.oceanTerminal.setSchedule(this.launchSystem.terminalSchedule())
+    this.oceanTerminal.place(breech)
+    const sun = this.lighting.sunLight
+    _sunDirection.copy(sun.getWorldPosition(_sunDirection)).sub(sun.target.getWorldPosition(_sunTarget))
+    this.oceanTerminal.update(t, this.camera3d, _sunDirection)
+  }
+
+  // Sun direction (and the season, for sea ice) for the start date plus the simulated time. The wind on
+  // the sea is the weather at the start date (seaPlacement.setWeatherDate).
   updateSun() {
-    if (!this.sunFollowsDate) return
+    const startDay = Math.max(1, this.store.get('sunDayOfYear')), startHours = Math.max(0, this.store.get('sunTimeOfDayUTC'))
+    if (setWeatherDate(startDay, startHours)) {
+      this.sailboats?.resetWeather()
+      this.containerShips?.resetWeather()
+      this.launchSystem?.resetWeather()
+    }
     const date = advanceDate(Math.max(1, this.store.get('sunDayOfYear')), Math.max(0, this.store.get('sunTimeOfDayUTC')), this.clock.time)
+    this.clouds?.update(this.renderer, date.dayOfYear, date.utcHours, this.clock.time)
+    // The sea's roughness far away follows the weather map's wind, once it has been drawn.
+    if (this.clouds && !this._seaWindMapSet) {
+      this._seaWindMapSet = true
+      this.planet.setSeaWindMap(this.clouds.weatherMap.textures[1])
+    }
+    this.planet.setDayOfYear(date.dayOfYear + date.utcHours / 24)
+    if (!this.sunFollowsDate) return
     const s = subsolarPoint(date.dayOfYear, date.utcHours)
     const p = tram.geodeticToECEF(s.lat, s.lon, 0, this.planetSpec.ellipsoid)
     _sunPlanet.set(p.x, p.y, p.z).normalize()
@@ -720,6 +860,8 @@ export class App {
 
   render() {
     const renderer = this.renderer
+    this.viewStatus?.update(performance.now())
+    this.shots.overlay.update(this.camera3d)
     PixelLOD.beginFrame(renderer.info.render.frame)
     InstancedProxyPool.syncAll(this.camera3d, PixelLOD.viewportHeight)
     this.ring.update()
@@ -737,6 +879,11 @@ export class App {
     // background is the water colour.
     const underwater = this.ocean?.enabled && this.ocean.cameraUnderSurface
     const atmosphereVisible = this.planet.atmosphere.visible
+    // Haze over everything seen through the air. It lives in the fog code, so the scene needs a fog
+    // (the sea's, or else one of zero density).
+    const haze = this.planetSpec.hasOcean === true && atmosphereVisible && !underwater
+    AerialPerspective.update(haze, this.planet.atmosphereUniforms)
+    if (haze && !this.scene.fog) this.scene.fog = this._hazeFog ??= new THREE.FogExp2(0x000000, 0)
     if (underwater) {
       renderer.getClearColor(this._clearColor ??= new THREE.Color())
       this._clearAlpha = renderer.getClearAlpha()
@@ -751,13 +898,40 @@ export class App {
       renderer.render(this.background.scene, this.background.camera)
       renderer.clearDepth()
     }
+    this.lighting.updateSkyLight(true, this.planet, this.planetSpec.hasOcean === true)
     renderer.render(this.scene, this.camera3d)
+    // (While the sun and sky light is still set up for this camera: the clouds use it.)
+    if (!underwater && atmosphereVisible) {
+      this.clouds?.render(renderer, this.scene, this.camera3d, this.lighting.sunLight.intensity, this.planet.atmosphereUniforms.atmoParams.value.y)
+    }
+    this.lighting.updateSkyLight(false)
     if (underwater) {
       renderer.setClearColor(this._clearColor, this._clearAlpha)
       this.planet.atmosphere.visible = atmosphereVisible
     }
+    // The highlighted classes, over everything (nothing to do while all are off).
+    this.highlights.render(renderer, this.scene, this.camera3d)
     renderer.clearDepth()
     this.overlays.render(renderer)
+    if ((this._framesRendered = (this._framesRendered ?? 0) + 1) % PRECOMPILE_INTERVAL === 1) this.precompileShaders()
+    warmPrograms(renderer)
+  }
+
+  // Compiles the shader programs of new objects in the scene (drawn or not: e.g. the sea surface and the
+  // atmosphere while under the sea), the sky's and the clouds' passes' in the background, so that the
+  // first frame that draws them does not stall (see precompile.js).
+  precompileShaders() {
+    if (this._precompiling) return
+    const seen = (this._precompiled ??= { scene: new Set(), sky: new Set() })
+    const scene = standInScene(this.scene, { seen: seen.scene })
+    const sky = standInScene(this.sky.scene, { seen: seen.sky })
+    this._precompiling = true
+    Promise.all([
+      scene && this.renderer.compileAsync(scene, this.camera3d, this.scene),
+      sky && this.renderer.compileAsync(sky, this.sky.camera, this.sky.scene),
+      this.clouds?.compileAsync(this.renderer, this.scene, this.camera3d),
+    ]).catch((error) => console.warn('[app] precompiling shaders failed', error))
+      .finally(() => { this._precompiling = false })
   }
 
   // Sets the drawing-buffer size. `css` keeps the canvas filling its container while recording at
@@ -795,6 +969,12 @@ export class App {
       width = image.naturalWidth
       height = image.naturalHeight
     }
+    // The shot camera's view is framed like the video (the canvas letterboxes it, see styles.css).
+    const aspect = this.shots?.previewAspect
+    if (aspect) {
+      if (width / height > aspect) width = Math.round(height * aspect)
+      else height = Math.round(width / aspect)
+    }
     this.setRenderSize(width, height)
   }
 
@@ -803,7 +983,7 @@ export class App {
   // ------------------------------------------------------------------------------------------
 
   togglePause() {
-    this.clock.paused = !this.clock.paused
+    this.shots.togglePlay()
   }
 
   orbitPlanetCentre() {

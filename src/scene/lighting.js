@@ -1,20 +1,38 @@
 import * as THREE from 'three'
+import { SunAndSkyLight } from './sunAndSkyLight.js'
 
 // How far out the (directional) sun light is placed; only its direction matters.
 const SUN_DISTANCE = 1e9
+// Local shadows (enableLocalShadows): the shadow frustum's half-width and how far towards the sun its
+// camera is placed (m).
+const LOCAL_SHADOW_EXTENT = 40
+const LOCAL_SHADOW_DISTANCE = 200
+// The sun's irradiance above the atmosphere: pi lights a level surface under an overhead sun to its full
+// albedo (three.js divides diffuse light by pi).
+const SUN_INTENSITY = Math.PI
+// The ambient light, which sunAndSkyLight.js adds to the sky's: a little moonlight-coloured light so
+// things stay visible at night.
+const NIGHT_LIGHT_INTENSITY = 0.15
+const NIGHT_LIGHT_COLOR = 0xb0c4ff
 
-// Sun and ambient light. When a preset enables surface shadows, the directional light gets a small,
+// Sun and ambient light. The sun is dimmed by the air and shadowed by the planet, and the sky and the
+// ground add their own light, per fragment (sunAndSkyLight.js, while updateSkyLight has it active); the
+// ambient light is only what is left at night. When a preset enables surface shadows, the directional light gets a small,
 // dense shadow frustum that is re-centred on the camera target every frame (see updateShadowFocus);
 // a planet-sized shadow map would be far too coarse for metre-scale vehicles.
 export class Lighting {
   constructor(scene, planetCoordSys, nonGUIParams, planetRadius, renderer) {
-    this.sunLight = new THREE.DirectionalLight(0xffffff, nonGUIParams.sunLightIntensity ?? 1)
+    this.sunLight = new THREE.DirectionalLight(0xffffff, nonGUIParams.sunLightIntensity ?? SUN_INTENSITY)
     this.sunLight.name = 'sunlight'
     if (nonGUIParams.sunLightPosition) this.sunLight.position.copy(nonGUIParams.sunLightPosition)
     else this.sunLight.position.set(0, -6 * planetRadius / 8, -20 * planetRadius / 8)
 
     this.shadowTarget = null
     this.shadowDirection = new THREE.Vector3()
+    this.renderer = renderer
+    this.localShadows = false
+    this.localFocus = new THREE.Vector3()
+    this.sunDirection = this.sunLight.position.clone().normalize() // towards the sun (world axes)
     this._focus = new THREE.Vector3()
     this.planetCoordSys = planetCoordSys
 
@@ -45,9 +63,18 @@ export class Lighting {
       scene.add(this.sunLight)
     }
 
-    this.ambientLight = new THREE.AmbientLight(0xffffff, nonGUIParams.ambientLightIntensity ?? 2)
+    this.ambientLight = new THREE.AmbientLight(NIGHT_LIGHT_COLOR, nonGUIParams.ambientLightIntensity ?? NIGHT_LIGHT_INTENSITY)
     this.ambientLight.name = 'ambientLight'
     scene.add(this.ambientLight)
+  }
+
+  /**
+   * Turns the per-fragment sun and sky light (sunAndSkyLight.js) on for the main scene's render and off
+   * for the others. `planet` (Planet) has updated its atmosphere uniforms for this frame's camera.
+   */
+  updateSkyLight(active, planet, air) {
+    const night = (this._nightLight ??= new THREE.Color()).copy(this.ambientLight.color).multiplyScalar(this.ambientLight.intensity)
+    SunAndSkyLight.update(active, planet?.atmosphereUniforms, air, this.sunLight.intensity, night)
   }
 
   // Points the shadow frustum at a fixed solar direction from a new focus point (planet frame).
@@ -67,10 +94,55 @@ export class Lighting {
       this.shadowDirection.copy(planetDirection).normalize()
       return
     }
-    this.sunLight.position.copy(worldDirection).normalize().multiplyScalar(SUN_DISTANCE)
-    this.sunLight.target.position.set(0, 0, 0)
+    this.sunDirection.copy(worldDirection).normalize()
+    this._placeSun()
+  }
+
+  _placeSun() {
+    if (this.localShadows) {
+      this.sunLight.position.copy(this.localFocus).addScaledVector(this.sunDirection, LOCAL_SHADOW_DISTANCE)
+      this.sunLight.target.position.copy(this.localFocus)
+    }
+    else {
+      this.sunLight.position.copy(this.sunDirection).multiplyScalar(SUN_DISTANCE)
+      this.sunLight.target.position.set(0, 0, 0)
+    }
     this.sunLight.updateMatrixWorld()
     this.sunLight.target.updateMatrixWorld()
+  }
+
+  /**
+   * Shadows in a small area (LOCAL_SHADOW_EXTENT around a focus point, setLocalShadowFocus) for
+   * metre-scale things that ask for them (sailboats): only objects that cast and receive shadows are
+   * affected. Not with a preset's surface shadows (enableSurfaceShadows), which use the sun already.
+   * Receivers far from the world origin must look the shadow up in their own local frame (see
+   * Sailboats.js): the shadow map is drawn precisely, but three.js looks it up from float32 world
+   * positions, which are only good to ~0.5 m at planet scale.
+   */
+  enableLocalShadows() {
+    if (this.shadowTarget || this.sunLight.castShadow) return false
+    const sun = this.sunLight
+    this.renderer.shadowMap.enabled = true
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    sun.castShadow = true
+    sun.shadow.mapSize.set(2048, 2048)
+    Object.assign(sun.shadow.camera, {
+      left: -LOCAL_SHADOW_EXTENT, right: LOCAL_SHADOW_EXTENT, top: LOCAL_SHADOW_EXTENT, bottom: -LOCAL_SHADOW_EXTENT,
+      near: 1, far: 2 * LOCAL_SHADOW_DISTANCE,
+    })
+    sun.shadow.camera.updateProjectionMatrix()
+    sun.shadow.bias = -0.0005
+    sun.shadow.normalBias = 0.02
+    this.localShadows = true
+    this._placeSun()
+    return true
+  }
+
+  /** The centre of the local shadows (world axes). */
+  setLocalShadowFocus(worldPoint) {
+    if (!this.localShadows) return
+    this.localFocus.copy(worldPoint)
+    this._placeSun()
   }
 
   // Called every frame with the camera target (world coordinates).

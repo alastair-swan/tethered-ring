@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { SledGrapplerPlacementInfo } from '../../src/launcher/SledGrapplerGeometry.js'
+import { GrapplerLatticePlan } from '../../src/launcher/grapplerLattice.js'
+import { createParameterDefinitions } from '../../src/params/parameterDefinitions.js'
 import {
   grapplerPose, grapplerSequencingModes, originalGrapplerPose,
   originalConstantRateSwitchoverSignal,
@@ -82,6 +84,26 @@ test('the unchanged Original mode still uses its supplied position-based signal'
   assert.deepEqual(grapplerPose(grapplerSequencingModes.Original, {
     info, padLiftPortion: 0.1, padTwistPortion: 0.1,
   }), originalGrapplerPose(info, 0.1, 0.1))
+})
+
+test('the saved scheduled mode delegates to the incoming lattice plan, including its output object', () => {
+  assert.equal(grapplerSequencingModes.Scheduled, 'scheduled')
+  const definitions = createParameterDefinitions()
+  assert.equal(definitions.adaptiveNutGrapplerSequencingMode.value, grapplerSequencingModes.Original)
+  assert.deepEqual(definitions.adaptiveNutGrapplerSequencingMode.options, grapplerSequencingModes)
+  const sampleAt = (t) => Array.from({ length: 4 }, (_, i) => ({
+    phase: 0.3 + 0.02 * i + 0.01 * t, rate: 0.01 / 8, n: 8, engageable: true,
+  }))
+  const plan = new GrapplerLatticePlan(sampleAt, 10, {
+    holdLimit: 0.125, switchoverTime: duration, fastestDrift: 0.8 / duration,
+  })
+  for (const deltaT of [0, 1, 5, 2, 9]) {
+    const info = { threadStarts: 8, phase: () => sampleAt(deltaT)[1].phase, rotationRate: 0.01 / 8 }
+    const out = {}
+    const actual = grapplerPose(grapplerSequencingModes.Scheduled, { plan, info, i: 1, deltaT }, out)
+    assert.equal(actual, out)
+    assert.deepEqual(actual, plan.pose(1, deltaT, info))
+  }
 })
 
 test('accelerating screw geometry supplies the timing threshold for aft, middle and forward pads', () => {

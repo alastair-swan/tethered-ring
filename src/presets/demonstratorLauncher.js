@@ -2,8 +2,8 @@ import * as THREE from 'three'
 import { planetSetup } from './planetSetup.js'
 
 export function demonstratorLauncher(guidParamWithUnits, nonGUIParams) {
-  // Sharper ground where the kilimanjaro regional bake is on this machine (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'kilimanjaro'] })
+  // Near the kilimanjaro regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['kilimanjaro'] })
 
   // Kilamanjaro, Africa
 

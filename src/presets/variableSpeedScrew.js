@@ -162,8 +162,8 @@ export function variableSpeedScrew(guidParamWithUnits, nonGUIParams) {
   }
 
   // Hawaii Big Island
-  // The Big Island's high-resolution bake (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'hawaii'] })
+  // Near the Big Island's regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['hawaii'] })
 
   nonGUIParams['orbitControlsTarget'] = new THREE.Vector3(-2485252.833291091, 2139838.026337634, -5469810.453140184)
   nonGUIParams['orbitControlsUpDirection'] = new THREE.Vector3(-0.3896218876085459, 0.33561868621277463, -0.8576449627679072)

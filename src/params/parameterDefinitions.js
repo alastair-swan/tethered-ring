@@ -283,7 +283,8 @@ export function createParameterDefinitions() {
   launchVehicleNonPayloadMass: {value: 400, units: 'kg', autoMap: true, min: 0, max: 100000, onChange: 'updateLauncher', folder: 'Launcher'},
   launchVehicleCostPerKg: {value: 1000, units: 'USD/kg', autoMap: true, min: 0, max: 100000, onChange: 'updateLauncher', folder: 'Launcher'},
   launchVehicleScaleFactor: {value: 1.5, units: 'm', autoMap: true, min: .1, max: 1000, onChange: 'updateLauncher', folder: 'Launcher'},
-  launchVehicleSpacingInSeconds: {value: 20, units: 's', autoMap: true, min: 0.1, max: 60, onChange: 'updateLauncher', folder: 'Launcher'},
+  // The launch cadence (launcher time between launches); the ocean terminal's ships keep up with it (src/launcher/launchCadence.js).
+  launchVehicleSpacingInSeconds: {value: 20, units: 's', autoMap: true, min: 0.1, max: 7200, onChange: 'updateLauncher', folder: 'Launcher'},
   numVirtualLaunchVehicles: {value: 1, units: '', autoMap: true, min: 0, max: 3600, step: 1, onChange: 'updateLauncher', folder: 'Launcher'},
   launchVehicleNumModels: {value: 1, units: '', autoMap: true, min: 0, max: 3600, step: 1, onChange: 'updateLauncher', folder: 'Launcher'},
   launchVehicleShowCrew: {value: true, units: '', autoMap: true, onChange: 'updateLauncher', folder: 'Launcher'},
@@ -296,6 +297,8 @@ export function createParameterDefinitions() {
 
   launcherSlowDownPassageOfTime: {value: 1, units: '', autoMap: true, min: 0, max: 2, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherStartDelayInSeconds: {value: 25, units: 's', autoMap: true, min: 0, max: 300, onChange: 'updateLauncher', folder: 'Launcher'},
+  // Launcher time each launch's vehicle and nut take to be drawn out of the ocean terminal into the tube before accelerating (src/launcher/launchCadence.js).
+  launcherTerminalEgressDuration: {value: 120, units: 's', autoMap: true, min: 0, max: 600, onChange: 'updateLauncher', folder: 'Launcher'},
   numVirtualMassDriverTubes: {value: 256, units: "", autoMap: true, min: 0, max: 3600, step: 1, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverRailWidth: {value: 1.0, units: 'm', autoMap: true, min: 1, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverRailHeight: {value: 0.25, units: 'm', autoMap: true, min: 1, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
@@ -441,11 +444,6 @@ export function createParameterDefinitions() {
   // Hop duration for Scheduled and OriginalConstantRate; the latter budgets half before phase handover
   // and half after it, using the original pose mapping (see grapplerPlacement.js).
   adaptiveNutGrapplerSwitchoverTime: {value: 0.6, units: 's', autoMap: true, min: 0.001, max: 10, onChange: 'updateLauncher', folder: 'Grapplers'},
-  // How far ahead of or behind its ideal position the vehicle (with its sled and nut) may run, and how much
-  // its acceleration may differ from the forward acceleration to get there (a fraction of it), to bring the
-  // grapplers' flights to the middle of their travel (see grapplerSchedule.js). 0 leaves it on time.
-  adaptiveNutMaxLead: {value: 2, units: 'm', autoMap: true, min: 0, max: 100, onChange: 'updateLauncher', folder: 'Grapplers'},
-  adaptiveNutMaxLeadAcceleration: {value: 0.02, units: '', autoMap: true, min: 0, max: 0.5, onChange: 'updateLauncher', folder: 'Grapplers'},
   adaptiveNutGrapplerClearanceFactor: {value: 0.1, units: '', autoMap: true, min: 0, max: 1, step: 1, onChange: 'updateLauncher', folder: 'Grapplers'},
   adaptiveNutGrapplerBallJointClearance: {value: 0.1, units: 'm', autoMap: true, min: 0, max: 1, step: 1, onChange: 'updateLauncher', folder: 'Grapplers'},
   adaptiveNutGrapplerBallJointRadius: {value: 0.06, units: 'm', autoMap: true, min: 0, max: 1, step: 1, onChange: 'updateLauncher', folder: 'Grapplers'},
@@ -564,12 +562,33 @@ export function createParameterDefinitions() {
   sunDayOfYear: {value: 0, units: '', autoMap: true, min: 0, max: 366, step: 1, onChange: 'updatedParam', folder: 'Rendering'},
   sunTimeOfDayUTC: {value: -1, units: 'h', autoMap: true, min: -1, max: 24, step: 0.01, onChange: 'updatedParam', folder: 'Rendering'},
   showOcean: {value: true, units: '', autoMap: true, onChange: 'adjustOcean', folder: 'Rendering'},
+  // Clouds and rain from the weather at the simulated date (see src/planet/clouds/Clouds.js).
+  showClouds: {value: true, units: '', autoMap: true, onChange: 'adjustClouds', folder: 'Rendering'},
+  // The camera readout with a Copy view link, bottom right (see src/ui/ViewStatus.js; never recorded).
+  showViewStatus: {value: true, units: '', autoMap: true, onChange: 'adjustViewStatus', folder: 'Rendering'},
+  // Seasonal sea ice on the sea surface, for the simulated date (see src/planet/seaIce.js).
+  showSeaIce: {value: true, units: '', autoMap: true, onChange: 'adjustSeaIce', folder: 'Rendering'},
+  // Sailboats near the camera, at anchor and sailing, for scale (see src/scene/Sailboats.js).
+  showSailboats: {value: true, units: '', autoMap: true, onChange: 'adjustSailboats', folder: 'Rendering'},
+  // Container ships on the shipping lanes and at anchor off ports (see src/scene/ContainerShips.js).
+  showContainerShips: {value: true, units: '', autoMap: true, onChange: 'adjustContainerShips', folder: 'Rendering'},
+  // The ocean terminal at an underwater launcher's breech, with its pier, cargo ships and mooring chains
+  // (see src/launcher/OceanTerminal.js).
+  showLauncherOceanTerminal: {value: true, units: '', autoMap: true, onChange: 'adjustOceanTerminal', folder: 'Rendering'},
   underwaterVisibility: {value: 20000, units: 'm', autoMap: true, min: 100, max: 200000, onChange: 'adjustOcean', folder: 'Rendering'},   // distance at which things underwater have almost faded into the water colour (a visual cue, not realism)
   earthTextureOpacity: {value: 1, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustEarthTextureOpacity', folder: 'Rendering'},
   earthTextureDoubleSided: {value: false, units: '', autoMap: true, onChange: 'adjustEarthTextureSidedness', folder: 'Rendering'},
   // Tethers and cables are drawn at their real diameters and glow (see src/scene/structureLines.js): how
   // far away a 1 cm line still glows at full brightness; beyond that it fades with its pixel coverage.
   structureGlowDistance: {value: 10000000, units: 'm', autoMap: true, min: 100, max: 10000000, onChange: 'adjustStructureGlow', folder: 'Rendering'},
+  // Highlights: each class drawn over everything in a colour of its own, whatever the lighting and
+  // whatever is in front of it (see src/scene/Highlights.js).
+  highlightRing: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
+  highlightRingTethers: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
+  highlightElevators: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
+  highlightMassDrivers: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
+  highlightMassDriverTethers: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
+  highlightLaunchVehicles: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
   showMoon: {value: defaultShows, units: '', autoMap: true, onChange: 'adjustMoonsVisibility', folder: 'Rendering'},
   showStars: {value: defaultShows, units: '', autoMap: true, onChange: 'adjustStarsVisibility', folder: 'Rendering'},
   showEarthAxis: {value: false, units: '', autoMap: true, onChange: 'earthAxisObjectUpdate', folder: 'Rendering'},

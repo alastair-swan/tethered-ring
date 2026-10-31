@@ -1,5 +1,5 @@
 // Where each grappler's magnetic pad is as it hops from one flight of the screw to the next.
-// interchangeable algorithms live here so they can be compared directly; a scene picks one with the
+// Interchangeable algorithms live here so they can be compared directly; a scene picks one with the
 // adaptiveNutGrapplerSequencingMode parameter, and AdaptiveNut.js asks for a pose through grapplerPose().
 //
 // All return the same pose, read the same way by AdaptiveNut.js:
@@ -17,14 +17,8 @@
 //               hop gets quicker as the vehicle speeds up (the pad crosses the switchover region faster).
 //   'originalConstantRate': the original pose and flight selection, with a phase threshold calculated
 //               from the time available before handover minus half the configured hop duration.
-//   'scheduled' (scheduledGrapplerPose): the optimiser in grapplerSchedule.js / grapplerSwitchover.js.
-//               It plans each grappler's grips against deadlines, so strips can differ in length and
-//               occasionally gap, but it can hold a grip longer and use the nut's lead.
-
-import { scheduledGrapplerPose } from './grapplerSwitchover.js'
-
-export { scheduledGrapplerPose }
-export { GrapplerSchedule, effectivePhase } from './grapplerSchedule.js'
+//   'scheduled': the lattice planner in grapplerLattice.js. The saved parameter value is retained
+//               for compatibility; the legacy integrated scheduler and vehicle lead are no longer used.
 
 // The selectable algorithms (label -> value, for the GUI dropdown and parameter).
 export const grapplerSequencingModes = { Original: 'original', OriginalConstantRate: 'originalConstantRate', Scheduled: 'scheduled' }
@@ -80,11 +74,11 @@ export function originalConstantRateGrapplerPose(info, padLiftPortion, padTwistP
 }
 
 // Picks the algorithm named by `mode` (see grapplerSequencingModes). ctx carries what each one needs:
-//   { info, i, deltaT, schedule, switchoverTime, padLiftPortion, padTwistPortion }
-// Only 'scheduled' needs a schedule. Both original modes use the original pose mapping.
+//   { info, i, deltaT, plan, switchoverTime, padLiftPortion, padTwistPortion }
+// Only 'scheduled' needs a lattice plan. Both original modes use the original pose mapping.
 export function grapplerPose(mode, ctx, out = {}) {
   if (mode === grapplerSequencingModes.Scheduled) {
-    return scheduledGrapplerPose(ctx.schedule, ctx.i, ctx.deltaT, ctx.info, ctx.switchoverTime, out)
+    return ctx.plan.pose(ctx.i, ctx.deltaT, ctx.info, out)
   }
   if (mode === grapplerSequencingModes.OriginalConstantRate) {
     return originalConstantRateGrapplerPose(ctx.info, ctx.padLiftPortion, ctx.padTwistPortion, ctx.switchoverTime, out)

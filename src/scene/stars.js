@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 
+const DEGREE = Math.PI / 180
+
 // Small seeded PRNG so the star field is identical on every machine (shots are replayed elsewhere).
 function mulberry32(seed) {
   return function () {
@@ -43,7 +45,7 @@ export class stars extends THREE.Points {
     starGeometry.setAttribute( 'position', new THREE.Float32BufferAttribute( starVertices, 3 ) )
     starGeometry.setAttribute( 'color', new THREE.Float32BufferAttribute( starColors, 3 ) )
     // sizeAttenuation off: stars are points of light, one pixel wide at any distance.
-    const starsMaterial = new THREE.PointsMaterial( { vertexColors: true, size: 1.5, sizeAttenuation: false } )
+    const starsMaterial = new THREE.PointsMaterial( { vertexColors: true, size: 1.5, sizeAttenuation: false, transparent: true } )
 
     super(starGeometry, starsMaterial)
     this.frustumCulled = false
@@ -54,10 +56,20 @@ export class stars extends THREE.Points {
 
   }
 
-  animate(dParamWithUnits, planetSpec, camera) {
-    // To improve rendering performance when within the atmosphere, and when the atmosphere shader is on, make stars invisible
-    const weAreFar1 = (camera.position.length() > (this.roughPlanetRadius + 10000))
-    this.visible = dParamWithUnits['showStars'].value && (weAreFar1 || !dParamWithUnits['showEarthsAtmosphere'].value)
+  // Seen through the air, the sky drowns the stars out by day: they come out through twilight as the
+  // sun sinks from 3 to 12 degrees below the camera's horizon, and from high enough (above most of the
+  // air, 15 to 40 km up) they show by day too. cameraUp: unit vector from the planet centre through
+  // the camera; altitude: the camera's height above the surface (m); sunDirection: unit vector to the sun.
+  animate(dParamWithUnits, cameraUp, altitude, sunDirection) {
+    let shown = 1
+    if (dParamWithUnits['showEarthsAtmosphere'].value) {
+      const sunSine = cameraUp.dot(sunDirection)
+      const night = THREE.MathUtils.smoothstep(-sunSine, Math.sin(3 * DEGREE), Math.sin(12 * DEGREE))
+      const high = THREE.MathUtils.smoothstep(altitude, 15000, 40000)
+      shown = Math.max(night, high)
+    }
+    this.material.opacity = shown
+    this.visible = dParamWithUnits['showStars'].value && shown > 0
   }
 
 }

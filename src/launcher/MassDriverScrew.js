@@ -278,6 +278,7 @@ export class virtualMassDriverScrew extends VirtualObject {
   static unallocatedModels = []
   static className = 'virtualMassDriverScrews'
   static modelsAreRecyleable = true   // pooled, but the geometry is regenerated for each segment index
+  static highlightClass = 'massDriver'
   static isDynamic = true             // the screws spin
 
   static signatureOf(dParamWithUnits) {

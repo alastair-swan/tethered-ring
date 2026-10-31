@@ -330,8 +330,8 @@ export function elevatedEvacuatedTubeDeployment(guidParamWithUnits, nonGUIParams
   nonGUIParams['orbitControlsObjectPosition'] = new THREE.Vector3(-2612674.4690546147, 2153923.456214351, -5420083.737448411)
   nonGUIParams['cameraUp'] = new THREE.Vector3(-0.40873395613032204, 0.337055270952551, -0.8481334195921997)
 
-  // The Big Island's high-resolution bake (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'hawaii'] })
+  // Near the Big Island's regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['hawaii'] })
 
   nonGUIParams['overrideClipPlanes'] = true
   nonGUIParams['nearClip'] = 1

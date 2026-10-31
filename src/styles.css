@@ -37,6 +37,32 @@ html, body {
   pointer-events: none;
 }
 
+.view-status {
+  position: fixed;
+  right: 8px;
+  bottom: 28px;
+  z-index: 1000;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ddd;
+  user-select: text;
+}
+
+.view-status[hidden] {
+  display: none;
+}
+
+.view-status button {
+  font: inherit;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
 .recording-overlay {
   position: fixed;
   left: 50%;
@@ -65,4 +91,404 @@ html, body {
   background: #400;
   border: 1px solid #c33;
   white-space: pre-wrap;
+}
+
+/* The shot panel (src/ui/ShotSidebar.js) floats on the left; the parameter panel stays top right. */
+#simContainer canvas.picking {
+  cursor: crosshair;
+}
+
+.shot-sidebar {
+  --ss-bg: rgba(18, 20, 26, 0.92);
+  --ss-panel: rgba(255, 255, 255, 0.05);
+  --ss-border: rgba(255, 255, 255, 0.12);
+  --ss-text: #e6e8ee;
+  --ss-dim: #9aa3b5;
+  --ss-accent: #ff7020;
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  bottom: 8px;
+  z-index: 1002;
+  width: 372px;
+  max-width: calc(100vw - 16px);
+  display: flex;
+  flex-direction: column;
+  color: var(--ss-text);
+  background: var(--ss-bg);
+  border: 1px solid var(--ss-border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  font-size: 12px;
+  user-select: none;
+}
+
+.shot-sidebar[hidden], .shot-sidebar-tab[hidden], .shot-sidebar [hidden] {
+  display: none !important;
+}
+
+.shot-sidebar.busy .ss-body {
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.shot-sidebar-tab {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 1002;
+  padding: 6px 10px;
+  font: inherit;
+  color: #e6e8ee;
+  background: rgba(18, 20, 26, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ss-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--ss-border);
+}
+
+.ss-title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.ss-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+
+.ss-section {
+  margin: 6px 0;
+  padding: 0 8px 8px;
+  background: var(--ss-panel);
+  border-radius: 6px;
+}
+
+.ss-section > summary {
+  padding: 7px 0;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ss-section > * + * {
+  margin-top: 6px;
+}
+
+.ss-big {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ss-sub, .ss-hint {
+  color: var(--ss-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.ss-hint {
+  font-size: 11px;
+}
+
+.ss-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ss-label {
+  flex: 0 0 118px;
+  color: var(--ss-dim);
+}
+
+.ss-controls, .ss-line, .ss-transport {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ss-transport .ss-select {
+  margin-left: auto;
+}
+
+.ss-grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.ss-value {
+  min-width: 4.5em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ss-button, .ss-select, .ss-number, .ss-text {
+  font: inherit;
+  color: var(--ss-text);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--ss-border);
+  border-radius: 4px;
+  padding: 3px 7px;
+}
+
+.ss-select option {
+  color: #000;
+}
+
+.ss-number {
+  width: 6.5em;
+}
+
+.ss-button {
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ss-button:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.ss-button.active, .ss-toggle.active {
+  background: var(--ss-accent);
+  border-color: var(--ss-accent);
+  color: #fff;
+}
+
+.ss-toggle {
+  flex: 1;
+}
+
+.ss-icon {
+  min-width: 28px;
+  padding: 3px 5px;
+  line-height: 0;
+}
+
+.ss-svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.ss-primary {
+  background: rgba(255, 112, 32, 0.25);
+  border-color: rgba(255, 112, 32, 0.6);
+}
+
+.ss-danger:hover {
+  background: rgba(220, 60, 60, 0.5);
+}
+
+.ss-wide {
+  width: 100%;
+}
+
+.ss-range {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--ss-accent);
+}
+
+.ss-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.ss-timeline {
+  display: block;
+  width: 100%;
+  height: 74px;
+  border-radius: 4px;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.ss-keylist {
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.ss-key {
+  display: flex;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.ss-key:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ss-key.selected {
+  background: rgba(255, 112, 32, 0.3);
+}
+
+.ss-key-index {
+  width: 1.5em;
+  color: var(--ss-dim);
+}
+
+.ss-key-time {
+  width: 5em;
+}
+
+.ss-key-anchor {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ss-key-speed {
+  color: #40c8ff;
+}
+
+.ss-editor {
+  padding: 8px;
+  border: 1px solid var(--ss-border);
+  border-radius: 6px;
+}
+
+.ss-editor > * + * {
+  margin-top: 6px;
+}
+
+.ss-anchor-text {
+  white-space: pre-line;
+  font-size: 11px;
+}
+
+.ss-editor-title {
+  font-weight: 600;
+}
+
+.ss-queue {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.ss-queue-item {
+  padding: 4px 6px;
+  border-radius: 4px;
+  border-left: 3px solid transparent;
+}
+
+.ss-queue-item + .ss-queue-item {
+  margin-top: 4px;
+}
+
+.ss-queue-item.open {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ss-queue-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ss-queue-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ss-queue-head .ss-icon {
+  /* Text glyphs, not SVG icons. */
+  min-width: 22px;
+  padding: 1px 4px;
+  line-height: 1.3;
+  font-size: 11px;
+}
+
+.ss-queue-item .ss-number {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+}
+
+.ss-queue-status {
+  color: var(--ss-dim);
+  font-size: 11px;
+}
+
+.ss-queue-rendering { border-left-color: var(--ss-accent); }
+.ss-queue-done { border-left-color: #40c870; }
+.ss-queue-failed { border-left-color: #e04040; }
+
+.ss-queue-error {
+  color: #ff8080;
+}
+
+.ss-queue-folder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ss-queue-progress {
+  font-variant-numeric: tabular-nums;
+}
+
+.ss-queue-log {
+  max-height: 160px;
+  overflow: auto;
+  margin: 4px 0 0;
+  font-size: 10px;
+  white-space: pre-wrap;
+  color: var(--ss-dim);
+}
+
+.ss-status {
+  padding: 6px 12px;
+  min-height: 1.5em;
+  color: var(--ss-dim);
+  border-top: 1px solid var(--ss-border);
+}
+
+@media (max-width: 600px) {
+  .shot-sidebar {
+    top: auto;
+    right: 8px;
+    width: auto;
+    height: 55vh;
+  }
+}
+
+.ss-still {
+  position: fixed;
+  inset: 0;
+  z-index: 1003;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.85);
+  cursor: pointer;
+}
+
+.ss-still img {
+  max-width: 94vw;
+  max-height: 88vh;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.6);
+}
+
+.ss-still-caption {
+  color: #ccd;
 }

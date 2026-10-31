@@ -60,7 +60,11 @@ export class virtualTransitVehicle extends VirtualRingObject {
 
   // Same contract as virtualLaunchVehicle.getFutureFrame (ring-local vectors).
   getFutureFrame(refFrame, timeDeltaInSeconds = 0) {
-    const framePosition = refFrame.futureP(timeDeltaInSeconds)
+    return this.frameAt(refFrame, refFrame.futureP(timeDeltaInSeconds))
+  }
+
+  // The vehicle's frame when its lane's frame is at framePosition (ring-local vectors).
+  frameAt(refFrame, framePosition) {
     const p = this.modelTrackPosition(refFrame, framePosition)
     this.placeAt(_tmp, refFrame, framePosition)
     const angle = 2 * Math.PI * p

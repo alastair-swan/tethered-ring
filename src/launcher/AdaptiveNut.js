@@ -5,14 +5,16 @@ import * as tram from '../utils/tram.js'
 import { quaternionFromFrame } from '../curves/SuperCurves.js'
 import { MovingVirtualObject, curveFrameAtTime, parameterSignature } from './VirtualObject.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
-import { grapplerPose, followingAngle, GrapplerSchedule, effectivePhase } from './grapplerPlacement.js'
+import { grapplerPose, followingAngle, grapplerSequencingModes } from './grapplerPlacement.js'
+import { SubPixelFade, withSubPixelFade } from '../scene/SubPixelFade.js'
+import { GrapplerLatticePlan, effectivePhase } from './grapplerLattice.js'
 
 const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
 const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
 
 // Grappler hardware per grappler slot: for each of the two (top/bottom) grappler rows, each side
 // (left/right) has three (inner/middle/outer) ball-joint pivots, posts, piston rods (struts) and
-// piston cylinders. All of it is drawn as one BatchedMesh per nut; the pads are a second one.
+// piston cylinders. All of it is drawn as one InstancedParts per nut; the pads are a second one.
 const GRAPPLER_ROWS = [0.5, 0] // midwayRotation for the top and bottom rows
 const SIDES = [-1, 1]          // leftRightSign
 const INNER_MIDDLE_OUTER = [
@@ -21,15 +23,17 @@ const INNER_MIDDLE_OUTER = [
   { sign1: 2, sign2: 2 },    // outer
 ]
 const HARDWARE_PARTS = ['pivot', 'post', 'strut', 'cylinder']
-// Pixel-size LOD thresholds, measured on the nut's width.
 // A grappler's angle (radians, from the middle of its travel, fixed to the nut, within [-pi, pi)) if
 // following the nearest flight, comes from followingAngle in grapplerPlacement.js.
 
-const PADS_MIN_PIXELS = 6       // pads are ~1 px across here
-const HARDWARE_MIN_PIXELS = 60  // ball joints and pistons are a few cm: ~2 px across here
+// The pads and the hardware fade out by their own on-screen size (SubPixelFade.js), each part by its
+// thickness, and their levels of detail stop drawing them once the part that stays visible longest is
+// all but invisible (at this opacity), so the arms stay as long as they show, as the pads do.
+const FADED_OUT_OPACITY = 0.04       // compact parts (pads, ball joints): by area
+const FADED_OUT_LINE_OPACITY = 0.1   // rods and cylinders: by width
 
 // Returns a copy of `geometry` mirrored in x, with the triangle winding reversed so that front faces
-// stay front faces (batched instances cannot use negative scale for mirroring).
+// stay front faces (instances cannot use negative scale for mirroring).
 function mirrorGeometryX(geometry) {
   const mirrored = geometry.clone()
   mirrored.applyMatrix4(new THREE.Matrix4().makeScale(-1, 1, 1))
@@ -52,6 +56,95 @@ function mirrorGeometryX(geometry) {
     }
   }
   return mirrored
+}
+
+// A set of parts drawn as one InstancedMesh per shape, addressed like a BatchedMesh (addGeometry,
+// addInstance, setMatrixAt, setVisibleAt, setColorAt, setGeometryAt). (Instanced meshes are plain
+// WebGL, where a BatchedMesh depends on its draw number to find each part's matrix.)
+class InstancedParts extends THREE.Group {
+  constructor(material, { colors = false } = {}) {
+    super()
+    this.material = material
+    this.colors = colors
+    this.shapes = []      // per geometry id: { geometry, mesh (made by finish()), count }
+    this.instances = []   // per instance id: { shape, index, visible }
+  }
+
+  // (A shape may have its own material, e.g. one faded by that shape's size.)
+  addGeometry(geometry, material = this.material) {
+    this.shapes.push({ geometry, material, mesh: null, count: 0 })
+    return this.shapes.length - 1
+  }
+
+  addInstance(geometryId) {
+    const shape = this.shapes[geometryId]
+    this.instances.push({ shape, index: shape.count++, visible: true, matrix: new THREE.Matrix4() })
+    return this.instances.length - 1
+  }
+
+  // Makes the meshes, once every geometry and instance has been added.
+  finish() {
+    for (const shape of this.shapes) {
+      const mesh = new THREE.InstancedMesh(shape.geometry, shape.material, Math.max(1, shape.count))
+      mesh.count = shape.count
+      mesh.name = this.name
+      mesh.castShadow = this.castShadow
+      mesh.frustumCulled = false // its bounding sphere would have to follow the parts every frame
+      if (this.colors) for (let i = 0; i < shape.count; i++) mesh.setColorAt(i, _white)
+      shape.mesh = mesh
+      this.add(mesh)
+    }
+  }
+
+  setMatrixAt(id, matrix) {
+    const instance = this.instances[id]
+    instance.matrix.copy(matrix)
+    if (instance.visible) this._write(instance, matrix)
+  }
+
+  // (Hidden parts are scaled to nothing.)
+  setVisibleAt(id, visible) {
+    const instance = this.instances[id]
+    if (instance.visible === visible) return
+    instance.visible = visible
+    this._write(instance, visible ? instance.matrix : _hidden)
+  }
+
+  setColorAt(id, color) {
+    const { shape, index } = this.instances[id]
+    shape.mesh.setColorAt(index, color)
+    shape.mesh.instanceColor.needsUpdate = true
+  }
+
+  // Replaces a shape's geometry (with a copy: the caller keeps and disposes its own).
+  setGeometryAt(geometryId, geometry) {
+    const shape = this.shapes[geometryId]
+    const copy = geometry.clone()
+    shape.mesh.geometry.dispose()
+    shape.mesh.geometry = copy
+    shape.geometry = copy
+  }
+
+  _write({ shape, index }, matrix) {
+    shape.mesh.setMatrixAt(index, matrix)
+    shape.mesh.instanceMatrix.needsUpdate = true
+  }
+}
+
+const _white = new THREE.Color(1, 1, 1)
+const _hidden = new THREE.Matrix4().makeScale(0, 0, 0)
+
+// The slant of a pad shape's length (radians): from round the screw (its local x) towards along it (y),
+// from the centre of one end to the other's, within (-pi/2, pi/2]. A pad gripping a flight follows its
+// helix; parked, or hopping, it is turned back by this to line up with its actuators.
+function padSlant(geometry) {
+  const pos = geometry.attributes.position
+  let dx = 0, dy = 0
+  for (let k = 0; k < 4; k++) { dx += pos.getX(k + 4) - pos.getX(k); dy += pos.getY(k + 4) - pos.getY(k) }
+  let slant = Math.atan2(dy, dx)
+  if (slant > Math.PI / 2) slant -= Math.PI
+  if (slant <= -Math.PI / 2) slant += Math.PI
+  return slant
 }
 
 export class adaptiveNutModel {
@@ -86,20 +179,46 @@ export class adaptiveNutModel {
       strut: new THREE.CylinderGeometry(cylinderRadius/2, cylinderRadius/2, strutLength, 16, 1).translate(0, strutLength/2, 0),
       cylinder: new THREE.CylinderGeometry(cylinderRadius, cylinderRadius, strutLength, 16, 1).translate(0, strutLength/2, 0),
     }
-    // BatchedMesh needs matching attributes on every geometry.
-    for (const g of Object.values(hardwareGeometries)) g.deleteAttribute('uv')
+    for (const g of Object.values(hardwareGeometries)) g.userData.shared = true // used by every pooled nut
+    // Each part fades by its thickness: the ball joints like a dot, the rest like a line.
+    const hardwareFade = {
+      pivot: { size: 2 * ballJointRadius, exponent: 2 },
+      post: { size: ballJointRadius, exponent: 1 },
+      strut: { size: cylinderRadius, exponent: 1 },
+      cylinder: { size: 2 * cylinderRadius, exponent: 1 },
+    }
+    const hardwareMaterials = Object.fromEntries(HARDWARE_PARTS.map(part =>
+      [part, withSubPixelFade(hardwareMaterial.clone(), hardwareFade[part])]))
+    // The nut's on-screen width (px) at which a part of this size has faded out.
+    const fadedOutAt = ({ size, exponent }) => (size > 0)
+      ? width / size * SubPixelFade.minimumPixels(1.5, exponent === 1 ? FADED_OUT_LINE_OPACITY : FADED_OUT_OPACITY, exponent)
+      : Infinity
+    const hardwareMinPixels = Math.min(...HARDWARE_PARTS.map(part => fadedOutAt(hardwareFade[part])))
 
-    // Pad geometry for each grappler at the start of the screws (regenerated per speed while running).
+    // Pad geometry for each grappler where the thread begins (regenerated per speed while running), with
+    // the screw's thread layout: the starts it has there (the starts parameter may be 0, for its default)
+    // and where the thread starts (before that the screw is a plain shaft, with no pitch to shape a pad to).
     const templatePads = []
     {
-      const info = makeGrapplerPlacementInfo(dParamWithUnits, 0, grapplerLength, numGrapplers, 0)
+      const layout = tram.screwThreadLayout(dParamWithUnits)
+      const templateDistance = Number.isFinite(layout.threadStartDistance) ? Math.max(0, layout.threadStartDistance) : 0
+      const info = makeGrapplerPlacementInfo(dParamWithUnits, layout, templateDistance, grapplerLength, numGrapplers, 0)
       const firstGrapplerDistance = (bodyLength-grapplerLength) / 2
       for (let i = 0; i < numGrapplers; i++) {
         const distance = firstGrapplerDistance + i * grapplerLength / numGrapplers
         info.generatePlacementInfo(distance, 1)
-        templatePads.push(makeGrapplerGeometry(dParamWithUnits, 0, grapplerLength, numGrapplers, distance, info.offset))
+        templatePads.push(makeGrapplerGeometry(dParamWithUnits, layout, templateDistance, grapplerLength, numGrapplers, info.threadStarts, distance, info.offset))
       }
     }
+    // A pad is a plate: it fades like a square of the same area as its two larger extents.
+    let padSize = 0
+    if (templatePads.length) {
+      templatePads[0].computeBoundingBox()
+      const extents = templatePads[0].boundingBox.getSize(new THREE.Vector3()).toArray().sort((a, b) => b - a)
+      padSize = Math.sqrt(extents[0] * extents[1])
+    }
+    const padFadedMaterial = withSubPixelFade(padMaterial, { size: padSize })
+    const padsMinPixels = fadedOutAt({ size: padSize, exponent: 2 })
 
     let loadedBody = null
     const buildModel = () => {
@@ -112,17 +231,13 @@ export class adaptiveNutModel {
       if (loadedBody) nut.add(loadedBody.clone())
 
       // Pads: geometry i is grappler i, geometry numGrapplers + i its mirror image.
-      const padVertices = templatePads.reduce((n, g) => n + g.attributes.position.count, 0) * 2
-      const padIndices = templatePads.reduce((n, g) => n + (g.index ? g.index.count : 0), 0) * 2
-      const pads = new THREE.BatchedMesh(numGrapplers * GRAPPLER_ROWS.length * SIDES.length, Math.max(1, padVertices), Math.max(1, padIndices), padMaterial)
+      const pads = new InstancedParts(padFadedMaterial, { colors: true })
       pads.name = 'adaptiveNut_grappler'
       pads.castShadow = true
-      // The batch's own bounding sphere is computed once (with every instance at the origin) and never
-      // refreshed, so whole-object culling would hide it; BatchedMesh still culls per instance.
-      pads.frustumCulled = false
       pads.padGeometryIds = []
-      for (let i = 0; i < numGrapplers; i++) pads.padGeometryIds[i] = pads.addGeometry(templatePads[i])
+      for (let i = 0; i < numGrapplers; i++) pads.padGeometryIds[i] = pads.addGeometry(templatePads[i].clone())
       for (let i = 0; i < numGrapplers; i++) pads.padGeometryIds[numGrapplers + i] = pads.addGeometry(mirrorGeometryX(templatePads[i]))
+      pads.slants = templatePads.map(padSlant)
       pads.instanceIds = []
       for (let i = 0; i < numGrapplers; i++) {
         for (let row = 0; row < GRAPPLER_ROWS.length; row++) {
@@ -133,26 +248,25 @@ export class adaptiveNutModel {
           }
         }
       }
+      pads.finish()
 
-      const hardware = new THREE.BatchedMesh(numGrapplers * GRAPPLER_ROWS.length * SIDES.length * INNER_MIDDLE_OUTER.length * HARDWARE_PARTS.length,
-        Object.values(hardwareGeometries).reduce((n, g) => n + g.attributes.position.count, 0),
-        Object.values(hardwareGeometries).reduce((n, g) => n + g.index.count, 0), hardwareMaterial)
+      const hardware = new InstancedParts(hardwareMaterial)
       hardware.name = 'adaptiveNut_hardware'
       hardware.castShadow = true
-      hardware.frustumCulled = false
-      const partIds = Object.fromEntries(HARDWARE_PARTS.map(part => [part, hardware.addGeometry(hardwareGeometries[part])]))
+      const partIds = Object.fromEntries(HARDWARE_PARTS.map(part => [part, hardware.addGeometry(hardwareGeometries[part], hardwareMaterials[part])]))
       hardware.instanceIds = []
       for (let k = 0; k < numGrapplers * GRAPPLER_ROWS.length * SIDES.length * INNER_MIDDLE_OUTER.length; k++) {
         for (const part of HARDWARE_PARTS) hardware.instanceIds.push(hardware.addInstance(partIds[part]))
       }
+      hardware.finish()
 
       // Pixel-size LODs measured on the nut's width; extent covers the nut's length.
       const padsLod = new PixelLOD(width, { extent: bodyLength })
       padsLod.name = 'adaptiveNut_padsLod'
-      padsLod.addLevel(PADS_MIN_PIXELS, pads)
+      padsLod.addLevel(padsMinPixels, pads)
       const hardwareLod = new PixelLOD(width, { extent: bodyLength })
       hardwareLod.name = 'adaptiveNut_hardwareLod'
-      hardwareLod.addLevel(HARDWARE_MIN_PIXELS, hardware)
+      hardwareLod.addLevel(hardwareMinPixels, hardware)
       nut.add(padsLod, hardwareLod)
       nut.grappler = { pads, hardware, padsLod, hardwareLod, numGrapplers, key: null }
 
@@ -181,23 +295,24 @@ export class adaptiveNutModel {
   }
 }
 
-function makeGrapplerPlacementInfo(dParamWithUnits, distanceToSledAft, grapplerLength, numGrapplers, additionalRotation) {
+function makeGrapplerPlacementInfo(dParamWithUnits, layout, distanceToSledAft, grapplerLength, numGrapplers, additionalRotation) {
   const p = (name) => dParamWithUnits[name].value
   return new SledGrapplerPlacementInfo(
     p('launcherMassDriverScrewShaftOuterRadius'), p('launcherMassDriverScrewThreadRadius'), p('launcherMassDriverScrewThreadThickness'),
-    p('launcherMassDriverScrewThreadStarts'), p('launcherMassDriverScrewRevolutionsPerSecond'), p('launcherMassDriverForwardAcceleration'),
+    layout.startsAt, p('launcherMassDriverScrewRevolutionsPerSecond'), p('launcherMassDriverForwardAcceleration'),
     p('launcherMassDriver1InitialVelocity'), p('adaptiveNutBodyLength') / 2, distanceToSledAft, grapplerLength, numGrapplers,
     p('adaptiveNutGrapplerMagnetThickness'), p('adaptiveNutBetweenGrapplerFactor'), p('adaptiveNutShaftToGrapplerPad'), additionalRotation,
-    p('adaptiveNutGrapplerMaxRangeOfMotion'), p('adaptiveNutGrapplerTopDeadCenterRotation'), virtualAdaptiveNut.minMaxArray)
+    p('adaptiveNutGrapplerMaxRangeOfMotion'), p('adaptiveNutGrapplerTopDeadCenterRotation'), virtualAdaptiveNut.minMaxArray, layout.threadStartDistance)
 }
 
-function makeGrapplerGeometry(dParamWithUnits, distanceToSledAft, grapplerLength, numGrapplers, grapplerDistance, offset) {
+function makeGrapplerGeometry(dParamWithUnits, layout, distanceToSledAft, grapplerLength, numGrapplers, threadStarts, grapplerDistance, offset) {
   const p = (name) => dParamWithUnits[name].value
   return new SledGrapplerGeometry(
     p('launcherMassDriverScrewShaftOuterRadius'), p('launcherMassDriverScrewThreadRadius'), p('launcherMassDriverScrewThreadThickness'),
-    p('launcherMassDriverScrewThreadStarts'), p('launcherMassDriverScrewRevolutionsPerSecond'), p('launcherMassDriverForwardAcceleration'),
+    threadStarts, p('launcherMassDriverScrewRevolutionsPerSecond'), p('launcherMassDriverForwardAcceleration'),
     p('launcherMassDriver1InitialVelocity'), p('adaptiveNutBodyLength') / 2, distanceToSledAft, grapplerLength, numGrapplers,
-    p('adaptiveNutGrapplerMagnetThickness'), p('adaptiveNutBetweenGrapplerFactor'), p('adaptiveNutShaftToGrapplerPad'), 0, grapplerDistance, offset)
+    p('adaptiveNutGrapplerMagnetThickness'), p('adaptiveNutBetweenGrapplerFactor'), p('adaptiveNutShaftToGrapplerPad'), 0, grapplerDistance, offset,
+    layout.threadStartDistance)
 }
 
 // Grappler pad geometry is regenerated when the nut's speed has changed by this fraction since the
@@ -210,6 +325,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
   static activeObjects = new Map()
   static className = 'virtualAdaptiveNuts'
   static modelsAreRecyleable = true
+  static highlightClass = 'massDriver'
   static isDynamic = true
   static minMaxArray = [0, 0]
 
@@ -270,8 +386,6 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     v.sequencingMode = p('adaptiveNutGrapplerSequencingMode')
     v.padLiftPortion = p('adaptiveNutGrapplerPadLiftAwayPortion')
     v.padTwistPortion = p('adaptiveNutGrapplerPadTwistPortion')
-    v.maxLead = p('adaptiveNutMaxLead')
-    v.maxLeadAcceleration = p('adaptiveNutMaxLeadAcceleration') * p('launcherMassDriverForwardAcceleration')
     const r1 = v.launcherMassDriverScrewThreadRadius
     const r2 = v.launcherMassDriverScrewShaftOuterRadius
     v.padRadialActuation = (r1 - r2) * (1 + p('adaptiveNutGrapplerClearanceFactor'))
@@ -282,22 +396,22 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
 
     v.isDynamic = true
     v.hasChanged = true
-    v.schedules = new Map()   // launch turn -> GrapplerSchedule (made when first needed)
+    v.plans = new Map()   // launch turn -> GrapplerLatticePlan (made when first needed)
   }
 
-  // Which flight each grappler grips, and when (grapplerSchedule.js), for a nut launched when the screw's
-  // turn is launchTurn (rotations): the same for every such launch.
-  static gripSchedule(launchTurn) {
+  // Which flight each grappler grips, and how it moves between them (grapplerLattice.js), for a nut
+  // launched when the screw's turn is launchTurn (rotations): the same for every such launch.
+  static gripPlan(launchTurn) {
     const v = virtualAdaptiveNut
     const key = launchTurn.toFixed(6)
-    if (v.schedules.has(key)) return v.schedules.get(key)
+    if (v.plans.has(key)) return v.plans.get(key)
     const a = v.launcherMassDriverForwardAcceleration, v0 = v.launcherMassDriver1InitialVelocity
     const N = v.adaptiveNutNumGrapplers
     const first = (v.adaptiveNutBodyLength - v.adaptiveNutGrapplerLength) / 2, spacing = N > 0 ? v.adaptiveNutGrapplerLength / N : 0
     const distanceAt = (t) => v0 * t + a * t * t / 2
     const end = (a > 0) ? (-v0 + Math.sqrt(v0 * v0 + 2 * a * v.launcherMassDriverLength)) / a : v.launcherMassDriverLength / Math.max(1, v0)
-    const sampleAt = (t, lead) => {
-      const distance = distanceAt(t) + lead
+    const sampleAt = (t) => {
+      const distance = distanceAt(t)
       const info = new SledGrapplerPlacementInfo(
         v.launcherMassDriverScrewShaftOuterRadius, v.launcherMassDriverScrewThreadRadius, v.launcherMassDriverScrewThreadThickness,
         v.threadLayout.startsAt, v.screwRevolutionsPerSecond, a, v0, v.initialDistance, distance, v.adaptiveNutGrapplerLength, N,
@@ -312,30 +426,13 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
       }
       return out
     }
-    const tipSpeed = Math.max(1, 2 * Math.PI * v.launcherMassDriverScrewThreadRadius * v.screwRevolutionsPerSecond)
-    const schedule = new GrapplerSchedule(sampleAt, end, {
+    const plan = new GrapplerLatticePlan(sampleAt, end, {
       holdLimit: v.adaptiveNutGrapplerMaxRangeOfMotion, switchoverTime: v.switchoverTime,
-      // Eddy-current losses at a gap grow with the speed of the pads over the flights: the screw's tip
-      // speed and the nut's speed together (about sqrt(2) times the tip speed at low speed).
-      gapCost: (t) => (tipSpeed ** 2 + (v0 + a * t) ** 2) / (2 * tipSpeed ** 2),
-      maxLead: N > 0 ? v.maxLead : 0, maxLeadAcceleration: N > 0 ? v.maxLeadAcceleration : 0,
+      // (A grappler cannot land on flights drifting past faster than this: cycles/s.)
+      fastestDrift: 0.8 / v.switchoverTime,
     })
-    v.schedules.set(key, schedule)
-    return schedule
-  }
-
-  // How much later along its trajectory (s) a nut, sled and vehicle launched at timeLaunched are `deltaT`
-  // after their launch, for the nut's lead (see grapplerSchedule.js): they run together, ahead of or
-  // behind where the forward acceleration alone would put them.
-  static leadTime(timeLaunched, deltaT) {
-    const v = virtualAdaptiveNut
-    if (v.sequencingMode !== 'scheduled' || !v.schedules || !v.threadLayout || !(v.maxLeadAcceleration > 0) || !(v.maxLead > 0) || !(v.adaptiveNutNumGrapplers > 0)) return 0
-    const rps = v.screwRevolutionsPerSecond
-    const lead = v.gripSchedule((((timeLaunched * rps) % 1) + 1) % 1).leadAt(deltaT)
-    if (lead === 0) return 0
-    const a = v.launcherMassDriverForwardAcceleration, speed = v.launcherMassDriver1InitialVelocity + a * deltaT
-    // The time at which distanceAt (gripSchedule) is `lead` further on.
-    return a > 0 ? (-speed + Math.sqrt(Math.max(0, speed * speed + 2 * a * lead))) / a : lead / Math.max(1, speed)
+    v.plans.set(key, plan)
+    return plan
   }
 
   // Distance from the start of mass driver 1 to the back of the nut, `deltaT` after launch.
@@ -350,7 +447,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
 
   frameAt(refFrame, deltaT) {
     const v = virtualAdaptiveNut
-    const f = curveFrameAtTime(refFrame.curve, deltaT + v.leadTime(this.timeLaunched, deltaT), false)
+    const f = curveFrameAtTime(refFrame.curve, deltaT, false)
     const forward = f.forward
     const upward = f.upward
     const rightward = new THREE.Vector3().crossVectors(forward, upward)
@@ -370,7 +467,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     om.visible = v.isVisible
     if (!v.isVisible) return
     const adjustedTimeSinceStart = v.adjustedTime(refFrame.timeSinceStart)
-    const deltaT = Math.max(0, adjustedTimeSinceStart - this.timeLaunched)
+    const deltaT = this.clampedDeltaT(refFrame)   // (negative while leaving the terminal)
     const frame = this.frameAt(refFrame, deltaT)
     const relevantCurve = frame.f.curve
     const distanceToSledAft = v.distanceAlongScrews(refFrame.curve, frame.f)
@@ -424,18 +521,19 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     // Skip the grappler work when the LODs (from last frame's on-screen size) would not draw it, with
     // a 2x margin so parts are already posed when they appear. While recording, always pose them.
     const recording = PixelLOD.buildBudget === Infinity
-    const padsWanted = recording || g.padsLod.onScreenPixels >= PADS_MIN_PIXELS / 2
-    const hardwareWanted = recording || g.hardwareLod.onScreenPixels >= HARDWARE_MIN_PIXELS / 2
+    const padsWanted = recording || g.padsLod.onScreenPixels >= g.padsLod.pixelLevels[0].minPixels / 2
+    const hardwareWanted = recording || g.hardwareLod.onScreenPixels >= g.hardwareLod.pixelLevels[0].minPixels / 2
     if (!padsWanted && !hardwareWanted) return
     const activeGrapplers = Math.min(numGrapplers, g.numGrapplers)
 
-    // Engage the grapplers only if we're on the part of the curve path that has the twin-screws
-    const onScrews = (relevantCurve.name=='massDriver1Curve') || (relevantCurve.name=='massDriver2Curve')
+    // Engage the grapplers only if we're on the part of the curve path that has the twin-screws (not
+    // while still leaving the terminal)
+    const onScrews = !frame.f.egress && ((relevantCurve.name=='massDriver1Curve') || (relevantCurve.name=='massDriver2Curve'))
     const speed = Math.sqrt(Math.max(1, initialVelocity**2 + 2 * acceleration * Math.max(0, distanceToSledAft)))
     const info = makeInfo(distanceToSledAft, additionalRotation)
     info.nutSpeed = speed
-    const schedule = v.sequencingMode === 'scheduled'
-      ? v.gripSchedule((((this.timeLaunched * screwRevolutionsPerSecond) % 1) + 1) % 1)
+    const plan = onScrews && v.sequencingMode === grapplerSequencingModes.Scheduled
+      ? v.gripPlan((((this.timeLaunched * screwRevolutionsPerSecond) % 1) + 1) % 1)
       : null
     const grapplerOffset = []
     const grapplerPoses = []
@@ -447,7 +545,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
       // sequencing algorithm); off the screws, parked.
       info.alpha = followingAngle(info)
       grapplerPoses[i] = onScrews
-        ? grapplerPose(v.sequencingMode, { info, i, deltaT, schedule, switchoverTime: v.switchoverTime, padLiftPortion: v.padLiftPortion, padTwistPortion: v.padTwistPortion }, {})
+        ? grapplerPose(v.sequencingMode, { info, i, deltaT, plan, switchoverTime: v.switchoverTime, padLiftPortion: v.padLiftPortion, padTwistPortion: v.padTwistPortion }, {})
         : { lift: 1, raise: 1, neutral: 1, alpha: 0, attached: false }
       grapplerOffset[i] = info.offset
       grapplerThreadPitch[i] = info.threadPitch
@@ -470,8 +568,9 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
           acceleration, initialVelocity, initialDistance, keyDistance, grapplerLength, numGrapplers,
           v.magnetThickness, v.betweenGrapplerFactor, v.shaftToGrapplerPad, 0, grapplerDistance, geometryInfo.offset, layout.threadStartDistance)
         const mirrored = mirrorGeometryX(geometry)
-        // setGeometryAt copies the data into the batch's buffers.
+        // setGeometryAt takes its own copy.
         g.pads.setGeometryAt(g.pads.padGeometryIds[i], geometry)
+        g.pads.slants[i] = padSlant(geometry)
         g.pads.setGeometryAt(g.pads.padGeometryIds[g.numGrapplers + i], mirrored)
         geometry.dispose()
         mirrored.dispose()
@@ -494,7 +593,8 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
         // flights, untwist, move round, twist to the new flight, lower, attach.
         padLiftActuation = pose.lift * v.padLiftActuation
         padRadialActuation = pose.raise * v.padRadialActuation
-        padTwistActuation = pose.neutral * Math.atan(threadPitch)
+        // (Untwisted: turned back by its shape's slant, so that it lines up with its actuators.)
+        padTwistActuation = -pose.neutral * g.pads.slants[grapplerIndex]
         const grapplerScrewAngle = Math.atan(threadPitch)
         padLiftActuationThetaComponent = padLiftActuation * Math.sin(grapplerScrewAngle)
         padLiftActuationYComponent = padLiftActuation * Math.cos(grapplerScrewAngle)

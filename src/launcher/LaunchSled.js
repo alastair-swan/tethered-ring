@@ -2,7 +2,6 @@ import * as THREE from 'three'
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
 import { quaternionFromFrame } from '../curves/SuperCurves.js'
 import { MovingVirtualObject, curveFrameAtTime, parameterSignature } from './VirtualObject.js'
-import { virtualAdaptiveNut } from './AdaptiveNut.js'
 
 const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
 const MODEL_UPWARD = new THREE.Vector3(0, 0, 1)  // The direction that the model considers "upward"
@@ -100,6 +99,7 @@ export class virtualLaunchSled extends MovingVirtualObject {
   static activeObjects = new Map()
   static className = 'virtualLaunchSleds'
   static modelsAreRecyleable = true
+  static highlightClass = 'massDriver'
   static isDynamic = true
 
   static signatureOf(dParamWithUnits) {
@@ -131,8 +131,7 @@ export class virtualLaunchSled extends MovingVirtualObject {
 
   frameAt(refFrame, deltaT) {
     const v = virtualLaunchSled
-    // (It runs with its nut, ahead of or behind its ideal position: see virtualAdaptiveNut.leadTime.)
-    const f = curveFrameAtTime(refFrame.curve, deltaT + virtualAdaptiveNut.leadTime(this.timeLaunched, deltaT), false)
+    const f = curveFrameAtTime(refFrame.curve, deltaT, false)
     const forward = f.forward
     const upward = f.upward
     const rightward = new THREE.Vector3().crossVectors(forward, upward)
@@ -150,7 +149,7 @@ export class virtualLaunchSled extends MovingVirtualObject {
     const v = virtualLaunchSled
     om.visible = v.isVisible
     if (!v.isVisible) return
-    const deltaT = Math.max(0, v.adjustedTime(refFrame.timeSinceStart) - this.timeLaunched)
+    const deltaT = this.clampedDeltaT(refFrame)   // (negative while leaving the terminal)
     const frame = this.frameAt(refFrame, deltaT)
     om.position.copy(frame.position)
     om.quaternion.copy(frame.orientation)

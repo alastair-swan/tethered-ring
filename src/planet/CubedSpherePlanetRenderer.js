@@ -1,12 +1,19 @@
 import * as THREE from 'three';
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { fbmGlsl, noiseOffsets, SEA_SURFACE_FREQUENCIES, seaSurfaceLookGlsl } from './seaNoise.js';
+import { fbmGlsl, noiseOffsets } from './seaNoise.js';
+import '../scene/sunAndSkyLight.js'; // registers <sun_and_sky_light>, which the sea surface uses
+import { FOAM_FREQUENCIES, GROUP_FREQUENCIES, GUST_FREQUENCIES, seaSkyReflectionGlsl, seaWaveUniforms, seaWavesGlsl, tileWaveOffsets } from './seaWaves.js';
+import { SEA_ICE_FREQUENCIES, seaIceGlsl, seaIceUniforms } from './seaIce.js';
 import { PixelLOD } from '../scene/PixelLOD.js';
 
 // Milliseconds per frame for uploading newly loaded tiles to the GPU (at least one tile per frame;
 // everything while recording, which sets PixelLOD.buildBudget to Infinity). Without a budget, the
 // many tiles that finish loading together at start-up were all uploaded in one frame's render.
 const TILE_UPLOAD_BUDGET_MS = 4;
+
+// The base tile sets (assets/earth, assets/earth_hires, assets/moon) have every tile through this LOD;
+// regional overlays only add tiles below it (BASE_FULL_COVERAGE_LOD in tools/adaptive_lod.py).
+const BASE_FULL_COVERAGE_LOD = 3;
 
 // =============================================================================
 // CubedSpherePlanetRenderer - cubed-sphere quadtree LOD planet renderer that
@@ -91,8 +98,16 @@ const WGS84_E2 = 2 / 298.257223563 - 1 / (298.257223563 * 298.257223563);
 const DEG2RAD = Math.PI / 180;
 // Sea surface (options.water): opacity of deep water, the depth over which it fades in from the
 // coastline, and its colour before a tile's imagery has loaded.
-const WATER_OPACITY = 0.12; // looking straight into it (more at grazing angles: see seaNoise.js)
+const WATER_OPACITY = 0.12; // looking straight into it (the surface's reflection comes on top: see _createWaterMaterial)
+const WATER_GRAZING_OPACITY = 0.35;
+// Light scattered back out of deep, clear water (linear reflectance; open ocean sends back mostly blue),
+// reached over the first WATER_BODY_DEPTH metres. The imagery's ocean, and the darkened sea floor seen
+// through the water, are near black.
+const WATER_BODY = [0.002, 0.008, 0.025];
+const WATER_BODY_DEPTH = 30;
 const WATER_SHALLOWS_DEPTH = 30;
+// Sea ice on the ground fades out over this height above sea level (m; see _configureSeafloor).
+const SEA_ICE_SHORE_HEIGHT = 40;
 const WATER_FALLBACK_COLOR = 0x0b2a3a; // (dark, like the imagery's ocean, so it is not taken for land)
 // Imagery luminance (linear) over which a pixel counts as land rather than sea (fade between the two).
 const WATER_LAND_LUMINANCE = ['0.06', '0.18'];
@@ -101,15 +116,7 @@ const WATER_UNDERSIDE_FROM_ABOVE = [0.015, 0.035, 0.06];
 // Sea floor seen from under the surface (linear RGB), and the depth over which it replaces the imagery.
 const SEAFLOOR_COLOR = [0.30, 0.28, 0.22];
 const SEAFLOOR_BLEND_DEPTH = 20;
-// Light left on the night side, as a fraction of the day side's (see _configureDaylight).
-const NIGHT_LIGHT = 0.05;
-const _daylightQuaternion = new THREE.Quaternion();
 
-// GLSL expression: the daylight factor (NIGHT_LIGHT .. 1) at a point (planet-centred position, any
-// length) for a sun direction, with a soft twilight band around the terminator.
-function daylightGlsl(position, sun) {
-  return `mix(${NIGHT_LIGHT.toFixed(3)}, 1.0, smoothstep(-0.1, 0.06, dot(normalize(${position}), ${sun})))`;
-}
 // Fractal noise on the sea floor: octave frequencies (1/m) and the contrast it adds.
 const SEAFLOOR_FREQS = [1 / 1600, 1 / 400, 1 / 100, 1 / 25];
 const SEAFLOOR_CONTRAST = 0.45;
@@ -174,6 +181,19 @@ function directionToFaceUV(dir, out) {
   return out;
 }
 
+// The (u,v) of a direction on a given cube face (the same formulas as directionToFaceUV, without
+// choosing the face): for points on a tile's edge, which lie on two faces at a cube seam.
+function directionToUVOnFace(dir, face, out) {
+  const x = dir.x, y = dir.y, z = dir.z;
+  switch (face) {
+    case '+X': case '-X': out.u = -z / x; out.v = face === '+X' ? y / x : -y / x; break;
+    case '+Y': case '-Y': out.u = face === '+Y' ? x / y : -x / y; out.v = -z / y; break;
+    default: out.u = x / z; out.v = face === '+Z' ? y / z : -y / z; break;
+  }
+  out.face = face;
+  return out;
+}
+
 // Intersects a ray from the ellipsoid center along `direction` with an oblate
 // ellipsoid aligned to the Y (polar) axis. Reduces cleanly to a sphere when a==b.
 function rayEllipsoidIntersection(direction, a, b, out) {
@@ -220,29 +240,13 @@ function decodeHeightU16(sample, minMeters, maxMeters) {
 // whose (u,v) parameterization has opposite handedness.
 // -----------------------------------------------------------------------------
 
-// Border vertex indices of a (segments+1)^2 grid tile, per edge, and the indices of their skirt
-// copies, which are appended after the grid in the same edge order.
-function skirtEdges(segments) {
-  const n = segments + 1;
-  const base = n * n;
-  const edges = [
-    Array.from({ length: n }, (_, x) => x),                  // top    (y = 0)
-    Array.from({ length: n }, (_, x) => segments * n + x),   // bottom (y = segments)
-    Array.from({ length: n }, (_, y) => y * n),              // left   (x = 0)
-    Array.from({ length: n }, (_, y) => y * n + segments),   // right  (x = segments)
-  ];
-  return edges.map((border, e) => ({ border, skirt: border.map((_, i) => base + e * n + i) }));
-}
-
 class IndexBufferCache {
   constructor() {
     this.cache = new Map();
   }
 
-  // Grid triangles only (no skirts), used to compute surface normals.
   getGridIndexArray(segments, reversed) {
-    const full = this._getArray(segments, reversed);
-    return full.subarray(0, segments * segments * 6);
+    return this._getArray(segments, reversed);
   }
 
   getIndexAttribute(segments, reversed) {
@@ -273,19 +277,7 @@ class IndexBufferCache {
       }
     }
 
-    // Skirts: one strip per edge joining the border vertices to copies of them pushed down towards
-    // the planet centre (see appendSkirts). Emitted with both windings so they are visible from
-    // either side of whatever gap they cover.
-    for (const edge of skirtEdges(segments)) {
-      for (let i = 0; i < segments; i++) {
-        const a = edge.border[i], b = edge.border[i + 1];
-        const c = edge.skirt[i], d = edge.skirt[i + 1];
-        tri.push(a, b, c, b, d, c, a, c, b, b, c, d);
-      }
-    }
-
-    const maxIndex = vertexCount + 4 * (segments + 1);
-    const array = maxIndex > 65535 ? new Uint32Array(tri) : new Uint16Array(tri);
+    const array = vertexCount > 65535 ? new Uint32Array(tri) : new Uint16Array(tri);
     this.cache.set(key, array);
     return array;
   }
@@ -355,6 +347,8 @@ class Tile {
     // Per-edge coarse-neighbor step [T,B,L,R]. 1 = same/finer (no morph); 2^d = the
     // neighbor is d LODs coarser, so collapse all but every (2^d)th boundary vertex.
     this.edgeSteps = [1, 1, 1, 1];
+    // The coarser visible neighbour across each edge (where edgeSteps > 1), whose heights the edge takes.
+    this.edgeNeighbors = [null, null, null, null];
     // Packed key of edgeSteps used for cheap change detection / rebuild trigger.
     this.edgeMask = 0;
 
@@ -420,6 +414,10 @@ export class CubedSpherePlanetRenderer {
     // (or is still a Git LFS pointer, not pulled) is skipped: the tiles below it are used instead.
     this.loadedAssets = [];
     this.onAssetsLoaded = options.onAssetsLoaded ?? null;
+    // The assets whose tiles are on screen (names, sorted), reported to options.onVisibleAssets whenever
+    // they change, so that each source's credit is shown while its imagery is.
+    this.onVisibleAssets = options.onVisibleAssets ?? null;
+    this._visibleAssetsKey = null;
 
     this.enabled = true;
     this.segments = Math.max(2, options.tileSegments ?? 24);
@@ -451,6 +449,8 @@ export class CubedSpherePlanetRenderer {
     // Throttle high-LOD refinement while the camera moves quickly.
     this.fastCameraSpeed = options.fastCameraSpeed ?? Infinity;
     this.maxLodWhileFast = options.maxLodWhileFast ?? Infinity;
+    // The deepest LOD to use (for comparing levels; Infinity = as deep as the assets go).
+    this.lodCap = Infinity;
 
     this.requireKtx2 = options.requireKtx2 === true;
     this.receiveSurfaceShadows = options.receiveSurfaceShadows === true;
@@ -460,8 +460,6 @@ export class CubedSpherePlanetRenderer {
     // 0..1: how strongly ground below sea level is drawn as sea floor (see _configureSeafloor). Set
     // while the camera is under the sea surface; shared by every tile material.
     this.seafloorView = { value: 0 };
-    // Direction to the sun in this renderer's (surface) frame, for the night side (_configureDaylight).
-    this.daylightSun = { value: new THREE.Vector3(0, 1, 0) };
     this.textureAnisotropy = Math.max(1, options.textureAnisotropy ?? 4);
     this.displacementScaleMultiplier = Math.max(0, options.displacementScaleMultiplier ?? 1);
     // Startup tracing (console logs, resource-timing scans and the ASCII chart)
@@ -488,8 +486,6 @@ export class CubedSpherePlanetRenderer {
 
     // Caches and scheduling.
     this.indexBufferCache = new IndexBufferCache();
-    this.skirtsVisible = true;
-    this._tmpSkirt = new THREE.Vector3();
     // Tiles that want a load this frame, with priorities computed this frame.
     // Rebuilt every update, so stale priorities and no-longer-wanted tiles
     // never get loaded ahead of what the camera currently needs.
@@ -560,9 +556,18 @@ export class CubedSpherePlanetRenderer {
     this._tmpB = new THREE.Vector3();
     this._tmpMorphDir = new THREE.Vector3();
     this._tmpFaceUV = { face: '+X', u: 0, v: 0 };
+    this._tmpNearUV = { face: '+X', u: 0, v: 0 };
+    this._tmpPointDir = new THREE.Vector3();
+    this._tmpPointNormal = new THREE.Vector3();
+    this._tmpNormalA = new THREE.Vector3();
+    this._tmpNormalB = new THREE.Vector3();
+    this._tmpNormalC = new THREE.Vector3();
+    this._tmpNormalD = new THREE.Vector3();
     this._tmpV2 = new THREE.Vector2();
     this._tmpColor = new THREE.Color();
     this._steps = [1, 1, 1, 1];
+    this._neighbors = [null, null, null, null];
+    this._lastNeighbor = null;
 
     // Shared base material; per-tile clones receive the streamed color map.
     // Material.copy carries side/transparent/opacity/depthWrite, so settings
@@ -600,7 +605,7 @@ export class CubedSpherePlanetRenderer {
 
     if (options.opacity != null) this.setOpacity(options.opacity);
     this._initRoots();
-    if (this.hasAssets) this._loadManifest();
+    this.manifestLoaded = this.hasAssets ? this._loadManifest() : Promise.resolve();
     if (options.debugMode && options.debugMode !== 'none') this.setDebugMode(options.debugMode);
   }
 
@@ -764,7 +769,17 @@ export class CubedSpherePlanetRenderer {
         let count = 0;
         const mergeStart = performance.now();
         if (data.tiles) {
+          // An overlay's tiles above overlayMinLod are left out where the base has its own, so from
+          // further out the globe is the base's one unbroken dataset. The base is complete through
+          // BASE_FULL_COVERAGE_LOD, so an overlay's tiles there would only replace the base's imagery over
+          // a large area (a quarter of a cube face at LOD 1) with its own: older bakes include such a chain
+          // of tiles down to their area (tools/adaptive_lod.py now leaves them out). A base set can name a
+          // deeper level in its manifest (assets/earth_hires: the level its regional areas are covered to,
+          // plus one; see tools/earth_hires.py).
+          const overlayMinLod = this.manifest?.overlayMinLod ?? BASE_FULL_COVERAGE_LOD + 1;
           for (const [k, v] of Object.entries(data.tiles)) {
+            const lod = Number(k.split('/')[1]);
+            if (lod < overlayMinLod && this.manifestTileMap.has(k) && !this.tileSourceMap.has(k)) continue;
             this.manifestTileMap.set(k, v);
             this.tileSourceMap.set(k, source);
             count += 1;
@@ -1109,6 +1124,36 @@ export class CubedSpherePlanetRenderer {
   }
 
   // Bilinear height lookup in meters at tile-local (u01, v01).
+  // The terrain point (planet frame, absolute) at cube coordinates (u, v) on a tile's face, which may
+  // lie beyond the tile: its height then comes from the tile there (see _heightNear).
+  _terrainPointAt(tile, u, v, out) {
+    const dir = this._tmpPointDir, nor = this._tmpPointNormal;
+    cubeToDirection(tile.face, u, v, dir);
+    rayEllipsoidIntersection(dir, this.a, this.b, out);
+    ellipsoidNormal(out, this.a, this.b, nor);
+    const span = 2 / Math.pow(2, tile.lod);
+    const u01 = (u + 1) / span - tile.x, v01 = (v + 1) / span - tile.y;
+    const eps = 1e-9;
+    const inside = u01 >= -eps && u01 <= 1 + eps && v01 >= -eps && v01 <= 1 + eps;
+    const h = inside ? this._sampleHeight(tile, u01, v01) : this._heightNear(dir, tile.lod);
+    return out.addScaledVector(nor, h * this.displacementScaleMultiplier);
+  }
+
+  // The height in the direction `dir` from the loaded tile covering it at `lod`, or else its nearest
+  // loaded ancestor; 0 if none is loaded.
+  _heightNear(dir, lod) {
+    const f = directionToFaceUV(dir, this._tmpNearUV);
+    const faceIndex = FACE_INDEX[f.face];
+    for (let l = lod; l >= this.rootLod; l--) {
+      const count = 1 << l, span = 2 / count;
+      const x = Math.min(count - 1, Math.max(0, Math.floor((f.u + 1) / span)));
+      const y = Math.min(count - 1, Math.max(0, Math.floor((f.v + 1) / span)));
+      const t = this._getTile(faceIndex, l, x, y);
+      if (t?.heightSamples && t.heightWidth && t.heightHeight) return this._sampleHeight(t, (f.u + 1) / span - x, (f.v + 1) / span - y);
+    }
+    return 0;
+  }
+
   _sampleHeight(tile, u01, v01) {
     const samples = tile.heightSamples;
     if (!samples) return 0;
@@ -1327,8 +1372,6 @@ export class CubedSpherePlanetRenderer {
     this._camDistLocal = this._camLocal.length();
     if (this._camDistLocal > 0) this._camDirLocal.copy(this._camLocal).divideScalar(this._camDistLocal);
 
-    this._updateSkirtVisibility();
-
     this.viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.viewProjection);
 
@@ -1451,15 +1494,14 @@ export class CubedSpherePlanetRenderer {
   // Screen-space-error driven refinement with hysteresis and speed throttling.
   // Refinement is asset-driven: a tile only refines if higher-LOD child tiles
   // were actually generated (present in the manifest), which prevents 404 storms
-  // and the flicker/evict churn they cause.
+  // and the flicker/evict churn they cause. Tiles from regional overlays refine
+  // the same way as the base's (by how large they are on screen): every Earth
+  // scene loads every overlay on the machine, and uses its tiles where the
+  // camera is close enough to need them.
   _shouldRefine(tile) {
-    if (tile.lod >= this.maxAvailableLod) return false;
+    if (tile.lod >= Math.min(this.maxAvailableLod, this.lodCap)) return false;
     this._refreshTileCache(tile);
     if (!tile.hasChildAssets) return false;
-
-    // Enhancement overlays should refine all the way through their own manifest
-    // so the whole overlay region fills in, not just the camera-facing slice.
-    if (this.tileSourceMap.has(tile.id)) return true;
 
     if (this.cameraSpeedMps > this.fastCameraSpeed && tile.lod >= this.maxLodWhileFast) {
       return false;
@@ -1506,9 +1548,6 @@ export class CubedSpherePlanetRenderer {
     boost += Math.max(0, 3 - tile.lod) * 2.5;
     if (tile.lod === 0) boost *= 12;
     else if (tile.lod === 1) boost *= 5;
-    // Overlay tiles should win against the base globe so the enhancement layer
-    // becomes complete instead of being partially starved by base tile traffic.
-    if (this.tileSourceMap.has(tile.id)) boost += 8;
     boost += 2.5 * clamp01((meta.roughness ?? 0.1) * 6);        // rough/mountainous
     boost += 1.2 * land;                                         // land over ocean
     boost -= 0.6 * (1 - land);                                   // de-prioritize ocean
@@ -1527,7 +1566,6 @@ export class CubedSpherePlanetRenderer {
     let priority = 1e6 / distance;
     priority += tile.lod * 50;
     priority *= tile.boost;
-    if (this.tileSourceMap.has(tile.id)) priority *= 20;
 
     // Strongly prefer camera-facing tiles.
     const facing = tile.centerNormal.dot(this._camDirLocal);
@@ -1580,7 +1618,6 @@ export class CubedSpherePlanetRenderer {
     const material = this.baseMaterial.clone();
     this._configureSurfaceDetail(material, tile);
     if (this.hasWater) this._configureSeafloor(material, tile);
-    this._configureDaylight(material, tile);
     const mesh = new THREE.Mesh(geometry, material);
     mesh.name = `tile:${tile.id}`;
     mesh.frustumCulled = false; // we do our own conservative culling
@@ -1787,18 +1824,67 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
       }
     }
 
+    // Normals from the height field by central differences, one grid step either way, taking the
+    // points beyond the tile's edge from the tile next to it: both tiles then agree on the normal at
+    // their shared edge (normals from each tile's own triangles differ there, which shows as a line).
+    const step = tileSpan / seg;
+    const pu = this._tmpNormalA, pd = this._tmpNormalB, pv = this._tmpNormalC, pw = this._tmpNormalD;
+    for (let y = 0; y <= seg; y++) {
+      const v = v0 + tileSpan * y / seg;
+      for (let x = 0; x <= seg; x++) {
+        const u = u0 + tileSpan * x / seg;
+        this._terrainPointAt(tile, u + step, v, pu).sub(this._terrainPointAt(tile, u - step, v, pd));
+        this._terrainPointAt(tile, u, v + step, pv).sub(this._terrainPointAt(tile, u, v - step, pw));
+        pu.cross(pv).normalize();
+        const i3 = (y * (seg + 1) + x) * 3;
+        // (Facing out, as the ellipsoid normal does: the cross product's sign depends on the face.)
+        if (pu.x * normals[i3] + pu.y * normals[i3 + 1] + pu.z * normals[i3 + 2] < 0) pu.negate();
+        normals[i3] = pu.x; normals[i3 + 1] = pu.y; normals[i3 + 2] = pu.z;
+      }
+    }
+
     // CDLOD edge morph: where an edge faces a coarser neighbor, collapse the in-between
     // boundary vertices onto the segment between the coarse tile's shared vertices so the
     // fine edge matches the coarse vertex spacing (removes T-junction cracks). Handles
-    // multi-level differences via a per-edge step of 2^(levelDiff).
+    // multi-level differences via a per-edge step of 2^(levelDiff). The sea surface's edges (and its
+    // depths) are collapsed the same way, or the sea would tear open along them.
     const steps = tile.edgeSteps;
     if (steps[0] > 1 || steps[1] > 1 || steps[2] > 1 || steps[3] > 1) {
       const idx = (x, y) => y * (seg + 1) + x;
+      // The coarse neighbour's own heights at its vertices along the shared edge: this tile's height
+      // data (finer, or from another source) differs there, which would open a crack between the two
+      // tiles. (Neighbours at the same level agree already: their height tiles share their edge samples.)
+      const takeNeighborHeights = (e, xy) => {
+        const n = tile.edgeNeighbors[e];
+        const step = Math.min(steps[e], seg);
+        if (!n || !n.heightSamples || step <= 1 || seg % step !== 0) return;
+        const nSpan = 2 / Math.pow(2, n.lod);
+        for (let i = 0; i <= seg; i += step) {
+          const [x, y] = xy(i);
+          cubeToDirection(tile.face, u0 + tileSpan * x / seg, v0 + tileSpan * y / seg, dir);
+          rayEllipsoidIntersection(dir, this.a, this.b, pos);
+          ellipsoidNormal(pos, this.a, this.b, nor);
+          directionToUVOnFace(dir, n.face, this._tmpFaceUV);
+          const nu = (this._tmpFaceUV.u + 1) / nSpan - n.x, nv = (this._tmpFaceUV.v + 1) / nSpan - n.y;
+          const h = this._sampleHeight(n, nu, nv) * displacementScale;
+          const index = idx(x, y), i3 = index * 3;
+          if (heights) heights[index] = h;
+          pos.addScaledVector(nor, h);
+          positions[i3] = pos.x - cx; positions[i3 + 1] = pos.y - cy; positions[i3 + 2] = pos.z - cz;
+        }
+      };
+      takeNeighborHeights(0, (i) => [i, 0]);
+      takeNeighborHeights(1, (i) => [i, seg]);
+      takeNeighborHeights(2, (i) => [0, i]);
+      takeNeighborHeights(3, (i) => [seg, i]);
       const lerp = (i, a, b, t) => {
-        const i3 = i * 3, a3 = a * 3, b3 = b * 3;
-        positions[i3] = positions[a3] + (positions[b3] - positions[a3]) * t;
-        positions[i3 + 1] = positions[a3 + 1] + (positions[b3 + 1] - positions[a3 + 1]) * t;
-        positions[i3 + 2] = positions[a3 + 2] + (positions[b3 + 2] - positions[a3 + 2]) * t;
+        for (const p of seaPositions ? [positions, seaPositions, normals] : [positions, normals]) {
+          const i3 = i * 3, a3 = a * 3, b3 = b * 3;
+          p[i3] = p[a3] + (p[b3] - p[a3]) * t;
+          p[i3 + 1] = p[a3 + 1] + (p[b3 + 1] - p[a3 + 1]) * t;
+          p[i3 + 2] = p[a3 + 2] + (p[b3 + 2] - p[a3 + 2]) * t;
+        }
+        if (heights) heights[i] = heights[a] + (heights[b] - heights[a]) * t;
       };
       const morphEdge = (step, get) => {
         let s = Math.min(step, seg);
@@ -1820,25 +1906,12 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     // (u,v) handedness, so FrontSide culling never opens holes.
     const reversed = this._needsReversedWinding(positions, normals, seg);
 
-    // The initial normals describe only the smooth ellipsoid. Recompute them from
-    // the displaced triangles so kilometer-scale relief participates in the
-    // same directional lighting as the synthetic fine regolith normals. This is
-    // done on the grid alone so the skirts cannot bend the border normals.
-    const grid = new THREE.BufferGeometry();
-    grid.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    grid.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-    grid.setIndex(new THREE.BufferAttribute(this.indexBufferCache.getGridIndexArray(seg, reversed), 1));
-    grid.computeVertexNormals();
-
     const geometry = new THREE.BufferGeometry();
-    const withSkirts = this._appendSkirts(tile, positions, grid.attributes.normal.array, uvs, seg);
-    geometry.setAttribute('position', new THREE.BufferAttribute(withSkirts.positions, 3));
-    geometry.setAttribute('normal', new THREE.BufferAttribute(withSkirts.normals, 3));
-    geometry.setAttribute('uv', new THREE.BufferAttribute(withSkirts.uvs, 2));
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
     geometry.setIndex(this.indexBufferCache.getIndexAttribute(seg, reversed));
-    this._applySkirtDrawRange(geometry);
     geometry.computeBoundingSphere();
-    grid.dispose();
     geometry.userData.waterGeometry = seaPositions
       ? this._buildWaterGeometry(seaPositions, seaNormals, uvs, heights, seg, reversed)
       : null;
@@ -1905,14 +1978,17 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     }
   }
 
-  // The sea's underside as seen from above it: opaque deep water (shared by every tile).
+  // The sea's underside as seen from above it (shared by every tile): opaque deep water, with the sky
+  // reflected as a level surface there would reflect it (seaWaves.js), so where it shows through cracks
+  // between tiles near the horizon it matches the surface around it.
   _waterUndersideMaterial() {
     if (this._undersideMaterial) return this._undersideMaterial;
-    const material = new THREE.MeshBasicMaterial({
+    const material = new THREE.MeshLambertMaterial({
       color: new THREE.Color(...WATER_UNDERSIDE_FROM_ABOVE),
       side: THREE.BackSide,
     });
     material.onBeforeCompile = (shader) => {
+      shader.uniforms.seaSlopeVariance = seaWaveUniforms.seaSlopeVariance;
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
 attribute float seaDepth;
@@ -1922,33 +1998,62 @@ vSeaDepth = seaDepth;`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
 varying float vSeaDepth;`)
+        .replace('#include <lights_lambert_pars_fragment>', `#include <lights_lambert_pars_fragment>
+${seaSkyReflectionGlsl}`)
         .replace('#include <alphatest_fragment>', `if (vSeaDepth <= 0.0) discard; // land
-#include <alphatest_fragment>`);
+#include <alphatest_fragment>`)
+        .replace('#include <opaque_fragment>', `{
+  vec3 view = normalize(vViewPosition);
+  vec3 up = normalize(vNormal);
+  outgoingLight = mix(diffuseColor.rgb, seaSkyReflection(reflect(-view, up), sqrt(seaSlopeVariance)), seaReflectance(abs(dot(up, view))));
+}
+#include <opaque_fragment>`);
     };
     material.customProgramCacheKey = () => 'seaUndersideFromAbove';
     this._undersideMaterial = material;
     return material;
   }
 
-  // Mostly clear (so the tube and cables show through), more opaque at grazing angles, with fine
-  // ripples (seaNoise.js) that show where the surface is and how far away; tinted by the imagery's
-  // ocean colour and clearer still in the shallows. (Front faces; see _updateTileWater.)
+  // The sea surface (front faces; see _updateTileWater). Two layers, composited over what is under the
+  // surface (the sea floor, and the tube and cables in the water, which show through):
+  // - The water: the imagery's ocean colour, lit, mostly clear (WATER_OPACITY, clearer still in the
+  //   shallows, so the coastline is soft).
+  // - The surface: wind-driven waves (seaWaves.js) that reflect the sky (by Fresnel's law, little when
+  //   looked into and nearly all at grazing angles; the sky by the atmosphere's own model) and glint
+  //   in the sun (Blinn-Phong, as rough as the waves too fine to draw), with whitecaps in strong wind.
+//   On a rough sea the reflection is limited by the waves' slopes (seaWaves.js: seaReflectanceGlsl).
+  // Since a glint is far brighter than the water's opacity allows in normal blending, the opacity is
+  // raised to at least the brightness, with the colour divided by it: the same result over what is
+  // behind, without clamping. Where there is sea ice at the simulated date (seaIce.js), it covers the
+  // water: opaque, matte and flat.
   _createWaterMaterial(tile) {
     const material = new THREE.MeshPhongMaterial({
       color: tile.texture ? 0xffffff : WATER_FALLBACK_COLOR,
       map: tile.texture ?? null,
-      specular: 0x7d97a8,
-      shininess: 80,
+      specular: new THREE.Color().setRGB(0.02, 0.02, 0.02), // water's reflectance looking straight in (Fresnel F0)
       transparent: true,
       depthWrite: false,
     });
-    const offsets = noiseOffsets(tile.center, SEA_SURFACE_FREQUENCIES);
+    const waveOffsets = tileWaveOffsets(tile.center);
+    const gustOffsets = noiseOffsets(tile.center, GUST_FREQUENCIES);
+    const foamOffsets = noiseOffsets(tile.center, FOAM_FREQUENCIES);
+    const groupOffsets = noiseOffsets(tile.center, GROUP_FREQUENCIES);
+    const iceOffsets = noiseOffsets(tile.center, SEA_ICE_FREQUENCIES);
     const invA2 = (1 / (this.a * this.a)).toExponential(10);
     const invB2 = (1 / (this.b * this.b)).toExponential(10);
     material.onBeforeCompile = (shader) => {
-      shader.uniforms.seaRippleOffset = { value: offsets };
+      Object.assign(shader.uniforms, seaWaveUniforms, seaIceUniforms);
+      shader.uniforms.seaWaveOffset = { value: waveOffsets };
+      shader.uniforms.seaGustOffset = { value: gustOffsets };
+      shader.uniforms.seaFoamOffset = { value: foamOffsets };
+      shader.uniforms.seaGroupOffset = { value: groupOffsets };
+      shader.uniforms.seaIceOffset = { value: iceOffsets };
       shader.uniforms.seaTileCenter = { value: tile.center };
-      shader.uniforms.daylightSun = this.daylightSun;
+      // The sea's darkening of what is seen through it (seaDarkening.js) is not for the surface itself.
+      // It is worked out per vertex from the depth below sea level, and where a tile's edge is pulled
+      // onto a coarser neighbour's straight edge, its vertices sag up to tens of metres below the sea's
+      // curve: the surface would darken along those edges, fading over one row of triangles.
+      shader.uniforms.seaParams = { value: { x: 1, y: 0 } };
       // Per-pixel normals: on a distant (coarse) tile the vertex normals, interpolated across big flat
       // triangles, are slightly off from cell to cell, and the sharp sun glint turns that into a grid.
       // The normal is instead computed for each pixel from the ellipsoid at its planet position (to
@@ -1972,40 +2077,88 @@ vSeaAxisY = normalMatrix * vec3(0.0, 1.0, 0.0);
 vSeaAxisZ = normalMatrix * vec3(0.0, 0.0, 1.0);`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
-uniform vec3 daylightSun;
 varying float vSeaDepth;
 varying vec3 vSeaLocal;
 varying vec3 vSeaPlanet;
 varying vec3 vSeaAxisX;
 varying vec3 vSeaAxisY;
 varying vec3 vSeaAxisZ;
-${fbmGlsl('seaRipple', SEA_SURFACE_FREQUENCIES)}
-${seaSurfaceLookGlsl(WATER_OPACITY)}
+${fbmGlsl('seaIce', SEA_ICE_FREQUENCIES)}
+${seaIceGlsl}
+${seaWavesGlsl}
 
-// Ellipsoid normal at this pixel, in view space.
-vec3 seaViewNormal() {
-  vec3 n = normalize(vSeaPlanet * vec3(${invA2}, ${invB2}, ${invA2}));
+// Ellipsoid normal at this pixel, in planet axes.
+vec3 seaPlanetNormal() {
+  return normalize(vSeaPlanet * vec3(${invA2}, ${invB2}, ${invA2}));
+}
+
+// A direction in planet axes, in view space.
+vec3 seaToView(vec3 n) {
   return normalize(n.x * vSeaAxisX + n.y * vSeaAxisY + n.z * vSeaAxisZ);
 }`)
+        .replace('#include <lights_phong_pars_fragment>', `#include <lights_phong_pars_fragment>
+${seaSkyReflectionGlsl}`)
         .replace('#include <alphatest_fragment>', `if (vSeaDepth <= 0.0) discard; // land
 // Where the imagery itself shows land, snow or ice (bright; the ocean in the imagery is very dark),
 // there is no water: the coastline follows the imagery, and coarse distant tiles, whose coastal
 // vertices can dip below sea level, do not dot the shore with blobs of water.
 float seaImageryLand = smoothstep(${WATER_LAND_LUMINANCE[0]}, ${WATER_LAND_LUMINANCE[1]}, dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722)));
 if (seaImageryLand >= 1.0) discard;
+float seaViewDistance = length(vViewPosition);
+// More opaque at grazing angles (judged from the level surface, not the waves), as the water's depth
+// along the line of sight grows; clearer in the shallows.
+float seaWaterAlpha = mix(${WATER_OPACITY.toFixed(3)}, ${WATER_GRAZING_OPACITY.toFixed(3)}, pow(1.0 - abs(dot(seaToView(seaPlanetNormal()), normalize(vViewPosition))), 4.0))
+  * mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed(1)}, 0.0, 1.0));
+float seaIce = 0.0;
 {
-  float ripple = seaRippleFbm(vSeaLocal, length(vViewPosition));
-  float shine;
-  vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, abs(dot(seaViewNormal(), normalize(vViewPosition))), shine);
-  diffuseColor.rgb = shaded.rgb;
-  totalEmissiveRadiance += seaSurfaceHighlight * shine * 0.35 * ${daylightGlsl('vSeaPlanet', 'daylightSun')}; // reflected sky (by day)
-  // Clearer in the shallows, so the coastline is soft.
-  diffuseColor.a = shaded.a * mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed(1)}, 0.0, 1.0)) * (1.0 - seaImageryLand);
+  float concentration = seaIceConcentration(seaPlanetNormal());
+  if (concentration > 0.0) {
+    vec4 ice = seaIceLook(concentration, seaIceFbm(vSeaLocal, seaViewDistance), seaViewDistance);
+    seaIce = ice.a;
+    diffuseColor.rgb = mix(diffuseColor.rgb, ice.rgb, seaIce);
+    seaWaterAlpha = mix(seaWaterAlpha, 1.0, seaIce);
+  }
 }
 #include <alphatest_fragment>`)
         .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
-normal = seaViewNormal();`)
-        .replace('#include <opaque_fragment>', `outgoingLight *= ${daylightGlsl('vSeaPlanet', 'daylightSun')};
+float seaUnresolved;
+float seaGustNow = seaGustFactor(vSeaLocal, seaViewDistance);
+vec3 seaUp = seaPlanetNormal();
+vec3 seaSlope = seaWaveSlope(vSeaLocal, seaUp, seaGustNow, seaUnresolved);
+normal = seaToView(normalize(seaUp - seaSlope * (1.0 - seaIce)));
+float seaFoamCover = seaWhitecaps(vSeaLocal, seaViewDistance, seaGustNow, length(fwidth(vSeaLocal))) * (1.0 - seaIce);`)
+        .replace('#include <lights_phong_fragment>', `#include <lights_phong_fragment>
+material.specularStrength *= 1.0 - seaIce; // ice is matte: no sun glint
+// Blinn-Phong's exponent for the slopes too fine to draw (Beckmann roughness m^2 = their mean square
+// slope), no sharper than the sun's disc allows.
+material.specularShininess = clamp(2.0 / (seaUnresolved + 2e-4) - 2.0, 4.0, 8000.0);`)
+        .replace('#include <opaque_fragment>', `{
+  vec3 view = normalize(vViewPosition);
+  float fresnel = seaReflectance(dot(normal, view)) * (1.0 - seaIce);
+  vec3 water = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
+  vec3 light = (1.0 - fresnel) * seaWaterAlpha * water + fresnel * seaSkyReflection(reflect(-view, normal), sqrt(seaUnresolved)) + reflectedLight.directSpecular;
+  float alpha = (1.0 - fresnel) * seaWaterAlpha + fresnel;
+  // The light the water itself sends back (water-leaving light), in the sun and sky light (sunAndSkyLight.js).
+  vec3 seaIrradiance = slSkyDown + ambientLightColor;
+  #if NUM_DIR_LIGHTS > 0
+    seaIrradiance += slDirect * directionalLights[0].color * max(dot(seaToView(seaUp), directionalLights[0].direction), 0.0);
+  #endif
+  light += (1.0 - fresnel) * (1.0 - seaIce) * vec3(${WATER_BODY.map(c => c.toFixed(4)).join(', ')}) * RECIPROCAL_PI * seaIrradiance
+    * smoothstep(0.0, ${WATER_BODY_DEPTH.toFixed(1)}, vSeaDepth);
+  if (seaFoamCover > 0.0) {
+    // White water: matte, lit by the sun and sky (sunAndSkyLight.js) and the night light.
+    vec3 irradiance = slSkyDown + ambientLightColor;
+    #if NUM_DIR_LIGHTS > 0
+      irradiance += slDirect * directionalLights[0].color * max(dot(normal, directionalLights[0].direction), 0.0);
+    #endif
+    light = mix(light, 0.6 * RECIPROCAL_PI * irradiance, seaFoamCover);
+    alpha = mix(alpha, 1.0, seaFoamCover);
+  }
+  light *= 1.0 - seaImageryLand;
+  alpha *= 1.0 - seaImageryLand;
+  diffuseColor.a = clamp(max(alpha, max(light.r, max(light.g, light.b))), 1e-4, 1.0);
+  outgoingLight = light / diffuseColor.a;
+}
 #include <opaque_fragment>`);
     };
     material.customProgramCacheKey = () => 'seaSurface';
@@ -2018,24 +2171,35 @@ normal = seaViewNormal();`)
   // variation, with mild fractal noise (seaNoise.js), blending in over the first SEAFLOOR_BLEND_DEPTH
   // metres below sea level. The altitude is computed per vertex from the tile-local position plus the
   // tile centre (good to ~1 m in float32).
+  //
+  // Sea ice (seaIce.js) is also drawn on the ground, fully below sea level and fading out over the first
+  // SEA_ICE_SHORE_HEIGHT metres above it, so it reaches the shore where the sea surface's edge is
+  // ragged (coarse tiles' coastal triangles, and the cut where the imagery shows land).
   _configureSeafloor(material, tile) {
     const previous = material.onBeforeCompile;
     const previousKey = material.customProgramCacheKey;
     const offsets = noiseOffsets(tile.center, SEAFLOOR_FREQS);
+    const iceOffsets = noiseOffsets(tile.center, SEA_ICE_FREQUENCIES);
+    const invA2 = (1 / (this.a * this.a)).toExponential(10);
+    const invB2 = (1 / (this.b * this.b)).toExponential(10);
     material.onBeforeCompile = (shader, renderer) => {
       if (previous) previous.call(material, shader, renderer);
       shader.uniforms.seafloorView = this.seafloorView;
       shader.uniforms.seafloorTileCenter = { value: tile.center };
       shader.uniforms.seafloorOffset = { value: offsets };
+      shader.uniforms.seaIceOffset = { value: iceOffsets };
+      Object.assign(shader.uniforms, seaIceUniforms);
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
 uniform vec3 seafloorTileCenter;
 varying float vSeafloorAltitude;
-varying vec3 vSeafloorLocal;`)
+varying vec3 vSeafloorLocal;
+varying vec3 vSeaIceNormal;`)
         .replace('#include <begin_vertex>', `#include <begin_vertex>
 vSeafloorLocal = transformed;
 {
   vec3 p = transformed + seafloorTileCenter;
+  vSeaIceNormal = p * vec3(${invA2}, ${invB2}, ${invA2});
   float r = length(p);
   vec3 d = p / r;
   float surface = 1.0 / sqrt((d.x * d.x + d.z * d.z) / ${(this.a * this.a).toExponential(10)} + d.y * d.y / ${(this.b * this.b).toExponential(10)});
@@ -2046,7 +2210,10 @@ vSeafloorLocal = transformed;
 uniform float seafloorView;
 varying float vSeafloorAltitude;
 varying vec3 vSeafloorLocal;
-${fbmGlsl('seafloor', SEAFLOOR_FREQS)}`)
+varying vec3 vSeaIceNormal;
+${fbmGlsl('seafloor', SEAFLOOR_FREQS)}
+${fbmGlsl('seaIce', SEA_ICE_FREQUENCIES)}
+${seaIceGlsl}`)
         .replace('#include <map_fragment>', `#include <map_fragment>
 if (seafloorView > 0.0 && vSeafloorAltitude < 0.0) {
   float luma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
@@ -2055,43 +2222,20 @@ if (seafloorView > 0.0 && vSeafloorAltitude < 0.0) {
     * (1.0 + ${SEAFLOOR_CONTRAST.toFixed(2)} * mottle) * vec3(1.0 + 0.08 * mottle, 1.0, 1.0 - 0.08 * mottle);
   float amount = seafloorView * clamp(-vSeafloorAltitude / ${SEAFLOOR_BLEND_DEPTH.toFixed(1)}, 0.0, 1.0);
   diffuseColor.rgb = mix(diffuseColor.rgb, sediment, amount);
+}
+if (seafloorView < 1.0 && vSeafloorAltitude < ${SEA_ICE_SHORE_HEIGHT.toFixed(1)}) {
+  float concentration = seaIceConcentration(normalize(vSeaIceNormal));
+  if (concentration > 0.0) {
+    float viewDistance = length(vViewPosition);
+    vec4 ice = seaIceLook(concentration, seaIceFbm(vSeafloorLocal, viewDistance), viewDistance);
+    float shore = 1.0 - smoothstep(0.0, ${SEA_ICE_SHORE_HEIGHT.toFixed(1)}, vSeafloorAltitude);
+    diffuseColor.rgb = mix(diffuseColor.rgb, ice.rgb, ice.a * shore * (1.0 - seafloorView));
+  }
 }`);
     };
     material.customProgramCacheKey = () => (previousKey ? previousKey.call(material) : '') + '|seafloor';
   }
 
-  // The night side: the terrain's light falls to NIGHT_LIGHT where the sun is below the horizon, with a
-  // soft twilight band (about +-6 degrees), so the day-night terminator shows. (Only the planet: the
-  // ring and launcher keep their lighting, so they stay visible at night.) Chained after any other
-  // shader customisation.
-  _configureDaylight(material, tile) {
-    const previous = material.onBeforeCompile;
-    const previousKey = material.customProgramCacheKey;
-    material.onBeforeCompile = (shader, renderer) => {
-      if (previous) previous.call(material, shader, renderer);
-      shader.uniforms.daylightSun = this.daylightSun;
-      shader.uniforms.daylightTileCenter = { value: tile.center };
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', `#include <common>
-uniform vec3 daylightTileCenter;
-varying vec3 vDaylightUp;`)
-        .replace('#include <begin_vertex>', `#include <begin_vertex>
-vDaylightUp = transformed + daylightTileCenter;`);
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', `#include <common>
-uniform vec3 daylightSun;
-varying vec3 vDaylightUp;`)
-        .replace('#include <opaque_fragment>', `outgoingLight *= ${daylightGlsl('vDaylightUp', 'daylightSun')};
-#include <opaque_fragment>`);
-    };
-    material.customProgramCacheKey = () => (previousKey ? previousKey.call(material) : '') + '|daylight';
-  }
-
-  // Sets the direction to the sun, in world axes (see _configureDaylight).
-  setSunDirection(worldDirection) {
-    this.group.updateWorldMatrix(true, false);
-    this.daylightSun.value.copy(worldDirection).applyQuaternion(this.group.getWorldQuaternion(_daylightQuaternion).invert()).normalize();
-  }
 
   // 1 while the camera is under the sea surface (see _configureSeafloor), 0 otherwise.
   setSeafloorView(amount) {
@@ -2104,73 +2248,6 @@ varying vec3 vDaylightUp;`)
     for (const tile of this.tiles.values()) {
       if (tile.waterMesh) tile.waterMesh.visible = tile.waterUnderside.visible = visible;
     }
-  }
-
-  // Skirts are only drawn while the camera is above the terrain. Some scenes put the camera below
-  // the surface (tunnels, underwater launch tubes); from there the tiles' back faces are culled, so
-  // the terrain is see-through, but double-sided skirts would show up as walls along every tile edge.
-  _updateSkirtVisibility() {
-    let underground = false;
-    if (this._camDistLocal > 0) {
-      const surface = rayEllipsoidIntersection(this._camDirLocal, this.a, this.b, this._tmpSkirt);
-      const terrain = this._sampleTerrainHeightAtDirection(this._camDirLocal);
-      const surfaceRadius = surface.length() + (terrain ? terrain.heightMeters : 0);
-      underground = this._camDistLocal < surfaceRadius;
-    }
-    const visible = !underground;
-    if (visible === this.skirtsVisible) return;
-    this.skirtsVisible = visible;
-    for (const tile of this.tiles.values()) {
-      if (tile.geometry) this._applySkirtDrawRange(tile.geometry);
-    }
-  }
-
-  _applySkirtDrawRange(geometry) {
-    const seg = this.segments;
-    geometry.setDrawRange(0, this.skirtsVisible ? Infinity : seg * seg * 6);
-  }
-
-  // Skirts hide the cracks that open between neighbouring tiles whose edges do not match exactly:
-  // different LODs (most visibly while the camera moves and tiles are still being swapped or
-  // edge-morphed), or height samples that differ slightly across tile boundaries. Each border
-  // vertex is duplicated and pushed towards the planet centre; the strip between them is coloured
-  // like the tile edge, so a gap shows terrain colour instead of the atmosphere or space behind.
-  _appendSkirts(tile, positions, normals, uvs, seg) {
-    const n = seg + 1;
-    const gridCount = n * n;
-    const skirtCount = 4 * n;
-    const outPositions = new Float32Array((gridCount + skirtCount) * 3);
-    const outNormals = new Float32Array((gridCount + skirtCount) * 3);
-    const outUvs = new Float32Array((gridCount + skirtCount) * 2);
-    outPositions.set(positions);
-    outNormals.set(normals);
-    outUvs.set(uvs);
-
-    // Deep enough to cover a one-level LOD difference in relief: half a grid segment of this
-    // tile's arc plus the terrain range scaled by the displacement multiplier, capped.
-    const tileArc = (2 / Math.pow(2, tile.lod)) * (Math.PI / 4) * this.meanRadius;
-    const relief = Math.abs(this.heightMaxMeters - this.heightMinMeters) * Math.abs(this.displacementScaleMultiplier);
-    const depth = Math.min(0.5 * tileArc / seg + 0.05 * relief, 50000) + 10;
-
-    const cx = tile.center.x, cy = tile.center.y, cz = tile.center.z;
-    let k = gridCount;
-    for (const edge of skirtEdges(seg)) {
-      for (const v of edge.border) {
-        const v3 = v * 3;
-        const px = positions[v3], py = positions[v3 + 1], pz = positions[v3 + 2];
-        // Radial direction from the planet centre, computed in float64 from absolute coordinates.
-        const ax = px + cx, ay = py + cy, az = pz + cz;
-        const inv = 1 / Math.hypot(ax, ay, az);
-        const k3 = k * 3;
-        outPositions[k3] = px - ax * inv * depth;
-        outPositions[k3 + 1] = py - ay * inv * depth;
-        outPositions[k3 + 2] = pz - az * inv * depth;
-        outNormals[k3] = normals[v3]; outNormals[k3 + 1] = normals[v3 + 1]; outNormals[k3 + 2] = normals[v3 + 2];
-        outUvs[k * 2] = uvs[v * 2]; outUvs[k * 2 + 1] = uvs[v * 2 + 1];
-        k++;
-      }
-    }
-    return { positions: outPositions, normals: outNormals, uvs: outUvs };
   }
 
   // Determines whether the forward index winding produces inward-facing triangles
@@ -2215,6 +2292,54 @@ varying vec3 vDaylightUp;`)
     const direction = latLonToDirection(
       latDeg * DEG2RAD, lonDeg * DEG2RAD, this._tmpDir, this.planetE2);
     return this._sampleTerrainHeightAtDirection(direction);
+  }
+
+  // Terrain heights from a fixed tile: the deepest in the manifests (base or overlays) that covers the
+  // unit direction `direction` (planet group frame), down to maxLod, whatever is loaded for display. For
+  // things placed from the terrain that must come out the same wherever the camera has been (see
+  // src/scene/Sailboats.js). Resolves to a function of a unit direction giving the height in metres
+  // (null outside the tile), or to null where there is no terrain data. Each tile is fetched once.
+  async fixedHeightSampler(direction, maxLod) {
+    await this.manifestLoaded;
+    const f = directionToFaceUV(direction, {});
+    for (let lod = Math.min(maxLod, this.maxAvailableLod); lod >= 0; lod--) {
+      const count = 1 << lod, span = 2 / count;
+      const x = Math.min(count - 1, Math.max(0, Math.floor((f.u + 1) / span)));
+      const y = Math.min(count - 1, Math.max(0, Math.floor((f.v + 1) / span)));
+      const key = tileKey(f.face, lod, x, y);
+      const meta = this.manifestTileMap.get(key);
+      if (!meta) continue;
+      this._fixedHeights ??= new Map();
+      if (this._fixedHeights.size > 4000) this._fixedHeights.clear();
+      let sampler = this._fixedHeights.get(key);
+      if (!sampler) {
+        sampler = this._fetchFixedHeights({ id: key, face: f.face, lod, x, y }, meta);
+        this._fixedHeights.set(key, sampler);
+      }
+      return sampler;
+    }
+    return null;
+  }
+
+  async _fetchFixedHeights(tile, meta) {
+    const response = await fetch(this._heightUrl(tile)).catch(() => null);
+    if (!response?.ok) return null;
+    const samples = new Uint16Array(await response.arrayBuffer());
+    const w = meta.width ?? 64, h = meta.height ?? 64;
+    if (samples.length !== w * h) return null;
+    const min = this.heightMinMeters, max = this.heightMaxMeters;
+    const span = 2 / (1 << tile.lod), uv = {};
+    return (direction) => {
+      directionToUVOnFace(direction, tile.face, uv);
+      const u01 = (uv.u + 1) / span - tile.x, v01 = (uv.v + 1) / span - tile.y;
+      if (!(u01 >= 0 && u01 <= 1 && v01 >= 0 && v01 <= 1)) return null;
+      const px = u01 * (w - 1), py = v01 * (h - 1);
+      const x0 = Math.min(w - 2, Math.floor(px)), y0 = Math.min(h - 2, Math.floor(py));
+      const tx = px - x0, ty = py - y0, i = y0 * w + x0;
+      const top = samples[i] + (samples[i + 1] - samples[i]) * tx;
+      const bottom = samples[i + w] + (samples[i + w + 1] - samples[i + w]) * tx;
+      return decodeHeightU16(top + (bottom - top) * ty, min, max);
+    };
   }
 
   // Same as sampleTerrainHeight, for a unit direction in the planet group's local frame.
@@ -2270,11 +2395,13 @@ varying vec3 vDaylightUp;`)
   // ---------------------------------------------------------------------------
 
   _applyVisibility() {
+    const visibleAssets = new Set();
     for (const tile of this.tiles.values()) {
       if (!tile.mesh) continue;
       const visible = tile.visibleFrame === this.frame;
       tile.visible = visible;
       tile.mesh.visible = visible;
+      if (visible && tile.ready) visibleAssets.add(this.tileSourceMap.get(tile.id)?.name ?? this.assets[0]?.name);
       if (visible && tile.ready && this.debugStats.startupTrace.firstVisibleReadyMs == null) {
         this._traceFirst('firstVisibleReadyMs', tile, 'firstVisibleReadyTileId');
       }
@@ -2284,6 +2411,12 @@ varying vec3 vDaylightUp;`)
       }
     }
     if (this.debugMode !== 'none') this._applyDebugColors();
+    const names = [...visibleAssets].filter(Boolean).sort();
+    const key = names.join(',');
+    if (key !== this._visibleAssetsKey) {
+      this._visibleAssetsKey = key;
+      this.onVisibleAssets?.(names);
+    }
   }
 
   // How many LOD levels coarser the visible neighbour across an edge is
@@ -2307,8 +2440,12 @@ varying vec3 vDaylightUp;`)
     }
     for (let d = 1; tile.lod - d >= this.rootLod; d++) {
       const n = this._getTile(nfaceIndex, tile.lod - d, nx >> d, ny >> d);
-      if (n && n.visibleFrame === this.frame) return 1 << d;
+      if (n && n.visibleFrame === this.frame) {
+        this._lastNeighbor = n;
+        return 1 << d;
+      }
     }
+    this._lastNeighbor = null;
     return 1;
   }
 
@@ -2318,14 +2455,16 @@ varying vec3 vDaylightUp;`)
     const steps = this._steps;
     for (const tile of this.visibleList) {
       if (!tile.ready) continue;
-      steps[0] = this._neighborStep(tile, 0, -1); // T
-      steps[1] = this._neighborStep(tile, 0, 1);  // B
-      steps[2] = this._neighborStep(tile, -1, 0); // L
-      steps[3] = this._neighborStep(tile, 1, 0);  // R
+      const neighbors = this._neighbors;
+      steps[0] = this._neighborStep(tile, 0, -1); neighbors[0] = this._lastNeighbor; // T
+      steps[1] = this._neighborStep(tile, 0, 1);  neighbors[1] = this._lastNeighbor; // B
+      steps[2] = this._neighborStep(tile, -1, 0); neighbors[2] = this._lastNeighbor; // L
+      steps[3] = this._neighborStep(tile, 1, 0);  neighbors[3] = this._lastNeighbor; // R
       const mask = steps[0] | (steps[1] << 5) | (steps[2] << 10) | (steps[3] << 15);
-      if (mask !== tile.edgeMask) {
+      if (mask !== tile.edgeMask || neighbors.some((n, e) => n !== tile.edgeNeighbors[e])) {
         tile.edgeMask = mask;
         tile.edgeSteps = steps.slice();
+        tile.edgeNeighbors = neighbors.slice();
         this._replaceGeometry(tile);
       }
     }

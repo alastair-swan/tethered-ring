@@ -21,6 +21,7 @@ npm run smoke          # headless Chrome/Chromium: loads "/" and fails on consol
 - Single test file: `node --test tests/shots/shots.test.mjs`.
 - Headless checks: `SMOKE_GPU=1 node scripts/smoke.mjs --wait 40 --out shot.png --eval "<js>"`. Use `SMOKE_GPU=1` on a machine with a GPU, because the software renderer takes over a minute per terrain tile. `--eval` runs code against `window.tetheredRing` (app, scene, camera, launchSystem, transitSystem, dParamWithUnits, ...). `--page /tests/planet.html` targets a standalone test page.
 - The app must stay usable on Windows. Document every command in both PowerShell and POSIX forms.
+- Python tools (`tools/`) run in the repo's `.venv`. Add packages to it with uv (`uv pip install --python .venv/bin/python <package>`; Windows: `--python .venv\Scripts\python.exe`), then run with `.venv/bin/python -m tools.<...>`.
 - `assets/**` is Git LFS (several GB) and `textures/` is downloaded. Don't search or grep inside them.
 
 ## Architecture (read docs/ARCHITECTURE.md for detail)
@@ -39,7 +40,7 @@ npm run smoke          # headless Chrome/Chromium: loads "/" and fails on consol
 - **Rendering.**
   - The renderer uses a logarithmic depth buffer. Custom ShaderMaterials must include the `logdepthbuf_*` chunks (see `src/shaders/`), imported with `?raw`.
   - Stars and the Moon are drawn in `SkyPass`.
-- **Shots.** `src/shots/ShotFormat.js` documents the `.shot.json` format. `ShotController` previews, records live takes and renders at a fixed step. `src/capture/VideoRecorder.js` encodes AV1 (falling back to H.264/HEVC/VP9) into MP4/MKV with WebCodecs.
+- **Shots.** `src/shots/ShotFormat.js` documents the `.shot.json` format. The shot playhead (`ShotController.tick`) drives `SimClock` through the shot's time warp (`ShotTiming.js`). Keyframes can be relative to moving objects (`Anchors.js`), so new moving things should be locatable at any simulated time. `ShotController` edits, previews, records live takes and renders at a fixed step; the floating panel is `src/ui/ShotSidebar.js`. `src/capture/VideoRecorder.js` encodes AV1 (falling back to H.264/HEVC/VP9) into MP4/MKV with WebCodecs.
 
 ## Conventions
 

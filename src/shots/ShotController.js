@@ -1,192 +1,294 @@
+import * as THREE from 'three'
 import {
-  createShot, parseShot, serializeShot, shotDuration, sampleParameterTrack, validateShot, SHOT_FILE_EXTENSION, DEFAULT_OUTPUT,
+  createShot, parseShot, serializeShot, shotDuration, sampleParameterTrack, validateShot, isWorldAnchor, sameAnchor,
+  SHOT_FILE_EXTENSION, WORLD_ANCHOR,
 } from './ShotFormat.js'
 import { sampleCameraPath } from './CameraPath.js'
+import { createTimeMap, solveSpeedFor } from './ShotTiming.js'
+import { AnchorResolver } from './Anchors.js'
+import { ShotPathOverlay } from './ShotPathOverlay.js'
 import {
-  VideoRecorder, resolveCodec, defaultBitrate, evenDimension, isRecordingSupported, CODEC_LABELS, CONTAINERS,
+  VideoRecorder, resolveCodec, defaultBitrate, evenDimension, isRecordingSupported, CODEC_LABELS,
 } from '../capture/VideoRecorder.js'
 import { downloadText } from '../app/exports.js'
+import { MotionBlur, subFrameTimes, adaptiveSubFrames } from '../capture/MotionBlur.js'
+import { Supersampler, OpaqueCanvas, clampSupersample, maxRenderSize } from '../capture/Supersampler.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
+import { StructureLines } from '../scene/structureLines.js'
+import { RenderQueueRunner } from './RenderQueueRunner.js'
 
 const PENDING_SHOT_KEY = 'tetheredRing.pendingShot'
 const TERRAIN_WAIT_TIMEOUT_MS = 15000
+const MAX_REAL_STEP = 0.1 // s of wall-clock time per displayed frame (a backgrounded tab does not jump)
+const PICK_RADIUS_PX = 30
+export const PLAYBACK_SPEEDS = [0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 100, 300, 1000]
 
-const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()))
+// The next display frame; in a hidden tab (no frames) the next task instead, so an unattended render
+// carries on. (Timers are throttled in hidden tabs; messages are not.)
+const nextFrame = () => new Promise((resolve) => {
+  if (!document.hidden) { requestAnimationFrame(() => resolve()); return }
+  const channel = new MessageChannel()
+  channel.port1.onmessage = () => resolve()
+  channel.port2.postMessage(null)
+})
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const slug = (name) => (name.trim().replace(/[^\w.-]+/g, '_') || 'shot')
+const clone = (value) => JSON.parse(JSON.stringify(value))
 
-// Creates, previews, records, exports and imports shots (see ShotFormat.js).
+// Creates, edits, previews, records, exports and imports shots (see ShotFormat.js).
 //
-// Modes:
-//   preview   - plays the shot in real time from its start (B key)
-//   render    - renders the shot frame by frame at a fixed time step and encodes it to video
+// The playhead is a time in the shot's video (`playhead`, seconds from the shot's start). It decides the
+// simulated time through the shot's time warp (ShotTiming.js), so scrubbing the timeline, playing,
+// rewinding and jumping all move the simulation. It may run before or after the shot to look for the
+// right moment; simulated time never goes below 0.
+//
+// View modes:
+//   free  - the orbit controls move the camera; the shot's path, keyframes and camera are drawn in the
+//           scene (ShotPathOverlay) so the shot can be seen from outside
+//   shot  - the camera is the shot's camera at the playhead, framed at the output aspect ratio
+//
+// Busy modes (a fixed-step loop drives the frames instead of App.frame()):
+//   render    - renders the shot frame by frame and encodes it to video
 //   live take - you fly the camera while the simulation advances at a fixed step; every frame's
-//               camera pose (and any parameter you change) is recorded into a new shot, and the
-//               video is encoded at the same time if "Encode live take" is on
+//               camera pose (and any parameter you change) is recorded into a new shot
 export class ShotController {
   constructor(app) {
     this.app = app
-    this.shot = null
+    this.resolver = new AnchorResolver(app)
     this.mode = 'idle'
+    this.viewMode = 'free'
+    this.playhead = 0
+    this.rate = 1 // video seconds per second of wall-clock time; negative plays backwards (the scene runs on load)
+    this.playbackSpeed = 1
+    this.loop = false
+    this.selected = -1
     this.cancelRequested = false
-    this.settings = {
-      name: 'Untitled shot',
-      width: DEFAULT_OUTPUT.width,
-      height: DEFAULT_OUTPUT.height,
-      fps: DEFAULT_OUTPUT.fps,
-      duration: DEFAULT_OUTPUT.duration,
-      codec: DEFAULT_OUTPUT.codec,
-      container: DEFAULT_OUTPUT.container,
-      bitrateMbps: 0,
-      waitForTerrain: DEFAULT_OUTPUT.waitForTerrain,
+    this.stopRequested = false
+    this.revision = 0
+    this.listeners = new Set()
+    this.prefs = {
       saveToDisk: typeof window.showSaveFilePicker === 'function',
-      interpolation: 'smooth',
       encodeLiveTake: true,
+      showPath: true,
     }
+    this.status = ''
+    this.following = null
+    this._lastWall = null
+    this._timeMap = null
+    this._timeMapRevision = -1
+    this.overlay = new ShotPathOverlay(this)
+    app.scene.add(this.overlay.group)
+    this.shot = this.createShotNow()
+    this.queue = new RenderQueueRunner(app, this)
   }
+
+  // ---- Change notification ---------------------------------------------------------------------
+
+  // fn(kind): 'shot' after any edit of the shot, 'status' when the status line changes, 'mode' when
+  // the view or busy mode changes.
+  subscribe(fn) {
+    this.listeners.add(fn)
+    return () => this.listeners.delete(fn)
+  }
+
+  emit(kind) {
+    for (const fn of this.listeners) fn(kind)
+  }
+
+  changed() {
+    this.revision++
+    this.emit('shot')
+  }
+
+  setStatus(text) {
+    this.status = text
+    this.emit('status')
+  }
+
+  // Parameters changed (ring, launcher or transit rebuilt): anchored paths may have moved.
+  onSceneChanged() {
+    this.resolver.invalidate()
+    this.overlay.invalidate()
+  }
+
+  // ---- State ----------------------------------------------------------------------------------
 
   // True while a fixed-step loop (render or live take) is driving frames instead of App.frame().
   get busy() { return this.mode === 'render' || this.mode === 'live' }
   // True while the camera follows the shot's path.
-  get drivesCamera() { return this.mode === 'render' || this.mode === 'preview' }
+  get drivesCamera() {
+    return this.mode === 'render' || (this.mode === 'idle' && this.viewMode === 'shot' && this.shot.camera.keyframes.length > 0)
+  }
+  get keyframes() { return this.shot.camera.keyframes }
+  get duration() { return shotDuration(this.shot) }
+  get fps() { return this.shot.output.fps }
+  get playing() { return this.rate !== 0 }
+  // Width / height of the output video, for framing the shot camera's view.
+  get previewAspect() { return this.viewMode === 'shot' && this.mode === 'idle' ? this.shot.output.width / this.shot.output.height : null }
 
-  // ---- GUI -----------------------------------------------------------------------------------
-
-  buildGui(gui) {
-    const folder = gui.addFolder('Shots & Recording').close()
-    this.folder = folder
-    const s = this.settings
-    folder.add(s, 'name').name('Shot name')
-    const output = folder.addFolder('Output video')
-    output.add(s, 'width', 16, 7680, 2).name('Width (px)')
-    output.add(s, 'height', 16, 4320, 2).name('Height (px)')
-    output.add(s, 'fps', [24, 25, 30, 48, 50, 60, 120]).name('Frame rate')
-    output.add(s, 'duration', 0.1, 3600, 0.1).name('Duration (s)')
-    output.add(s, 'codec', Object.fromEntries(Object.entries(CODEC_LABELS).map(([k, v]) => [v, k]))).name('Codec (preferred)')
-    output.add(s, 'container', Object.fromEntries(Object.entries(CONTAINERS).map(([k, v]) => [v.label, k]))).name('Container')
-    output.add(s, 'bitrateMbps', 0, 500, 1).name('Bitrate Mbps (0 = auto)')
-    output.add(s, 'waitForTerrain').name('Wait for terrain tiles')
-    if (typeof window.showSaveFilePicker === 'function') output.add(s, 'saveToDisk').name('Stream to file (large videos)')
-    folder.add(s, 'interpolation', ['smooth', 'linear']).name('Camera interpolation').onChange((v) => { if (this.shot) this.shot.camera.interpolation = v })
-
-    const actions = {
-      newShot: () => this.newShot(),
-      addKeyframe: () => this.addKeyframe(),
-      removeLastKeyframe: () => this.removeLastKeyframe(),
-      preview: () => this.preview(),
-      render: () => this.renderShot(),
-      liveTake: () => (this.mode === 'live' ? this.stop() : this.startLiveTake()),
-      exportShot: () => this.exportShot(),
-      importShot: () => this.chooseShotFile(),
+  get timeMap() {
+    if (this._timeMapRevision !== this.revision) {
+      this._timeMap = createTimeMap(this.keyframes)
+      this._timeMapRevision = this.revision
     }
-    folder.add(actions, 'newShot').name('New shot (starts now)')
-    folder.add(actions, 'addKeyframe').name('Add camera keyframe (A)')
-    folder.add(actions, 'removeLastKeyframe').name('Remove last keyframe (K)')
-    folder.add(actions, 'preview').name('Preview shot (B)')
-    folder.add(actions, 'render').name('Render shot to video')
-    folder.add(s, 'encodeLiveTake').name('Encode live take')
-    this.liveTakeButton = folder.add(actions, 'liveTake').name('Start live take')
-    folder.add(actions, 'exportShot').name('Export shot file')
-    folder.add(actions, 'importShot').name('Import shot file')
-
-    this.statusElement = document.createElement('div')
-    this.statusElement.className = 'gui-stats shot-status'
-    folder.$children.appendChild(this.statusElement)
-    this.updateStatus()
-    if (!isRecordingSupported()) this.setStatus('This browser has no WebCodecs video encoder, so recording is unavailable. Shots can still be created, previewed and exported.')
+    return this._timeMap
   }
 
-  setStatus(text) {
-    if (this.statusElement) this.statusElement.textContent = text
+  simTimeAt(videoTime) {
+    return this.shot.simulation.startTime + this.timeMap.simOffsetAt(videoTime)
   }
 
-  updateStatus(extra = '') {
-    const shot = this.shot
-    const summary = shot
-      ? `"${shot.name}": ${shot.camera.keyframes.length} keyframe(s), ${shotDuration(shot).toFixed(2)} s, starts at sim time ${shot.simulation.startTime.toFixed(3)} s`
-      : 'No shot yet. Press A to start one at the current moment.'
-    this.setStatus(extra ? `${summary}\n${extra}` : summary)
+  videoTimeAt(simTime) {
+    return this.timeMap.videoTimeAt(simTime - this.shot.simulation.startTime)
   }
 
-  refreshGui() {
-    for (const c of this.folder?.controllersRecursive() ?? []) c.updateDisplay()
+  // The earliest playhead time (simulated time 0).
+  get minPlayhead() {
+    return this.videoTimeAt(0)
   }
 
-  // ---- Building a shot ----------------------------------------------------------------------
-
-  newShot() {
-    const app = this.app
-    this.shot = createShot({
-      name: this.settings.name,
-      preset: app.presetId,
-      parameters: app.store.snapshot(),
-      startTime: app.clock.time,
-      animationState: app.getAnimationState(),
-    })
-    this.shot.camera.interpolation = this.settings.interpolation
-    this.applySettingsToShot()
-    this.updateStatus()
-    return this.shot
+  speedAt(videoTime) {
+    return this.timeMap.speedAt(videoTime)
   }
 
-  applySettingsToShot() {
-    const s = this.settings
-    Object.assign(this.shot.output, {
-      width: evenDimension(s.width), height: evenDimension(s.height), fps: Number(s.fps), duration: s.duration,
-      codec: s.codec, container: s.container, bitrateMbps: s.bitrateMbps || null, waitForTerrain: s.waitForTerrain,
-    })
-    this.shot.name = s.name
+  // ---- Time control ---------------------------------------------------------------------------
+
+  // Moves the playhead (and the simulation clock). Returns the simulated time step taken.
+  setPlayhead(videoTime) {
+    this.playhead = Math.max(this.minPlayhead, videoTime)
+    return this.app.clock.moveTo(Math.max(0, this.simTimeAt(this.playhead)))
   }
 
-  addKeyframe() {
-    if (!this.shot) this.newShot()
-    const time = this.app.clock.time - this.shot.simulation.startTime
-    if (time < 0) {
-      this.updateStatus('Cannot add a keyframe before the shot start; start a new shot instead.')
+  jumpToSimTime(simTime) {
+    this.setPlayhead(this.videoTimeAt(Math.max(0, simTime)))
+  }
+
+  play(direction = 1, { throughShot = false } = {}) {
+    this.playingShot = throughShot
+    this.rate = direction * this.playbackSpeed
+    this._lastWall = null
+    this.emit('mode')
+  }
+
+  pause() {
+    this.rate = 0
+    this.playingShot = false
+    this.emit('mode')
+  }
+
+  togglePlay() {
+    if (this.playing) this.pause()
+    else this.play(1)
+  }
+
+  setPlaybackSpeed(speed) {
+    this.playbackSpeed = speed
+    if (this.rate !== 0) this.rate = Math.sign(this.rate) * speed
+    this.emit('mode')
+  }
+
+  stepFrames(n) {
+    this.pause()
+    this.setPlayhead(Math.round(this.playhead * this.fps + n) / this.fps)
+  }
+
+  // Plays the whole shot through the shot camera.
+  playShot() {
+    this.setViewMode('shot')
+    this.setPlayhead(0)
+    this.setPlaybackSpeed(1)
+    this.play(1, { throughShot: true })
+  }
+
+  // Called by App.frame() once per displayed frame: advances the playhead by the wall-clock time
+  // (times the playback rate) and returns the simulated time step for App.step().
+  tick(wallTimeMs) {
+    const wallDelta = this._lastWall === null ? 0 : Math.min(MAX_REAL_STEP, Math.max(0, (wallTimeMs - this._lastWall) / 1000))
+    this._lastWall = wallTimeMs
+    if (this.rate === 0) return this.setPlayhead(this.playhead)
+    const before = this.playhead
+    let next = before + wallDelta * this.rate
+    // Playing the shot (or looping it) stops at its end or starts it again; otherwise play carries on
+    // through, so the simulation runs freely to find the right moment.
+    const end = this.duration
+    if ((this.playingShot || this.loop) && this.rate > 0 && before < end && next >= end) {
+      if (this.loop) next = 0
+      else { next = end; this.pause() }
+    }
+    else if (this.loop && this.rate < 0 && before > 0 && next <= 0) next = end
+    if (next < this.minPlayhead) this.pause()
+    return this.setPlayhead(next)
+  }
+
+  // ---- View -------------------------------------------------------------------------------------
+
+  setViewMode(mode) {
+    if (mode === this.viewMode) return
+    this.viewMode = mode
+    this.app.onResize()
+    this.emit('mode')
+  }
+
+  // Puts the free camera where the shot camera is at the playhead.
+  moveViewToShotCamera() {
+    const pose = this.poseAt(this.playhead)
+    if (pose) this.app.camera.setState(pose)
+  }
+
+  // Makes the free camera move with an anchor's object (the world anchor stops following). With
+  // `aim`, the camera also turns to centre the object; otherwise the view stays as composed.
+  followAnchor(anchor, { aim = false } = {}) {
+    const camera = this.app.camera
+    if (isWorldAnchor(anchor)) {
+      camera.tracker.clear()
+      this.following = null
+      this.emit('mode')
       return
     }
-    const keys = this.shot.camera.keyframes
-    const key = { time, ...this.app.camera.getState() }
-    const existing = keys.findIndex(k => Math.abs(k.time - time) < 1e-6)
-    if (existing >= 0) keys[existing] = key
-    else {
-      keys.push(key)
-      keys.sort((a, b) => a.time - b.time)
+    this.following = anchor
+    const objectAt = (dt) => this.resolver.objectFrame(anchor, this.app.clock.time + dt)
+    const v = (a) => a && new THREE.Vector3(...a)
+    camera.tracker.target = {
+      type: 'shotAnchor',
+      frame: 'world',
+      getPosition: (dt) => v(objectAt(dt)?.position),
+      getFrame: (dt) => {
+        const f = objectAt(dt)
+        return f && { forward: v(f.forward), upward: v(f.upward) }
+      },
     }
-    if (time > this.settings.duration) {
-      this.settings.duration = Math.ceil(time * 10) / 10
-      this.refreshGui()
-    }
-    this.applySettingsToShot()
-    this.updateStatus(`Keyframe added at +${time.toFixed(2)} s.`)
+    camera.lastTrackingPoint = null
+    if (aim) camera.tweenTo(camera.tracker.getPosition(camera.tweeningTime / 1000))
+    this.emit('mode')
   }
 
-  removeLastKeyframe() {
-    this.shot?.camera.keyframes.pop()
-    this.updateStatus()
+  // ---- Camera path ----------------------------------------------------------------------------
+
+  // World pose of the shot camera at video time t (null without keyframes).
+  poseAt(t) {
+    const simTime = this.simTimeAt(t)
+    return sampleCameraPath(this.shot.camera, t, (key) => this.resolver.resolveKey(key, simTime))
   }
 
-  // ---- Applying a shot ----------------------------------------------------------------------
-
-  // Restores the parameters and simulation state the shot starts from.
-  restoreStart(shot) {
-    const app = this.app
-    const current = app.store.snapshot()
-    const changed = Object.keys(shot.parameters).some(k => !Object.is(shot.parameters[k], current[k]))
-    const unknown = app.store.restore(shot.parameters)
-    if (unknown.length) console.warn('Shot contains parameters this version does not know:', unknown)
-    if (changed) app.applyAllParameters()
-    app.clock.setTime(shot.simulation.startTime)
-    app.setAnimationState(shot.simulation.animationState)
-    app.stopInteractiveAnimations()
+  // World pose of keyframe i at its own moment.
+  keyframePose(i) {
+    const key = this.keyframes[i]
+    return key ? this.resolver.resolveKey(key, this.simTimeAt(key.time)) : null
   }
 
-  // Applies camera and parameter tracks for shot-relative time t.
-  applyAt(shot, t) {
-    const pose = sampleCameraPath(shot.camera, t)
+  // Called at the start of App.step(): places the shot camera before anything is animated, so the
+  // objects near it get their models in this frame rather than the next.
+  beforeStep() {
+    this.app.camera.controls.enabled = !this.drivesCamera
+    if (!this.drivesCamera) return
+    const pose = this.poseAt(this.playhead)
     if (pose) this.app.camera.setState(pose)
+    this.applyParameterTracks(this.playhead)
+  }
+
+  applyParameterTracks(t) {
     let changed = false
-    for (const [name, track] of Object.entries(shot.parameterTracks ?? {})) {
+    for (const [name, track] of Object.entries(this.shot.parameterTracks ?? {})) {
       const value = sampleParameterTrack(track, t)
       if (value !== undefined && !Object.is(this.app.store.get(name), value)) {
         this.app.store.set(name, value)
@@ -199,31 +301,316 @@ export class ShotController {
     }
   }
 
-  // ---- Preview (real time) ------------------------------------------------------------------
+  // ---- Building a shot ------------------------------------------------------------------------
 
-  async preview() {
-    if (this.mode !== 'idle') return
-    const shot = this.shot
-    if (!shot?.camera.keyframes.length) {
-      this.updateStatus('Add at least one keyframe (A) before previewing.')
-      return
-    }
-    this.restoreStart(shot)
-    this.mode = 'preview'
-    this.cancelRequested = false
-    const start = shot.simulation.startTime
-    const duration = shotDuration(shot)
-    this.updateStatus('Previewing...')
-    // App.frame() keeps running; apply the path just before each step.
-    while (!this.cancelRequested && this.app.clock.time - start <= duration) {
-      this.applyAt(shot, this.app.clock.time - start)
-      await nextFrame()
-    }
-    this.mode = 'idle'
-    this.updateStatus('Preview finished.')
+  createShotNow(name = 'Untitled shot') {
+    const app = this.app
+    return createShot({
+      name,
+      preset: app.presetId,
+      parameters: app.store.snapshot(),
+      startTime: app.clock.time,
+      animationState: app.getAnimationState(),
+    })
   }
 
-  // ---- Fixed-step rendering -----------------------------------------------------------------
+  // A new, empty shot starting at the current simulated time.
+  newShot() {
+    const output = this.shot?.output
+    this.shot = this.createShotNow(this.shot?.name)
+    if (output) Object.assign(this.shot.output, output)
+    this.selected = -1
+    this.playhead = 0
+    this.changed()
+    this.setStatus('New shot: it starts at the current simulated time.')
+    return this.shot
+  }
+
+  // Moves the shot's start to `simTime` (keyframes keep their times within the shot).
+  setStartTime(simTime) {
+    this.shot.simulation.startTime = Math.max(0, simTime)
+    this.changed()
+    this.setPlayhead(this.videoTimeAt(this.app.clock.time))
+  }
+
+  // Sets where the shot ends (at least one frame long).
+  setDuration(videoTime) {
+    const duration = Math.max(1 / this.fps, Math.round(videoTime * this.fps) / this.fps)
+    if (duration === this.shot.output.duration) return
+    this.shot.output.duration = duration
+    this.changed()
+  }
+
+  // Where the shot's start can be moved to (video time, snapped to frames): not before simulated time
+  // 0, not after the first keyframe, and leaving the shot at least a frame long.
+  clampShotStart(videoTime) {
+    let t = Math.max(this.minPlayhead, videoTime)
+    const first = this.keyframes[0]
+    if (first) t = Math.min(t, first.time)
+    t = Math.min(t, this.duration - 1 / this.fps)
+    return Math.round(t * this.fps) / this.fps
+  }
+
+  // Moves the shot's start to video time `videoTime` (which becomes 0). The keyframes, the end and the
+  // playhead keep their simulated moments.
+  moveShotStart(videoTime) {
+    const d = this.clampShotStart(videoTime)
+    if (d === 0) return
+    this.shot.simulation.startTime = this.simTimeAt(d)
+    for (const key of this.keyframes) key.time = Math.round((key.time - d) * 1e9) / 1e9
+    this.shot.output.duration = Math.max(1 / this.fps, this.shot.output.duration - d)
+    this.playhead -= d
+    this.changed()
+    this.setPlayhead(this.playhead)
+  }
+
+  setStartToNow() {
+    this.setStartTime(this.app.clock.time)
+  }
+
+  // The current view, as a world pose.
+  currentWorldPose() {
+    return this.app.camera.getState()
+  }
+
+  // The keyframe whose settings a new keyframe at video time t inherits: the selected one, else the
+  // nearest one before t, else the first.
+  templateKeyframe(t) {
+    const keys = this.keyframes
+    if (keys[this.selected]) return keys[this.selected]
+    let template = null
+    for (const k of keys) if (k.time <= t) template = k
+    return template ?? keys[0] ?? null
+  }
+
+  // Adds a keyframe at the playhead from the current view (or updates the one already there).
+  addKeyframe() {
+    const t = Math.round(this.playhead * this.fps) / this.fps
+    const keys = this.keyframes
+    const existing = keys.findIndex(k => Math.abs(k.time - t) < 0.5 / this.fps)
+    if (existing >= 0) {
+      this.selected = existing
+      this.updateKeyframeFromView(existing)
+      return existing
+    }
+    const template = this.templateKeyframe(t)
+    // The new keyframe keeps the speed the shot already has here, so adding it does not change the timing.
+    const key = {
+      time: t,
+      anchor: clone(template?.anchor ?? WORLD_ANCHOR),
+      ...(template?.lookAt ? { lookAt: clone(template.lookAt) } : {}),
+      speed: keys.length ? this.speedAt(t) : 1,
+      ease: false,
+      motion: template?.motion ?? 'auto',
+      fov: this.app.camera3d.fov,
+    }
+    this.resolver.localizeKey(key, this.currentWorldPose(), this.simTimeAt(t))
+    keys.push(key)
+    keys.sort((a, b) => a.time - b.time)
+    this.selected = keys.indexOf(key)
+    if (t > this.shot.output.duration) this.shot.output.duration = Math.ceil(t * 10) / 10
+    this.changed()
+    this.setStatus(`Keyframe ${this.selected + 1} added at ${t.toFixed(2)} s.`)
+    return this.selected
+  }
+
+  // Sets keyframe i's view to the current view. The view is taken relative to the keyframe's anchors
+  // as they are now, so composing a shot of a moving object works at any playhead time.
+  updateKeyframeFromView(i = this.selected) {
+    const key = this.keyframes[i]
+    if (!key) return
+    key.fov = this.app.camera3d.fov
+    this.resolver.localizeKey(key, this.currentWorldPose(), this.app.clock.time)
+    this.changed()
+    this.setStatus(`Keyframe ${i + 1} updated from the view.`)
+  }
+
+  deleteKeyframe(i = this.selected) {
+    const keys = this.keyframes
+    if (!keys[i]) return
+    keys.splice(i, 1)
+    this.selected = Math.min(i, keys.length - 1)
+    this.changed()
+  }
+
+  removeLastKeyframe() {
+    this.deleteKeyframe(this.keyframes.length - 1)
+  }
+
+  clearKeyframes() {
+    this.keyframes.length = 0
+    this.selected = -1
+    this.changed()
+  }
+
+  selectKeyframe(i) {
+    this.selected = i >= 0 && i < this.keyframes.length ? i : -1
+    this.emit('shot')
+  }
+
+  // Selects keyframe i, moves the playhead to it and (in the free view) the camera to its view.
+  goToKeyframe(i) {
+    const key = this.keyframes[i]
+    if (!key) return
+    this.selected = i
+    this.pause()
+    this.setPlayhead(key.time)
+    if (this.viewMode === 'free') {
+      const pose = this.keyframePose(i)
+      this.app.camera.setState({ ...pose, fov: key.fov })
+      // Keep moving with the keyframe's object, so scrubbing from here keeps it in view.
+      this.followAnchor(key.anchor ?? WORLD_ANCHOR)
+    }
+    this.emit('shot')
+  }
+
+  // Retimes keyframe i (keeps it selected). `final` false while dragging (no re-sort of the list UI).
+  moveKeyframe(i, time) {
+    const key = this.keyframes[i]
+    if (!key) return
+    key.time = Math.max(0, Math.round(time * this.fps) / this.fps)
+    this.keyframes.sort((a, b) => a.time - b.time)
+    this.selected = this.keyframes.indexOf(key)
+    if (key.time > this.shot.output.duration) this.shot.output.duration = Math.ceil(key.time * 10) / 10
+    this.changed()
+  }
+
+  // Changes keyframe settings. Changing its anchors keeps its view at its own moment; what changes is
+  // how the view moves with the objects at other moments.
+  setKeyframeProps(i, patch) {
+    const key = this.keyframes[i]
+    if (!key) return
+    if ('anchor' in patch || 'lookAt' in patch) {
+      const simTime = this.simTimeAt(key.time)
+      const world = this.resolver.resolveKey(key, simTime)
+      if ('anchor' in patch) key.anchor = clone(patch.anchor ?? WORLD_ANCHOR)
+      if ('lookAt' in patch) {
+        if (!patch.lookAt || sameAnchor(patch.lookAt, key.anchor)) delete key.lookAt
+        else key.lookAt = clone(patch.lookAt)
+      }
+      this.resolver.localizeKey(key, world, simTime)
+    }
+    for (const field of ['speed', 'ease', 'motion', 'fov']) if (field in patch) key[field] = patch[field]
+    if ('time' in patch) {
+      this.moveKeyframe(i, patch.time)
+      return
+    }
+    this.changed()
+  }
+
+  // Makes keyframe i happen at `simTime` without moving it in the video. The first keyframe moves the
+  // shot's start. For any other, a time speed is changed: by default the previous keyframe's (so a
+  // keyframe after a fast-forward keeps its own speed, typically 1x), or with `adjust: 'this'` its own.
+  // Later keyframes keep their speeds, so set the moments from the first keyframe on.
+  setKeyframeSimTime(i, simTime, { adjust = 'previous' } = {}) {
+    const keys = this.keyframes
+    const key = keys[i]
+    if (!key) return
+    const sim = this.shot.simulation
+    if (i === 0) {
+      sim.startTime = Math.max(0, sim.startTime + simTime - this.simTimeAt(key.time))
+      this.changed()
+      return
+    }
+    const j = adjust === 'this' ? i : i - 1
+    const { speed, exact } = solveSpeedFor(keys, j, i, simTime - sim.startTime)
+    keys[j].speed = Number(speed.toPrecision(9))
+    this.changed()
+    if (exact) this.setStatus(`Keyframe ${i + 1} is now at simulated time ${simTime.toFixed(2)} s (keyframe ${j + 1}'s time speed is ${Number(speed.toPrecision(3))}x).`)
+    else this.setStatus(`Keyframe ${i + 1} cannot reach simulated time ${simTime.toFixed(2)} s by changing keyframe ${j + 1}'s time speed; it is as close as it gets. Move the keyframes further apart, or change other speeds.`)
+  }
+
+  setOutput(patch) {
+    Object.assign(this.shot.output, patch)
+    if ('width' in patch || 'height' in patch) this.app.onResize()
+    this.changed()
+  }
+
+  setName(name) {
+    this.shot.name = name
+    this.changed()
+  }
+
+  setInterpolation(interpolation) {
+    this.shot.camera.interpolation = interpolation
+    this.changed()
+  }
+
+  // Events (launch stages, stops, elevator departures) for an anchor around the playhead.
+  eventsFor(anchor, before = 3600, after = 7200) {
+    const now = this.app.clock.time
+    return this.resolver.events(anchor, Math.max(0, now - before), now + after)
+  }
+
+  // ---- Choosing objects with the mouse ----------------------------------------------------------
+
+  // The next click in the view picks the object nearest to it (within PICK_RADIUS_PX) and passes its
+  // anchor to onPick (null if there was nothing there). Escape cancels.
+  startPick(onPick, types) {
+    this.cancelPick()
+    const canvas = this.app.renderer.domElement
+    let down = null
+    const onDown = (event) => { if (event.button === 0) down = [event.clientX, event.clientY] }
+    const onUp = (event) => {
+      if (event.button !== 0 || !down || Math.hypot(event.clientX - down[0], event.clientY - down[1]) > 4) return
+      const anchor = this.pickAt(event.clientX, event.clientY, types)
+      this.cancelPick()
+      onPick(anchor)
+    }
+    const onKey = (event) => { if (event.code === 'Escape') { this.cancelPick(); onPick(undefined) } }
+    canvas.addEventListener('pointerdown', onDown)
+    canvas.addEventListener('pointerup', onUp)
+    window.addEventListener('keydown', onKey)
+    canvas.classList.add('picking')
+    this._pick = () => {
+      canvas.removeEventListener('pointerdown', onDown)
+      canvas.removeEventListener('pointerup', onUp)
+      window.removeEventListener('keydown', onKey)
+      canvas.classList.remove('picking')
+    }
+    this.emit('mode')
+  }
+
+  cancelPick() {
+    this._pick?.()
+    this._pick = null
+    this.emit('mode')
+  }
+
+  get picking() { return !!this._pick }
+
+  pickAt(clientX, clientY, types) {
+    const camera = this.app.camera3d
+    const rect = this.app.renderer.domElement.getBoundingClientRect()
+    const ndc = new THREE.Vector2(2 * (clientX - rect.left) / rect.width - 1, 1 - 2 * (clientY - rect.top) / rect.height)
+    const raycaster = new THREE.Raycaster()
+    raycaster.setFromCamera(ndc, camera)
+    const pixelsPerRadian = camera.projectionMatrix.elements[5] * rect.height / 2
+    const hit = this.resolver.nearestToRay(this.app.clock.time, raycaster.ray.origin.toArray(), raycaster.ray.direction.toArray(), PICK_RADIUS_PX / pixelsPerRadian, types)
+    return hit?.anchor ?? null
+  }
+
+  // The object of `type` nearest to the middle of the view (or, failing that, to the camera).
+  nearestAnchor(type) {
+    const camera = this.app.camera3d
+    const origin = camera.getWorldPosition(new THREE.Vector3()).toArray()
+    const direction = camera.getWorldDirection(new THREE.Vector3()).toArray()
+    const now = this.app.clock.time
+    return (this.resolver.nearestToRay(now, origin, direction, Math.PI / 6, [type]) ?? this.resolver.nearestToPoint(now, origin, [type]))?.anchor ?? null
+  }
+
+  // The object of `type` nearest to the middle of keyframe i's view, at the keyframe's own moment.
+  nearestAnchorForKeyframe(i, type) {
+    const key = this.keyframes[i]
+    if (!key) return null
+    const simTime = this.simTimeAt(key.time)
+    const pose = this.resolver.resolveKey(key, simTime)
+    const direction = pose.target.map((x, j) => x - pose.position[j])
+    return (this.resolver.nearestToRay(simTime, pose.position, direction, Math.PI / 6, [type]) ??
+      this.resolver.nearestToPoint(simTime, pose.target, [type]))?.anchor ?? null
+  }
+
+  // ---- Fixed-step rendering ---------------------------------------------------------------------
 
   async waitForTerrain() {
     const planet = this.app.planet
@@ -237,33 +624,97 @@ export class ShotController {
     }
   }
 
-  // Runs frames at a fixed step until `shouldContinue(frameIndex)` returns false.
-  async runFixedStep({ width, height, fps, waitForTerrain, perFrame, recorder, progressLabel }) {
+  // The supersampling factor a recording at `output` gets on this GPU (see Supersampler.js).
+  supersampleFactor(output) {
+    return clampSupersample(output.supersample ?? 1, output.width, output.height, maxRenderSize(this.app.renderer))
+  }
+
+  // The canvas a recording at `output` is encoded from: the renderer's own, or with supersampling the
+  // output-sized canvas the filtered frames are copied to.
+  frameCanvas(output) {
+    if (this.supersampleFactor(output) === 1) return this.app.renderer.domElement
+    this.outputCanvas ??= document.createElement('canvas')
+    this.outputCanvas.width = output.width
+    this.outputCanvas.height = output.height
+    return this.outputCanvas
+  }
+
+  // Runs frames at a fixed step. perFrame(i, s) sets up sub-frame s of frame i and returns the
+  // simulated time step to take, or false (at s = 0) to stop. subFrames(i) is how many sub-frames
+  // frame i averages (motion blur, see MotionBlur.js); `blur` allocates the buffers for that.
+  // `supersample` renders each sub-frame at that many times the resolution (Supersampler.js).
+  // afterFrame(i, canvas) is called while frame i is finished on `canvas` (the one to encode).
+  async runFixedStep({ width, height, fps, waitForTerrain, perFrame, recorder, progressLabel, subFrames = () => 1, blur: useBlur = false, afterFrame = null, supersample = 1 }) {
     const app = this.app
+    const factor = clampSupersample(supersample, width, height, maxRenderSize(app.renderer))
     app.renderer.setAnimationLoop(null)
-    app.setRenderSize(width, height, { pixelRatio: 1 })
+    app.setRenderSize(width, height, { pixelRatio: factor })
     app.clock.setFixedStep(1 / fps)
     // Every recorded frame gets its intended level of detail (no deferred high-detail builds).
     const previousBuildBudget = PixelLOD.buildBudget
     PixelLOD.buildBudget = Infinity
     app.quality.applyForRecording()
+    // Terrain tiles as for the output resolution: the finer ones a larger canvas would ask for add
+    // little once filtered down, and would multiply the tiles to stream.
+    if (factor > 1 && app.planet?.lod) app.planet.lod.sseThreshold *= factor
+    StructureLines.setPixelScale(factor)
+    if (app.clouds) app.clouds.pixelScale = factor
+    // Nothing but the scene goes into the video: no path overlay or tracking markers.
+    const markers = [app.camera.trackingMarker, app.camera.targetMarker, app.camera.orbitMarker]
+    const markerVisibility = markers.map(m => m.visible)
+    markers.forEach(m => { m.visible = false })
     const progress = new ProgressOverlay(() => this.stop())
+    const blur = useBlur ? new MotionBlur(app.renderer) : null
+    blur?.begin(width, height)
+    const supersampler = factor > 1 ? new Supersampler(app.renderer, this.frameCanvas({ width, height, supersample: factor })) : null
+    supersampler?.begin(width, height)
+    const canvas = supersampler ? supersampler.canvas : app.renderer.domElement
+    // (The supersampler's filter writes opaque pixels itself.)
+    const opaque = supersampler ? null : new OpaqueCanvas(app.renderer)
+    let lastYield = performance.now()
     try {
-      for (let i = 0; ; i++) {
-        if (this.cancelRequested) break
-        const go = perFrame(i)
-        if (go === false) break
-        app.step(i === 0 ? 0 : 1 / fps)
-        if (waitForTerrain) await this.waitForTerrain()
-        app.render()
+      frames: for (let i = 0; ; i++) {
+        let n = 1
+        for (let s = 0; s < n; s++) {
+          if (this.cancelRequested) break frames
+          const dt = perFrame(i, s)
+          if (dt === false) break frames
+          if (s === 0) n = subFrames(i)
+          app.step(i === 0 && s === 0 ? 0 : dt)
+          // The sub-frames of one frame are close together; their terrain is the first one's.
+          if (waitForTerrain && s === 0) await this.waitForTerrain()
+          app.render()
+          supersampler?.resolve()
+          opaque?.apply(width, height)
+          if (blur) {
+            blur.add(s === 0, 1 / n)
+            // Keep the page (and the Stop button) responsive through long runs of sub-frames, without
+            // waiting for a display frame each time.
+            if (performance.now() - lastYield > 100) {
+              progress.update(`${progressLabel(i)}, sub-frame ${s + 1} / ${n}`)
+              await sleep(0)
+              lastYield = performance.now()
+            }
+          }
+        }
+        if (blur) blur.present()
+        supersampler?.publish()
+        afterFrame?.(i, canvas)
         if (recorder) await recorder.addFrame()
         progress.update(progressLabel(i))
         // Yield so the page (and the live-take camera controls) stay responsive.
         await nextFrame()
+        lastYield = performance.now()
       }
     }
     finally {
+      blur?.dispose()
+      supersampler?.dispose()
+      opaque?.dispose()
+      StructureLines.setPixelScale(1)
+      if (app.clouds) app.clouds.pixelScale = 1
       progress.remove()
+      markers.forEach((m, i) => { m.visible = markerVisibility[i] })
       PixelLOD.buildBudget = previousBuildBudget
       app.clock.setFixedStep(null)
       app.quality.apply()
@@ -272,16 +723,18 @@ export class ShotController {
     }
   }
 
-  async createRecorder(output, fileName) {
+  // `writable` (optional): a WritableStream to write the file to (no save dialog; see VideoRecorder).
+  async createRecorder(output, fileName, { canvas = this.frameCanvas(output), writable = null, saveToDisk = this.prefs.saveToDisk } = {}) {
     const settings = { width: output.width, height: output.height, fps: output.fps }
     const recorder = new VideoRecorder({
-      canvas: this.app.renderer.domElement,
+      canvas,
       ...settings,
       codec: output.codec,
       container: output.container,
       bitrate: 0,
       fileName,
-      saveToDisk: this.settings.saveToDisk,
+      saveToDisk,
+      writable,
     })
     if (!(await recorder.prepareTarget())) return null
     const codec = await resolveCodec(output.codec, settings)
@@ -292,86 +745,201 @@ export class ShotController {
     return recorder
   }
 
+  // Brings the shot's record of the scene up to date: the parameters (including the sun) and
+  // animation state as they are now, which is what the shot is being edited against.
+  syncShotFromApp() {
+    const shot = this.shot
+    const app = this.app
+    const output = shot.output
+    output.width = evenDimension(output.width)
+    output.height = evenDimension(output.height)
+    shot.preset = app.presetId
+    shot.parameters = app.store.snapshot()
+    shot.simulation.animationState = app.getAnimationState()
+  }
+
   async renderShot() {
     if (this.mode !== 'idle') return
-    if (!isRecordingSupported()) { this.updateStatus('Recording needs a browser with WebCodecs (Chrome, Edge, Safari 17+, Firefox 130+).'); return }
+    if (!isRecordingSupported()) { this.setStatus('Recording needs a browser with WebCodecs (Chrome, Edge, Safari 17+, Firefox 130+).'); return }
     const shot = this.shot
-    if (!shot?.camera.keyframes.length) { this.updateStatus('Add at least one keyframe (A) before rendering.'); return }
-    this.applySettingsToShot()
+    if (!shot.camera.keyframes.length) { this.setStatus('Add at least one keyframe before rendering.'); return }
+    this.syncShotFromApp()
     const output = shot.output
     let recorder
     try {
       recorder = await this.createRecorder(output, slug(shot.name))
     }
     catch (err) {
-      this.updateStatus(`Could not start recording: ${err.message}`)
+      this.setStatus(`Could not start recording: ${err.message}`)
       return
     }
     if (!recorder) return
+    const failed = await this.renderFrames(recorder)
+    await this.finishRecorder(recorder, failed)
+  }
+
+  // Renders `shot` without asking anything (the render queue and the command-line renderer): loads it
+  // (its preset must be the current one), lets the scene settle for `settleSeconds`, renders it at the
+  // fixed step and encodes it into `writable` (a WritableStream, see VideoRecorder; null buffers the
+  // file in memory and downloads it). onProgress({ frame, frames }) after each frame. Resolves to
+  // { fileName, frames, codec, bytes }; throws if it fails or is stopped.
+  async renderShotUnattended(shot, { writable = null, fileName = slug(shot.name), settleSeconds = 0, onProgress = null } = {}) {
+    if (this.mode !== 'idle') throw new Error('Another recording is running.')
+    if (!isRecordingSupported()) throw new Error('This browser has no WebCodecs video encoder.')
+    if (shot.preset !== this.app.presetId) throw new Error(`The shot needs preset "${shot.preset}", but "${this.app.presetId}" is loaded.`)
+    if (!shot.camera.keyframes.length) throw new Error('The shot has no keyframes.')
+    this.pause()
+    this.loadShot(clone(shot))
+    this.setViewMode('shot')
+    const output = this.shot.output
+    output.width = evenDimension(output.width)
+    output.height = evenDimension(output.height)
+    // Things that load in the background (the satellite cloud snapshot, models) should be there before
+    // the first frame, so every render of the shot starts the same way.
+    const settleEnd = performance.now() + settleSeconds * 1000
+    while (performance.now() < settleEnd || (this.app.clouds?.enabled && !this.app.clouds.realClouds?.ready && performance.now() < settleEnd + 30000)) await sleep(100)
+    const recorder = await this.createRecorder(output, fileName, { writable, saveToDisk: false })
+    if (!recorder) throw new Error('Could not open the output file.')
+    const frames = Math.max(1, Math.round(shotDuration(this.shot) * output.fps))
+    const failed = await this.renderFrames(recorder, { afterFrame: (i) => onProgress?.({ frame: i + 1, frames }) })
+    if (failed || this.cancelRequested) {
+      await recorder.cancel().catch(() => {})
+      throw failed ?? new Error('Stopped.')
+    }
+    const result = await recorder.finish()
+    this.setStatus(`Saved ${result.fileName}: ${recorder.frameCount} frames, ${CODEC_LABELS[recorder.options.codec]}.`)
+    return { ...result, frames: recorder.frameCount, codec: recorder.options.codec }
+  }
+
+  // Sub-frames for video frame i under the shot's motion blur settings (1 without blur).
+  subFramesFor(i) {
+    const o = this.shot.output
+    if (o.motionBlur === 'fixed') return o.motionBlurSamples
+    if (o.motionBlur !== 'adaptive') return 1
+    // The shot camera's poses across the frame's shutter interval.
+    const poses = subFrameTimes(i, o.fps, 9, o.shutterAngle).map(t => this.poseAt(t)).filter(Boolean)
+    const fov = THREE.MathUtils.degToRad(poses[0]?.fov ?? this.app.camera3d.fov)
+    return adaptiveSubFrames(poses, {
+      maxStep: o.motionBlurMaxStep,
+      maxPixels: o.motionBlurMaxPixels,
+      pixelsPerRadian: o.height / 2 / Math.tan(fov / 2),
+      planetRadius: this.app.planetRadius,
+      minSamples: o.motionBlurSamples,
+      maxSamples: o.motionBlurMaxSamples,
+    })
+  }
+
+  // Sub-frames the whole shot needs: { total, most, frames }.
+  estimateSubFrames() {
+    const frames = Math.max(1, Math.round(this.duration * this.fps))
+    let total = 0
+    let most = 0
+    for (let i = 0; i < frames; i++) {
+      const n = this.subFramesFor(i)
+      total += n
+      most = Math.max(most, n)
+    }
+    return { total, most, frames }
+  }
+
+  // Renders frames [from, to) of the shot through `recorder` (null: render without encoding), calling
+  // afterFrame(i) while each finished frame is on the canvas. Returns the error that stopped it, if any.
+  async renderFrames(recorder, { from = 0, to = Infinity, afterFrame = null } = {}) {
+    const shot = this.shot
+    const output = shot.output
+    const playhead = this.playhead
+    this.pause()
     this.mode = 'render'
     this.cancelRequested = false
-    this.restoreStart(shot)
-    const frames = Math.max(1, Math.round(shotDuration(shot) * output.fps))
-    const start = shot.simulation.startTime
+    this.emit('mode')
+    const frames = Math.min(to, Math.max(1, Math.round(shotDuration(shot) * output.fps)))
+    const blurred = (output.motionBlur ?? 'off') !== 'off'
+    const ss = this.supersampleFactor(output)
+    const ssLabel = ss > 1 ? `, ${ss}x${ss} supersampled` : ''
+    const waiting = this.queue.running ? this.queue.counts.pending : 0
+    const queueLabel = this.queue.running ? `Render queue (${waiting} more waiting) · ` : ''
+    let n = 1
+    let times = [0]
     let failed = null
     try {
       await this.runFixedStep({
         ...output,
         recorder,
-        perFrame: (i) => {
+        blur: blurred,
+        supersample: output.supersample ?? 1,
+        subFrames: () => n,
+        afterFrame: afterFrame && ((k, canvas) => afterFrame(from + k, canvas)),
+        perFrame: (k, s) => {
+          const i = from + k
           if (i >= frames) return false
-          this.app.clock.setTime(start + i / output.fps)
-          this.applyAt(shot, i / output.fps)
-          return true
+          if (s === 0) {
+            n = blurred ? this.subFramesFor(i) : 1
+            times = n > 1 ? subFrameTimes(i, output.fps, n, output.shutterAngle) : [i / output.fps]
+          }
+          return this.setPlayhead(times[s])
         },
-        progressLabel: (i) => `Rendering "${shot.name}": frame ${i + 1} / ${frames} (${CODEC_LABELS[recorder.options.codec]} ${output.width}x${output.height} @ ${output.fps} fps)`,
+        progressLabel: (k) => `${queueLabel}Rendering "${shot.name}": frame ${from + k + 1} / ${frames}${recorder ? ` (${CODEC_LABELS[recorder.options.codec]} ${output.width}x${output.height} @ ${output.fps} fps${ssLabel}${n > 1 ? `, ${n} sub-frames` : ''})` : ''}`,
       })
     }
     catch (err) {
       failed = err
     }
     this.mode = 'idle'
-    await this.finishRecorder(recorder, failed)
+    this.setPlayhead(playhead)
+    this.emit('mode')
+    return failed
+  }
+
+  // Renders the video frame at the playhead exactly as a recording would (with motion blur) and returns
+  // it as a PNG data URL, or null.
+  async previewFrame() {
+    if (this.mode !== 'idle' || !this.keyframes.length) return null
+    const i = Math.max(0, Math.round(this.playhead * this.fps))
+    let image = null
+    const failed = await this.renderFrames(null, { from: i, to: i + 1, afterFrame: (k, canvas) => { image = canvas.toDataURL('image/png') } })
+    if (failed) this.setStatus(`Preview failed: ${failed.message}`)
+    return image
   }
 
   async finishRecorder(recorder, failed) {
     if (!recorder) return
     if (failed || this.cancelRequested) {
       await recorder.cancel()
-      this.updateStatus(failed ? `Recording failed: ${failed.message}` : 'Recording cancelled.')
+      this.setStatus(failed ? `Recording failed: ${failed.message}` : 'Recording cancelled.')
       if (failed) console.error(failed)
       return
     }
     const result = await recorder.finish()
     const size = result.bytes ? ` (${(result.bytes / 1e6).toFixed(1)} MB)` : ''
-    this.updateStatus(`Saved ${result.fileName}${size}: ${recorder.frameCount} frames, ${CODEC_LABELS[recorder.options.codec]}.`)
+    this.setStatus(`Saved ${result.fileName}${size}: ${recorder.frameCount} frames, ${CODEC_LABELS[recorder.options.codec]}.`)
   }
 
-  // ---- Live take ----------------------------------------------------------------------------
+  // ---- Live take ------------------------------------------------------------------------------
 
   async startLiveTake() {
     if (this.mode !== 'idle') return
-    this.settings.interpolation = 'linear'
+    this.pause()
+    this.setViewMode('free')
     const shot = this.newShot()
     shot.camera.interpolation = 'linear'
     const output = shot.output
     let recorder = null
-    if (this.settings.encodeLiveTake) {
-      if (!isRecordingSupported()) { this.updateStatus('This browser cannot encode video; recording the camera path only.') }
+    if (this.prefs.encodeLiveTake) {
+      if (!isRecordingSupported()) { this.setStatus('This browser cannot encode video; recording the camera path only.') }
       else {
         try {
-          recorder = await this.createRecorder(output, slug(shot.name))
+          recorder = await this.createRecorder(output, slug(shot.name), { canvas: this.app.renderer.domElement })
           if (!recorder) return
         }
         catch (err) {
-          this.updateStatus(`Could not start recording: ${err.message}`)
+          this.setStatus(`Could not start recording: ${err.message}`)
           return
         }
       }
     }
     this.mode = 'live'
     this.cancelRequested = false
-    this.liveTakeButton?.name('Stop live take')
+    this.emit('mode')
     const baseline = this.app.store.snapshot()
     let frames = 0
     let failed = null
@@ -383,7 +951,8 @@ export class ShotController {
         perFrame: (i) => {
           if (this.stopRequested) return false
           const t = i / output.fps
-          this.app.clock.setTime(shot.simulation.startTime + t)
+          const dt = this.app.clock.moveTo(shot.simulation.startTime + t)
+          this.playhead = t
           shot.camera.keyframes.push({ time: t, ...this.app.camera.getState() })
           const current = this.app.store.snapshot()
           for (const [k, v] of Object.entries(current)) {
@@ -392,9 +961,9 @@ export class ShotController {
             if (!Object.is(track[track.length - 1].value, v)) track.push({ time: t, value: v })
           }
           frames = i + 1
-          return true
+          return dt
         },
-        progressLabel: (i) => `Live take: ${(i / output.fps).toFixed(2)} s recorded. Fly the camera; press "Stop live take" to finish.`,
+        progressLabel: (i) => `Live take: ${(i / output.fps).toFixed(2)} s recorded. Fly the camera; press Stop to finish.`,
       })
     }
     catch (err) {
@@ -402,24 +971,24 @@ export class ShotController {
     }
     this.stopRequested = false
     this.mode = 'idle'
-    this.liveTakeButton?.name('Start live take')
     output.duration = frames / output.fps
-    this.settings.duration = output.duration
-    this.refreshGui()
+    this.changed()
+    this.emit('mode')
     if (recorder) await this.finishRecorder(recorder, failed)
-    else this.updateStatus(`Live take captured: ${frames} frames. Export the shot to keep it.`)
+    else this.setStatus(`Live take captured: ${frames} frames. Export the shot to keep it.`)
   }
 
   stop() {
     if (this.mode === 'live') this.stopRequested = true
     else this.cancelRequested = true
+    // (Stop while the render queue runs stops the queue.)
+    if (this.queue.running) this.queue.stop()
   }
 
   // ---- Files ----------------------------------------------------------------------------------
 
   exportShot() {
-    if (!this.shot) { this.updateStatus('Nothing to export yet.'); return }
-    this.applySettingsToShot()
+    this.syncShotFromApp()
     downloadText(serializeShot(this.shot), slug(this.shot.name) + SHOT_FILE_EXTENSION, 'application/json')
   }
 
@@ -440,7 +1009,7 @@ export class ShotController {
       shot = parseShot(text)
     }
     catch (err) {
-      this.updateStatus(err.message)
+      this.setStatus(err.message)
       return
     }
     if (shot.preset !== this.app.presetId) {
@@ -452,21 +1021,33 @@ export class ShotController {
     this.loadShot(shot)
   }
 
-  loadShot(shot) {
-    this.shot = validateShot(shot)
-    Object.assign(this.settings, {
-      name: shot.name, width: shot.output.width, height: shot.output.height, fps: shot.output.fps, duration: shot.output.duration,
-      codec: shot.output.codec, container: shot.output.container, bitrateMbps: shot.output.bitrateMbps ?? 0,
-      waitForTerrain: shot.output.waitForTerrain, interpolation: shot.camera.interpolation,
-    })
-    this.refreshGui()
-    this.restoreStart(shot)
-    const first = sampleCameraPath(shot.camera, 0)
-    if (first) this.app.camera.setState(first)
-    this.updateStatus('Shot loaded. Preview (B) or render it.')
+  // Restores the parameters and simulation state the shot was made with.
+  restoreStart(shot) {
+    const app = this.app
+    const current = app.store.snapshot()
+    const changed = Object.keys(shot.parameters).some(k => !Object.is(shot.parameters[k], current[k]))
+    const unknown = app.store.restore(shot.parameters)
+    if (unknown.length) console.warn('Shot contains parameters this version does not know:', unknown)
+    if (changed) app.applyAllParameters()
+    app.setAnimationState(shot.simulation.animationState)
+    app.stopInteractiveAnimations()
   }
 
+  loadShot(shot) {
+    this.shot = validateShot(shot)
+    this.selected = -1
+    this.restoreStart(this.shot)
+    this.changed()
+    this.setPlayhead(0)
+    const first = this.poseAt(0)
+    if (first) this.app.camera.setState(first)
+    this.setStatus('Shot loaded. Play it with the shot camera, or render it.')
+  }
+
+  // Called when the page has started: loads a shot imported across a preset switch, and carries on
+  // with a render queue run.
   async resumePendingShot() {
+    this.queue.resumeSoon()
     const text = sessionStorage.getItem(PENDING_SHOT_KEY)
     if (!text) return
     sessionStorage.removeItem(PENDING_SHOT_KEY)
@@ -474,7 +1055,7 @@ export class ShotController {
       this.loadShot(parseShot(text))
     }
     catch (err) {
-      this.updateStatus(err.message)
+      this.setStatus(err.message)
     }
   }
 }

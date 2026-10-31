@@ -7,6 +7,8 @@ const SUN_ANGULAR_RADIUS = 0.2665 * Math.PI / 180
 const SUN_SPRITE_SCALE = 12 // the sprite is this many disc radii across: the rest is glow
 const _sunDir = new THREE.Vector3()
 const _target = new THREE.Vector3()
+const _up = new THREE.Vector3()
+const _pole = new THREE.Vector3()
 
 // A white disc of 1/SUN_SPRITE_SCALE of the texture's width, with a soft glow around it.
 function sunTexture() {
@@ -98,7 +100,15 @@ export class SkyPass {
     this.sunLight.position.copy(sunLight.getWorldPosition(new THREE.Vector3()))
     _sunDir.copy(this.sunLight.position).sub(sunLight.target.getWorldPosition(_target)).normalize()
     this.sun.position.copy(this.camera.position).addScaledVector(_sunDir, SUN_DISTANCE)
-    this.stars.animate(dParamWithUnits, planetSpec, mainCamera)
+    // The camera's height (above the ellipsoid, along the geocentric direction: close enough) and
+    // the sun's elevation there, for the stars.
+    _up.copy(this.camera.position).sub(_target.setFromMatrixPosition(planetCoordSys.matrixWorld))
+    const r = _up.length()
+    _up.divideScalar(r)
+    const { a, b = a * (1 - (planetSpec.ellipsoid.f || 0)) } = planetSpec.ellipsoid
+    const sinLat = _up.dot(_pole.setFromMatrixColumn(planetCoordSys.matrixWorld, 1).normalize())
+    const altitude = r - a * b / Math.hypot(b * Math.sqrt(1 - sinLat * sinLat), a * sinLat)
+    this.stars.animate(dParamWithUnits, _up, altitude, _sunDir)
   }
 
   render(renderer) {

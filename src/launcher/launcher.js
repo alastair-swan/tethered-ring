@@ -12,6 +12,7 @@ import { massDriverRailModel, virtualMassDriverRail } from './MassDriverRail.js'
 import { massDriverBracketModel, virtualMassDriverBracket } from './MassDriverBracket.js'
 import { massDriverScrewModel, virtualMassDriverScrew, createScrewModelPair } from './MassDriverScrew.js'
 import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
+import { Highlights } from '../scene/Highlights.js'
 import { humanFigureModel, virtualHumanFigure } from './HumanFigure.js'
 //import { evacuatedTubeModel, virtualEvacuatedTube } from './EvacuatedTube.js'
 import * as LauncherAnimate from './launcherAnimate.js'
@@ -22,6 +23,9 @@ import * as SaveGeometryAsSTL from '../export/SaveGeometryAsSTL.js'
 import * as EngineeringDetails from './EngineeringDetails.js'
 import { ExtractedTelemetryLoader } from './ExtractedTelemetryLoader.js'
 import { nearestOnCurve } from '../curves/curveDistance.js'
+import { launchCadence } from './launchCadence.js'
+import { terminalSchedule } from './terminalPort.js'
+import { MIN_DEPTH } from './OceanTerminal.js'
 
 //import { arrow } from '../ring/markers.js'
 //import { FrontSide } from 'three'
@@ -160,6 +164,8 @@ export class launcher {
 
     this.refFrames = []
     const numZones = this.numZones
+    Highlights.disposeStandIn(this.highlightStandIn)
+    this.highlightStandIn = null
 
     const makePath = (name, curves) => {
       const path = new SuperCurvePath()
@@ -197,6 +203,9 @@ export class launcher {
           [virtualMassDriverTube, 3], [virtualMassDriverRail, 2], [virtualMassDriverBracket, 0], [virtualMassDriverScrew, 0],
           [virtualAdaptiveNut, 1], [virtualLaunchSled, 2], [virtualLaunchVehicle, 4], [virtualHumanFigure, 0]])
         this.virtualMassDriverTube = virtualMassDriverTube
+        // The mass driver's highlight from afar, where its models are not drawn.
+        this.highlightStandIn = Highlights.curveStandIn(this.polyCurveForrf3, 'massDriver', { chunks: 128 })
+        planetCoordSys.add(this.highlightStandIn)
         break
       }
       case 1:
@@ -265,18 +274,49 @@ export class launcher {
         case virtualHumanFigure: objectClass.update(dParamWithUnits, this.versionNumber); objectClass.modelFactory = this.humanFigureModelObject; break
       }
     })
+    this.updateCadence(dParamWithUnits, planetSpec)
     this.updateLaunchStride()
+  }
+
+  // The launch cadence (launchCadence.js): whether the launches leave from an ocean terminal (the breech
+  // deep enough under the sea for one: OceanTerminal.js; whether it is drawn does not matter), so are
+  // drawn out of it first, and the timetable of the ships that bring their cargo.
+  updateCadence(dParamWithUnits, planetSpec) {
+    const breech = this.objectClasses.includes(virtualMassDriverTube) ? this.startFrame() : null
+    let terminal = false
+    if (breech && planetSpec.hasOcean) {
+      const geo = tram.ecefToGeodetic(breech.point.x, breech.point.y, breech.point.z, planetSpec.ellipsoid)
+      terminal = geo.alt <= -MIN_DEPTH
+    }
+    this.cadence = launchCadence({
+      spacing: dParamWithUnits['launchVehicleSpacingInSeconds'].value,
+      slowDown: dParamWithUnits['launcherSlowDownPassageOfTime'].value,
+      startDelay: dParamWithUnits['launcherStartDelayInSeconds'].value,
+      egressDuration: dParamWithUnits['launcherTerminalEgressDuration'].value,
+      endSpeed: dParamWithUnits['launcherMassDriver1InitialVelocity'].value,
+      terminal,
+    })
+    MovingVirtualObject.egress = this.cadence.egress
+    this.shipSchedule = terminalSchedule(terminal ? this.cadence : null)
+  }
+
+  // The ocean terminal's timetable (terminalPort.js), on the launch cadence.
+  terminalSchedule() {
+    return this.shipSchedule ?? terminalSchedule(null)
   }
 
   // If numVirtual* is too small to hold every launch that is in flight at the configured spacing, only
   // every launchStride-th launch is shown. A single stride is shared by vehicles, sleds and nuts so that
-  // each shown launch has all three.
+  // each shown launch has all three. At an ocean terminal it is a whole number of ships, so that the
+  // launches shown are each the first a ship brings cargo for (launchCadence.js).
   updateLaunchStride() {
     const moving = this.objectClasses.filter(c => c.prototype instanceof MovingVirtualObject)
     let stride = 1
     moving.forEach(c => {
-      if (c.numObjects > 0 && c.refFrames[0]) stride = Math.max(stride, c.strideNeeded(c.refFrames[0].curve.getDuration()))
+      if (c.numObjects > 0 && c.refFrames[0]) stride = Math.max(stride, c.strideNeeded(c.refFrames[0].curve.getDuration() + c.egressDuration))
     })
+    const perShip = this.cadence?.terminal ? this.cadence.launchesPerShip : 1
+    stride = Math.ceil(stride / perShip) * perShip
     moving.forEach(c => { c.launchStride = stride })
     this.launchStride = stride
   }
@@ -302,6 +342,7 @@ export class launcher {
         const cylinderGeometry = new THREE.CylinderGeometry(threadRadius * 0.9, threadRadius * 0.9, nominalLength, 12, 1, false)
         const cylinderPool = new InstancedProxyPool({
           name: 'massDriverScrew',
+          highlight: 'massDriver',
           parent: this.scene,
           size: 2 * threadRadius,
           levels: [{ geometry: cylinderGeometry, material: this.massDriverScrewMaterials[0], minPixels: 0 }],
@@ -322,6 +363,7 @@ export class launcher {
         const low = this.bracketModelObject.createModel(this.polyCurveForrf0, this.accelerationScrewLength, segments, 0, this.bracketModelObject.lowDetailShape)
         const pool = new InstancedProxyPool({
           name: 'massDriver2Bracket',
+          highlight: 'massDriver',
           parent: this.scene,
           size: 2 * dParamWithUnits['launcherMassDriverTubeInnerRadius'].value,
           castShadow: true,
@@ -362,6 +404,35 @@ export class launcher {
     if (this.tubeModelObject) this.tubeModelObject.sampleTerrainHeight = sampleTerrainHeight
   }
 
+  // The weather date changed (seaPlacement.setWeatherDate): the lift fans lean into the new wind.
+  resetWeather() {
+    this.tubeModelObject?.resetLiftFans(this.scene)
+  }
+
+  // Where the launcher begins: the start of its tube (planet coordinates), or null before it is built.
+  startPoint() {
+    const curve = virtualMassDriverTube.refFrames?.[0]?.curve?.superCurves?.[0]
+    return curve ? curve.getPointAt(0, new THREE.Vector3()) : null
+  }
+
+  // The breech: the start of the tube and its direction there ({ point, tangent }, planet coordinates), or
+  // null before it is built.
+  startFrame() {
+    const curve = virtualMassDriverTube.refFrames?.[0]?.curve?.superCurves?.[0]
+    return curve ? { point: curve.getPointAt(0, new THREE.Vector3()), tangent: curve.getTangentAt(0, new THREE.Vector3()).normalize() } : null
+  }
+
+  // Points along the launcher's tube from its start, every `step` metres (planet coordinates); empty
+  // before it is built.
+  pathPoints(step = 1000) {
+    const points = []
+    for (const curve of virtualMassDriverTube.refFrames?.[0]?.curve?.superCurves ?? []) {
+      const n = Math.max(1, Math.ceil(curve.getLength() / step))
+      for (let i = points.length ? 1 : 0; i <= n; i++) points.push(curve.getPointAt(i / n, new THREE.Vector3()))
+    }
+    return points
+  }
+
   // The evacuated tube near `localPoint` (planet coordinates), within maxDistance of its axis: { point,
   // tangent (its axis's nearest point and direction there, planet coordinates), radius (inside) }, or null.
   // (Inside it there is vacuum rather than water: used for the underwater view.)
@@ -385,6 +456,75 @@ export class launcher {
 
   setAnimationState(state) {
     if (state && Number.isFinite(state.frozenTimeSinceStart)) this.frozenTimeSinceStart = state.frozenTimeSinceStart
+  }
+
+  // ---- Moving objects at any simulated time (camera anchors in shots) ----------------------------
+  // Every launch is a pure function of time (the k-th launch leaves at k * spacing), so where a given
+  // launch's vehicle, sled or nut is at any moment can be worked out without it being on screen.
+
+  movingObjectClass(className) {
+    return this.objectClasses?.find(c => c.className === className && c.refFrames?.[0]) ?? null
+  }
+
+  // The time the animation shows at simulated time `simTime` (it is frozen while every animate* flag is off).
+  animationTimeAt(simTime) {
+    return (this.animateLaunchVehicles || this.animateLaunchSleds || this.animateAdaptiveNuts) ? simTime : this.frozenTimeSinceStart
+  }
+
+  // { position (the object's centre), forward, upward, rightward } in planet coordinates, for launch
+  // `launchIndex` at `simTime` (before the launch: in the terminal, or at the start of its path without
+  // one; after: at the end), or null.
+  movingObjectFrameAt(className, launchIndex, simTime) {
+    const objectClass = this.movingObjectClass(className)
+    if (!objectClass) return null
+    const refFrame = objectClass.refFrames[0]
+    const adj = objectClass.adjustedTime(this.animationTimeAt(simTime))
+    const deltaT = Math.max(-objectClass.egressDuration, Math.min(refFrame.curve.getDuration(), adj - launchIndex * objectClass.tInc))
+    const object = Object.create(objectClass.prototype)
+    object.launchIndex = launchIndex
+    object.timeLaunched = launchIndex * objectClass.tInc
+    const frame = object.frameAt(refFrame, deltaT)
+    return { position: frame.centre, forward: frame.forward, upward: frame.upward, rightward: frame.rightward }
+  }
+
+  // Launch indices of `className` objects in flight at simTime (only every launchStride-th launch is shown).
+  activeLaunchIndicesAt(className, simTime) {
+    const objectClass = this.movingObjectClass(className)
+    if (!objectClass || !(objectClass.numObjects > 0)) return []
+    return objectClass.activeLaunchIndices(objectClass.adjustedTime(this.animationTimeAt(simTime)), objectClass.refFrames[0].curve.getDuration())
+  }
+
+  // Simulated time at which launch `launchIndex` has been on its path for `deltaT` seconds.
+  launchSimTime(className, launchIndex, deltaT = 0) {
+    const objectClass = this.movingObjectClass(className)
+    if (!objectClass || !(objectClass.slowDownPassageOfTime > 0)) return null
+    return objectClass.launcherStartDelayInSeconds + (launchIndex * objectClass.tInc + deltaT) / objectClass.slowDownPassageOfTime
+  }
+
+  // The shown launch (a multiple of the launch stride) that starts first at or after simTime.
+  nextLaunchIndex(className, simTime) {
+    const objectClass = this.movingObjectClass(className)
+    if (!objectClass || !(objectClass.tInc > 0) || !(objectClass.numObjects > 0)) return null
+    const step = Math.max(1, objectClass.launchStride | 0)
+    const adj = (simTime - objectClass.launcherStartDelayInSeconds) * objectClass.slowDownPassageOfTime
+    return Math.max(0, Math.ceil(adj / (step * objectClass.tInc) - 1e-9)) * step
+  }
+
+  // Named stages of a launch's path: [{ name, deltaT }], from the sub-curves of the object's path (and
+  // its egress from the terminal, before it, at negative deltaT).
+  launchStages(className) {
+    const objectClass = this.movingObjectClass(className)
+    if (!objectClass) return []
+    const path = objectClass.refFrames[0].curve
+    const stages = []
+    if (objectClass.egressDuration > 0) stages.push({ name: 'egress', deltaT: -objectClass.egressDuration })
+    let t = 0
+    for (const curve of path.superCurves) {
+      stages.push({ name: curve.name, deltaT: t })
+      t += curve.getDuration()
+    }
+    stages.push({ name: 'end', deltaT: t })
+    return stages
   }
 
   update(dParamWithUnits, timeSinceStart, planetCoordSys, planetSpec, tetheredRingRefCoordSys, mainRingCurve, crv, specs, genLauncherKMLFile, kmlFile) {

@@ -3,6 +3,9 @@
 //
 //   npm run smoke -- [--url-params "preset=default"] [--wait 15] [--out smoke.png] [--width 1280 --height 720 --dpr 1]
 //                    [--cpu-throttle 4]   (slow the CPU down 4x, roughly a low-end laptop)
+//                    [--init "<js>"]      (run before the page's own scripts, e.g. to hide a WebGL extension)
+//                    [--steps <file.mjs>] (after the wait: runs the module's default export, an async function
+//                                          given { page, screenshot(name) }, for checks with several steps)
 //
 // Set CHROME_PATH if Chrome/Chromium/Edge is not found automatically.
 import { createServer } from 'vite'
@@ -42,6 +45,7 @@ const width = Number(arg('width', '1280'))
 const height = Number(arg('height', '720'))
 const deviceScaleFactor = Number(arg('dpr', '1'))
 const cpuThrottle = Number(arg('cpu-throttle', '1'))
+const initExpr = arg('init', null)
 
 const server = await createServer({ server: { port: 0 }, logLevel: 'error' })
 await server.listen()
@@ -64,6 +68,7 @@ let exitCode = 0
 try {
   const page = await browser.newPage()
   if (cpuThrottle > 1) await page.emulateCPUThrottling(cpuThrottle)
+  if (initExpr) await page.evaluateOnNewDocument(initExpr)
   page.on('console', (msg) => {
     if (msg.type() === 'error') errors.push(`console.error: ${msg.text()}`)
     if (process.env.SMOKE_VERBOSE) console.log(`[${msg.type()}] ${msg.text()}`)
@@ -72,6 +77,20 @@ try {
   await page.goto(url, { waitUntil: 'load', timeout: 120000 })
   await new Promise((r) => setTimeout(r, waitSeconds * 1000))
   if (evalExpr) console.log('eval:', JSON.stringify(await page.evaluate(evalExpr), null, 2))
+  const stepsFile = arg('steps', null)
+  if (stepsFile) {
+    const { pathToFileURL } = await import('node:url')
+    const steps = (await import(pathToFileURL(path.resolve(stepsFile)).href)).default
+    const outBase = out.replace(/\.png$/i, '')
+    await steps({
+      page,
+      screenshot: async (name) => {
+        const file = path.resolve(`${outBase}-${name}.png`)
+        await page.screenshot({ path: file })
+        console.log(`Screenshot: ${file}`)
+      },
+    })
+  }
   await page.screenshot({ path: path.resolve(out) })
   console.log(`Screenshot: ${path.resolve(out)}`)
 } catch (e) {

@@ -213,20 +213,11 @@ export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
 
   // Hawaii Big Island
 
-  // Ordered asset stack: base globe first, then overlay assets in order.
-  // nonGUIParams['planet2Assets'] = ['earth_lodvis']
-  // nonGUIParams['planet2Assets'] = ['earth']
-  // nonGUIParams['planet2Assets'] = ['hawaii_lodvis']
-  // nonGUIParams['planet2Assets'] = ['earth_lodvis', 'hawaii_lodvis']
-  nonGUIParams['planet2Assets'] = ['hawaii']
-  // nonGUIParams['planet2Assets'] = ['earth', 'hawaii']
-  // nonGUIParams['planet2Assets'] = ['chimborazo_lodvis']
-  // nonGUIParams['planet2Assets'] = ['earth_lodvis', 'chimborazo_lodvis']
-  //nonGUIParams['planet2Assets'] = ['earth', 'chimborazo']
+  // (The planet streams the global tiles and every regional bake on the machine: see planetSetup.js.)
   nonGUIParams['planet2RequireKtx2'] = false
   nonGUIParams['planet2StartupChart'] = true
 
-  // Bright reference marker centered 200 m above Chimborazo's 6,263 m summit.
+  // Debug: bright reference markers. Uncomment to check terrain alignment. Marker centered 200 m above Chimborazo's 6,263 m summit.
   // nonGUIParams['debugGeodeticMarkers'] = [
   //   {
   //     name: 'Chimborazo peak',
@@ -290,7 +281,7 @@ export function toMarsHawaiiLauncherPresets(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showStars'].value = false
   guidParamWithUnits['showMoon'].value = false
   guidParamWithUnits['showLogo'].value = false
-  guidParamWithUnits['showEarthsAtmosphere'].value = false
+  guidParamWithUnits['showEarthsAtmosphere'].value = true
   
 
   //guidParamWithUnits['showLaunchTrajectory'].value = true

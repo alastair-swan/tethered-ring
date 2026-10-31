@@ -1,20 +1,14 @@
-// How a preset's planet streams (see src/planet/Planet.js and assets/README.md): which tile sets, how much
-// it keeps loaded, and where it loads first.
+// Where a preset's planet loads first, and how much it keeps loaded (see src/planet/Planet.js and
+// docs/ASSETS.md).
 //
-// Every preset gets the global tile set for its body (assets/earth, assets/moon). Regional bakes add much
-// sharper imagery and terrain over a small area, as overlays on top of it; scenes there list them, and get
-// the larger streaming budgets they need (a regional bake keeps many more, smaller tiles loaded: with the
-// default budget of 320, the island in view would keep being evicted and reloaded).
-//
-// A regional bake is used where it is on the machine and skipped (falling back to the global tiles, and
-// leaving out its imagery credit) where it is not: one not yet uploaded to Git LFS, or not pulled. So
-// scenes list every bake for their area, made or not; they use it as soon as it is there.
-//
-// The Earth regions (other than hawaii) are baked with tools/adaptive_lod.py (EARTH_REGIONS, which also
-// gives their extents); the global tiles alone are about 75 m per texel at their finest.
+// Every scene streams its body's global tile set and every regional high-resolution bake on the machine
+// (Planet's defaultPlanetAssets), using the regional tiles wherever the camera is close enough to need
+// them; a bake that is missing is skipped. A scene near a regional bake says so here: its area is loaded
+// first, with the larger streaming budgets that close views of a bake need (it keeps many more tiles
+// loaded: with the default budget of 320 an island in view would keep being evicted and reloaded).
 
-// The regional bakes: where their sharpest tiles are (to load first: the centres of their bakes' core
-// areas, see tools/bake_hawaii_bigisland_hires.py and tools/adaptive_lod.py).
+// The regional bakes: where their sharpest tiles are (the centres of their bakes' core areas, see
+// tools/bake_hawaii_bigisland_hires.py and tools/adaptive_lod.py).
 export const REGIONAL_ASSETS = {
   hawaii: { name: 'Big Island of Hawaii', lat: 19.6, lon: -155.43, radiusKm: 100 },
   chimborazo: { name: 'Chimborazo', lat: -1.47, lon: -79.0, radiusKm: 80 },
@@ -28,13 +22,11 @@ export const REGIONAL_ASSETS = {
   moon_korolev: { name: 'Korolev crater', lat: -3.1, lon: -158.25, radiusKm: 60 },
 }
 
-// Sets the planet's tile sets for a preset. assets: the tile sets, base first then regional overlays
-// (default: the global set for the body). interests: [{ name, lat, lon, radiusKm, lodBoost }] to load
-// first (default: the regional bakes' areas).
-export function planetSetup(nonGUIParams, { assets, interests } = {}) {
-  if (assets) nonGUIParams['planet2Assets'] = assets
-  const regional = (assets ?? []).map(name => REGIONAL_ASSETS[name]).filter(Boolean)
-  if (regional.length === 0) return
+// For a preset near regional bakes (near: their names): loads their areas first (or `interests`:
+// [{ name, lat, lon, radiusKm, lodBoost }]), with the larger streaming budgets.
+export function planetSetup(nonGUIParams, { near = [], interests } = {}) {
+  const regional = near.map(name => REGIONAL_ASSETS[name]).filter(Boolean)
+  if (regional.length === 0 && !interests) return
   nonGUIParams['tileSegments'] = 24
   nonGUIParams['maxConcurrentTileLoads'] = 16
   nonGUIParams['maxCachedTiles'] = 2200

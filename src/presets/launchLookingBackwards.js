@@ -27,8 +27,8 @@ export function launchLookingBackwards(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['adaptiveNutGrapplerMagnetThickness'].value = 0.06  // m
 
   // Hawaii
-  // The Big Island's high-resolution bake (see planetSetup.js).
-  planetSetup(nonGUIParams, { assets: ['earth', 'hawaii'] })
+  // Near the Big Island's regional bake: load its area first (see planetSetup.js).
+  planetSetup(nonGUIParams, { near: ['hawaii'] })
 
   actualSizeDollyShot(guidParamWithUnits, nonGUIParams)
   guidParamWithUnits['showStars'].value = true

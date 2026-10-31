@@ -31,12 +31,15 @@ export const KEY_BINDINGS = [
   { code: 'KeyF', label: 'F', help: 'Cycle illustration settings', action: (app) => app.cycleIllustrationSettings() },
   { code: 'KeyM', label: 'M', help: 'Move the launcher ramp to the next mountain in the mountain list', action: (app) => app.nextMountainLaunchSite() },
   { code: 'KeyH', label: 'H', help: 'Sweep ramp acceleration and log launcher cost/length (console)', action: (app) => app.runRampAccelerationSweep() },
+  { code: 'KeyT', label: 'T', help: 'Switch the Earth imagery between the original and new tile sets (A/B)', action: (app) => app.toggleEarthTiles() },
   { code: 'KeyY', label: 'Y', help: 'Start/stop the launch trajectory trial sweep (console)', action: (app) => app.toggleLaunchTrialSweep() },
   { code: 'KeyG', label: 'G', help: 'Play/stop camera path from a Google Earth Studio JSON export', action: (app) => app.toggleGoogleEarthCamera() },
-  { code: 'KeyA', label: 'A', help: 'Shot: add a camera keyframe at the current time', action: (app) => app.shots.addKeyframe() },
-  { code: 'KeyK', label: 'K', help: 'Shot: remove the last camera keyframe', action: (app) => app.shots.removeLastKeyframe() },
-  { code: 'KeyB', label: 'B', help: 'Shot: preview the shot from the start', action: (app) => app.shots.preview() },
-  { code: 'Space', label: 'Space', help: 'Pause / resume the simulation clock', action: (app) => app.togglePause() },
+  { code: 'KeyA', label: 'A', help: 'Shot: add a camera keyframe at the playhead from the current view', action: (app) => app.shots.addKeyframe() },
+  { code: 'KeyK', label: 'K', help: 'Shot: delete the selected keyframe', action: (app) => app.shots.deleteKeyframe() },
+  { code: 'KeyB', label: 'B', help: 'Shot: switch between the free view and the shot camera', action: (app) => app.shots.setViewMode(app.shots.viewMode === 'shot' ? 'free' : 'shot') },
+  { code: 'Comma', label: ',', help: 'Shot: back one frame', action: (app) => app.shots.stepFrames(-1) },
+  { code: 'Period', label: '.', help: 'Shot: forward one frame', action: (app) => app.shots.stepFrames(1) },
+  { code: 'Space', label: 'Space', help: 'Play / pause (the shot playhead, which drives the simulated time)', action: (app) => app.togglePause() },
 ]
 
 export function keyboardHelpText() {

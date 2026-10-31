@@ -49,7 +49,9 @@ Open the URL Vite prints (usually http://localhost:5173/). Useful URL parameters
 | `?preset=<id>` | Load a scene preset, e.g. `?preset=toOrbitFromMoon`. The **Scene → Preset** dropdown does the same. |
 | `?enableVR=true` | Enable WebXR (shows an "Enter VR" button). |
 | `?planetAssets=earth,hawaii` | Override which terrain tile sets are streamed. |
+| `?earthTiles=earth` | Use the Earth's original global tile set instead of `earth_hires` (see [docs/ASSETS.md](docs/ASSETS.md)). |
 | `?quality=auto\|high\|balanced\|low` | Graphics quality (see below). Without it, the last choice is remembered. |
+| `?msaa=off` | No multisample antialiasing on the canvas (on by default). About 20% faster per frame at 1920 × 1080 on a desktop GPU; for weak graphics. Recordings can still be supersampled. |
 
 ### Graphics quality
 
@@ -65,11 +67,11 @@ Open the browser developer tools (F12) for console output. `window.tetheredRing`
 
 ### Sun and time of day
 
-The sun is placed from a date: **Rendering → sunDayOfYear** (1–366) and **sunTimeOfDayUTC** (hours) set where it is when the simulation starts, and it then moves with simulated time. Each preset starts at its own repeatable daytime for its opening view (mid-morning to mid-afternoon local time, with the sun well up); change the two values to see the scene at another time, including night and sunset. The atmosphere's colour (blue sky, sunsets, the glow around the sun) follows from the sun's position.
+The sun is placed from a date: **Day of year** and **Time of day (UTC)** in the **Sun** section of the **Shot & video** panel (also **Rendering → sunDayOfYear** and **sunTimeOfDayUTC**) set where it is at simulated time 0, and it then moves with simulated time. Each preset starts at its own repeatable daytime for its opening view (mid-morning to mid-afternoon local time, with the sun well up); change the two values to see the scene at another time, including night and sunset. The atmosphere's colour (blue sky, sunsets, the glow around the sun) follows from the sun's position.
 
 ## Controls
 
-Mouse: drag to orbit, right-drag to pan, wheel to zoom. The **Controls** panel holds every parameter, grouped by subsystem. Press the **Keyboard shortcuts** button for the full list; the most useful keys are:
+Mouse: drag to orbit, right-drag to pan, wheel to zoom. The **Controls** panel (top right) holds every parameter, grouped by subsystem; the **Shot & video** panel (left) controls time, the sun, the camera and video making. Press the **Keyboard shortcuts** button for the full list; the most useful keys are:
 
 | Key | Action |
 |:---:|---|
@@ -83,24 +85,76 @@ Mouse: drag to orbit, right-drag to pan, wheel to zoom. The **Controls** panel h
 | `R` / `L` | Raise / lower the ring (or deploy/retract the evacuated tube) |
 | `W` | Jump to the camera preset selected in **Camera → cameraPreset** |
 | `E` / `C` | Follow the elevator cars / the transit vehicles |
-| `A` / `K` / `B` | Shot: add keyframe / remove last keyframe / preview |
-| `Space` | Pause or resume simulated time |
+| `A` / `K` / `B` | Shot: add a keyframe from the view / delete the selected keyframe / switch between the free view and the shot camera |
+| `Space` | Play or pause (the shot playhead, which drives simulated time) |
+| `,` / `.` | Back / forward one video frame |
 | `S` | Update the engineering specs summary (**TextOutput** folder) |
 
 Keys are ignored while you are typing in a GUI field.
 
 ## Recording video and repeatable shots
 
-Recording happens entirely in the browser; no tar files, PowerShell or ffmpeg are needed. Open **Shots & Recording** in the Controls panel.
+Recording happens entirely in the browser; no tar files, PowerShell or ffmpeg are needed. Everything is in the **Shot & video** panel on the left, and all of it works with the mouse alone. Press **—** to minimise the panel and **🎬 Shots** to bring it back. Nothing in the panel, and nothing drawn to help set up a shot, ever appears in a video: recordings capture only the 3D scene.
 
-1. Set the **Output video** options: resolution, frame rate, duration, preferred codec and container. AV1 is preferred; if the browser cannot encode AV1 at that size, H.264 (then HEVC, then VP9) is used automatically. The default bitrate is deliberately high (about 0.25 bits per pixel per frame for AV1, 0.45 for H.264); set **Bitrate Mbps** to override it.
-2. Build a shot. Either:
-   - **Keyframes:** move the camera and press `A` (or **Add camera keyframe**) at each point; let simulated time run between keyframes (`Space` pauses). The first keyframe fixes the shot's start time. `B` previews.
-   - **Live take:** press **Start live take** and fly the camera (keyboard tracking modes work too). Every frame's camera pose, and any parameter you change, is recorded. With **Encode live take** on, the video is written at the same time.
-3. **Render shot to video** renders the shot frame by frame at a fixed time step (independent of how fast your computer renders) and downloads the file, or streams it to the file you choose when **Stream to file** is on (recommended for long, high-resolution videos).
-4. **Export shot file** saves a `.shot.json` file. **Import shot file** on any computer restores the preset, every parameter, the simulated start time (and therefore where every vehicle is on its track), the camera path and the output settings, so rendering it produces the same footage. Importing a shot made with another preset reloads the page with that preset first.
+### Time
+
+The playhead is a time in the shot's video, and it drives simulated time: **play**, **pause**, **play backwards**, step by **frames**, choose a **playback speed** (0.1x to 1000x, also for rewinding), or use the **timeline**: drag the playhead (or click on the ruler) to move it, drag anywhere else to pan, and use the wheel to zoom. The green handles mark the shot's start and end; drag them to change where it starts and ends (moving the start keeps every keyframe at its simulated moment). You can type a simulated time or a shot time to jump to. **Previous / Next** and **Jump to…** go to the moments that matter: the launches; or, for the object the selected keyframe follows, a launch's stages (mass driver, ramp, evacuated tube, free flight), a collector-lane vehicle's arrivals and departures at each stop (saying which stops are terminuses), or an elevator car leaving and reaching the ring and the ground. The playhead can run before or after the shot to find the right moment.
+
+### The sun
+
+**Day of year** and **Time of day (UTC)** set the date at simulated time 0; the sun then moves on with simulated time. The panel shows the local solar time and the sun's elevation at the place in view.
+
+### Building a shot
+
+1. Find the moment, then press **Now** next to **Starts at sim time** (**Shot** section).
+2. **Free view** lets you fly the camera. Frame a view, put the playhead where it should be, and press **+ Add keyframe** (`A`). Repeat. A new keyframe keeps the settings of the selected one, including the object it follows.
+3. Click a keyframe (in the list or on the timeline) to edit it. Drag it on the timeline to retime it. Each keyframe has:
+   - **Camera moves with**: the world, or one particular launch vehicle, launch sled, adaptive nut, transit vehicle or elevator car. Choose a kind (the one nearest the middle of the keyframe's view is taken) or press **🎯 Pick** and click the object in the view. The camera then rides with that object: the keyframe's view is kept relative to it at every moment of the shot. **Camera frame** sets whether the view turns with the object, turns only with its heading (staying level), or never turns.
+   - **Looks at**: by default the same object; or a different one (for example, ride with the transit vehicle and look at the terminus's elevator car).
+   - **Time speed**: simulated seconds per video second at this keyframe (0 freezes time). Speeds blend smoothly between keyframes, so a shot can show a launch at 1x and the whole flight at 60x. **Simulated time** shows (and sets) the moment a keyframe falls on: jump to an event and press **Now** to put the keyframe there. That works out the speed of the previous keyframe (or, if you choose, this one's).
+   - **Path to next**: **Direct** moves the camera along a smooth curve through the keyframes. **Orbit & zoom** moves around the target, with the distance changing by equal factors per second: from 50 m to 20,000 km in a few seconds, keeping the subject in frame. **Auto** (the default) orbits when the distance changes more than threefold or the camera circles its subject, and moves directly otherwise.
+   - **Ease in and out**: the camera comes to rest at this keyframe.
+   - **Go to** moves the playhead and the free camera to the keyframe (the free camera then moves with its object as you scrub). **Update from view** replaces the keyframe's view with the current one.
+4. In the free view the shot's camera path (orange), the path of what it looks at (blue), the keyframes and the shot's camera at the playhead are drawn in the scene, so you can see the whole shot from outside. **Shot camera** (`B`) shows what the shot sees at the playhead, framed like the video. **▶ Play the shot from the start** plays it in real time.
+
+Two example shots for the default preset are in `docs/examples/shots/`; **Import…** one to see how it is built:
+
+- `launch-to-orbit.shot.json`: an overview of the launcher, then riding with launch #0's vehicle out of the mass driver as time speeds up, then an orbit-and-zoom out to 22,000 km with the trajectory in view (40 s).
+- `transit-to-ground.shot.json`: riding with a collector-lane transit vehicle into a terminus, pulling back to show it, fast-forwarding to the elevator's departure, then following the elevator car down to the ground (62 s).
+
+**Live take** (**Video export** section) records a shot as you fly the camera instead: every frame's camera pose, and any parameter you change, is recorded. With **Encode the live take** on, the video is written at the same time.
+
+### Rendering and sharing
+
+**⏺ Render video** renders the shot frame by frame at a fixed time step (independent of how fast your computer renders) and downloads the file, or streams it to the file you choose when **Stream to a file** is on (recommended for long, high-resolution videos). Set the resolution, frame rate, preferred codec and container first. AV1 is preferred; if the browser cannot encode AV1 at that size, H.264 (then HEVC, then VP9) is used automatically. The default bitrate is deliberately high (about 0.25 bits per pixel per frame for AV1, 0.45 for H.264); set **Bitrate** to override it. **Motion blur** removes temporal aliasing: the strobing, and the "wagon wheel" effect, when the camera passes repeated structures (brackets, tube joints, screw threads, tethers) at speeds that beat with the frame rate. Each video frame becomes the average of many renders (sub-frames) spread over the **shutter angle** (360° covers the whole frame interval, leaving no gaps). It only affects recordings, and rendering takes as many times longer as there are sub-frames:
+
+- **Adaptive** (recommended) chooses each frame's sub-frames from how fast the shot camera moves then: close to things it moves at most **Camera step near things** (default 1 m; keep it under half the spacing of what you pass: mass-driver brackets are about 5 m apart) between sub-frames; further away the step grows so the nearest scenery moves at most **Scenery motion per sub-frame** (default 2 px). A camera riding a launch vehicle at hundreds of metres per frame gets hundreds of sub-frames; a slow pan gets the minimum (**Fewest sub-frames**, also useful for fast objects passing a still camera). **Most sub-frames per frame** caps it.
+- **Fixed** uses the same number for every frame.
+
+The panel estimates how many renders the shot will take. **Preview this frame** renders the frame at the playhead as the recording will and shows it.
+
+**Supersampling** renders each recorded frame at 1.5 to 4 times the output resolution in each direction and filters it down (a Mitchell-Netravali filter in linear light), which removes the shimmer on thin lines and distant detail that the canvas's 4× MSAA leaves. 2 × 2 is a good default; it takes roughly 2 to 2.5 times as long per frame as no supersampling, and 3 × 3 about 4.5 times (measured at 1280 × 720 on a desktop GPU). The factor is lowered automatically if the GPU cannot render that size.
 
 **Wait for terrain tiles** pauses each frame until the planet's terrain has finished streaming, so frames never contain half-loaded terrain.
+
+**Export…** saves a `.shot.json` file. **Import…** on any computer restores the preset, every parameter (including the sun), the simulated start time (and therefore where every vehicle is on its track), the camera path and the output settings, so rendering it produces the same footage. Importing a shot made with another preset reloads the page with that preset first. Shot files from before keyframes could follow objects still load.
+
+### Rendering many shots (overnight)
+
+The **Render queue** section of the panel renders shots one after another without anyone at the computer. **+ This shot** adds a copy of the current shot (with the scene as it is now and its output settings); **+ Shot files…** adds `.shot.json` files (or every shot in a `.queue.json` file). Each queued shot has its own output settings (the ✎ button: file name, resolution, frame rate, codec, bitrate, supersampling, motion blur), and can be moved up or down or removed. **▶ Render the queue** renders every waiting shot at the fixed time step and saves it. In Chrome and Edge, choose the folder the videos go in first (**Choose…**), so no save dialog appears for each video; other browsers download each video when it is finished. Before each shot the page reloads with that shot's preset (and, with **Fresh page for every shot**, before every shot), so each shot is rendered with its own scene. A shot that fails is marked failed with the reason, and the queue carries on with the next one. The queue and its log are kept in the browser, so they survive reloads; if the browser asks for folder access again after a reload, press **Continue**. Keep the tab visible and the computer awake (the run asks the screen to stay on); a hidden tab is throttled.
+
+For long unattended runs the command-line renderer is more robust: it renders shot files, or a queue saved with **Export queue…**, in headless Chrome/Chromium/Edge, one fresh browser page per shot, and writes each video straight into a folder:
+
+```
+# POSIX
+npm run render -- --out renders shots/first.shot.json shots/second.shot.json
+npm run render -- --out renders render.queue.json
+# Windows PowerShell
+npm run render -- --out renders shots\first.shot.json shots\second.shot.json
+npm run render -- --out renders render.queue.json
+```
+
+Each shot is rendered with its own preset, parameters and output settings, exactly as **⏺ Render video** would. Progress is printed, and a log is kept in `render-log.txt` in the output folder. A shot that fails, or makes no progress for 30 minutes (`--stall-minutes`), is logged and skipped, and the next one starts in a new browser. Videos already in the output folder are skipped, so running the same command again carries on where it stopped (`--overwrite` renders them again). Videos are written to `<name>.part` and renamed when finished, so a half-written file is never mistaken for a finished one. Options that apply to every shot: `--width`, `--height`, `--fps`, `--codec av1|avc|hevc|vp9`, `--container mp4|mkv`, `--bitrate <Mbps>`, `--supersample 1|1.5|2|3|4`, `--motion-blur off|fixed|adaptive`; `--headful` shows the browser window. The full list is at the top of `scripts/render-shots.mjs`. Set `CHROME_PATH` if Chrome, Chromium or Edge is not found automatically. The GPU is used; on Linux the renderer asks for ANGLE's `gl-egl` backend (`--angle <backend>` changes it). Keep the computer from sleeping during the run (on Windows: Settings → System → Power; on macOS, `caffeinate -i npm run render -- …`).
 
 ### Converting or re-encoding (optional)
 
@@ -122,6 +176,7 @@ The command is identical in PowerShell and POSIX shells once ffmpeg is on your P
 | `npm run lint` | ESLint |
 | `npm test` | Unit tests (Node's built-in test runner) |
 | `npm run smoke` | Loads the app in headless Chrome/Chromium and reports console errors plus a screenshot |
+| `npm run render -- --out <folder> <shot files>` | Renders shot or queue files to video, headless (see [Rendering many shots](#rendering-many-shots-overnight)) |
 
 `npm run profile -- --preset <id>` reports per-subsystem CPU time, GPU time, draw calls, triangles and the heaviest objects in view. Add `--width 1920 --height 1080 --dpr 2` to emulate a 4K screen (the same options work for `npm run smoke`), and `--camera "<js>"` to move the camera first (`app` is in scope). `npm run smoke -- --cpu-throttle 4` slows the browser's CPU down four times, roughly a low-end laptop.
 
@@ -132,6 +187,15 @@ The command is identical in PowerShell and POSIX shells once ffmpeg is on your P
 SMOKE_GPU=1 npm run smoke -- --wait 30 --out smoke.png
 # Windows PowerShell
 $env:SMOKE_GPU=1; npm run smoke -- --wait 30 --out smoke.png
+```
+
+For checks with several steps (for example, several views of one shot), `--steps <file.mjs>` runs the module's default export, an async function given `{ page, screenshot(name) }` (Puppeteer's page; screenshots are saved next to `--out` with the name appended):
+
+```
+# POSIX
+SMOKE_GPU=1 npm run smoke -- --wait 15 --out check.png --steps my-check.mjs
+# Windows PowerShell
+$env:SMOKE_GPU=1; npm run smoke -- --wait 15 --out check.png --steps my-check.mjs
 ```
 
 The production build does not copy the runtime data folders (`assets/`, `textures/`, `models/`, `basis/`); deploy them next to `dist/`'s contents.

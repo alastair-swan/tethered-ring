@@ -1,6 +1,6 @@
-// Thin structural lines: a cable of the line's colour at structureBrightness covering vCoverage of its
-// pixel, over what is behind it (premultiplied alpha; see structureLine.vert.glsl and
-// src/scene/structureLines.js).
+// Thin structural lines: a cable of the line's colour at structureBrightness, in the light on it,
+// covering vCoverage of its pixel, over what is behind it (premultiplied alpha; see
+// structureLine.vert.glsl and src/scene/structureLines.js).
 #include <common>
 #include <logdepthbuf_pars_fragment>
 #include <fog_pars_fragment>
@@ -8,10 +8,11 @@
 uniform vec3 color;
 uniform float structureBrightness;
 varying float vCoverage;
+varying vec3 vLight;
 
 void main() {
   #include <logdepthbuf_fragment>
-  gl_FragColor = vec4(color * structureBrightness, 1.0);
+  gl_FragColor = vec4(color * structureBrightness * vLight, 1.0);
   #include <colorspace_fragment>
   float coverage = vCoverage;
 #ifdef USE_FOG
