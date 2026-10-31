@@ -16,7 +16,7 @@ export const ATMO_MIE_G = 0.76
 const GROUND = 6378137
 const TOP = GROUND + 100000
 // Light scattered more than once, as a multiple of the single-scattered light (a clear sky).
-export const MULTIPLE_SCATTERING = 2
+export const MULTIPLE_SCATTERING = 1.5
 
 // The table: sun cosines (zenith) from SKY_MU_MIN to 1 in SKY_SAMPLES steps.
 export const SKY_MU_MIN = -0.25
@@ -63,15 +63,19 @@ function skyRadiance(d, sun) {
     const h = Math.max(Math.hypot(p[0], p[1], p[2]) - GROUND, 0)
     const densityR = Math.exp(-h / ATMO_HEIGHT_R) * segment
     const densityM = Math.exp(-h / ATMO_HEIGHT_M) * segment
+    const s = sunDepth(p, sun)
+    if (s) {
+      for (let c = 0; c < 3; c++) {
+        // The segment's own light, integrated exactly for its air (as in atmoScatter).
+        const tau = ATMO_BETA_R[c] * densityR + ATMO_BETA_M * 1.1 * densityM
+        const within = tau > 1e-4 ? (1 - Math.exp(-tau)) / tau : 1 - 0.5 * tau
+        const attenuation = Math.exp(-(ATMO_BETA_R[c] * (viewR + s[0]) + ATMO_BETA_M * 1.1 * (viewM + s[1]))) * within
+        sumR[c] += densityR * attenuation
+        sumM[c] += densityM * attenuation
+      }
+    }
     viewR += densityR
     viewM += densityM
-    const s = sunDepth(p, sun)
-    if (!s) continue
-    for (let c = 0; c < 3; c++) {
-      const attenuation = Math.exp(-(ATMO_BETA_R[c] * (viewR + s[0]) + ATMO_BETA_M * 1.1 * (viewM + s[1])))
-      sumR[c] += densityR * attenuation
-      sumM[c] += densityM * attenuation
-    }
   }
   const cos = d[0] * sun[0] + d[1] * sun[1] + d[2] * sun[2]
   const phaseR = 3 / (16 * Math.PI) * (1 + cos * cos)

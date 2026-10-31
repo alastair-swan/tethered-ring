@@ -83,9 +83,16 @@ void atmoScatter(vec3 camera, vec3 ds, vec3 d, float t0, float t1, vec3 sun, flo
     // it, such as the tiles' skirts, would turn black.)
     float h = max(length(p) - ground, 0.0);
     vec2 density = exp(-h / vec2(ATMO_HEIGHT_R, ATMO_HEIGHT_M)) * segment;
-    viewDepth += density;
+    // Each segment's own light is integrated exactly for its (uniform) air: the light scattered at
+    // depth s into it is dimmed by exp(-tau s / segment), which averages to (1 - exp(-tau)) / tau.
+    // Taking it all from the segment's far end instead loses blue light far more than red where a
+    // segment is optically thick (near-horizontal lines of sight through the low air, ~70 km per
+    // segment), and turned the horizon orange at noon.
+    vec3 tau = ATMO_BETA_R * density.x + ATMO_BETA_M * 1.1 * density.y;
+    vec3 within = mix(1.0 - 0.5 * tau, (1.0 - exp(-tau)) / max(tau, vec3(1e-4)), step(vec3(1e-4), tau));
     vec2 sunDepth = atmoSunDepth(p, sun, ground);
-    vec3 attenuation = exp(-(ATMO_BETA_R * (viewDepth.x + sunDepth.x) + ATMO_BETA_M * 1.1 * (viewDepth.y + sunDepth.y)));
+    vec3 attenuation = exp(-(ATMO_BETA_R * (viewDepth.x + sunDepth.x) + ATMO_BETA_M * 1.1 * (viewDepth.y + sunDepth.y))) * within;
+    viewDepth += density;
     sumR += density.x * attenuation;
     sumM += density.y * attenuation;
   }
