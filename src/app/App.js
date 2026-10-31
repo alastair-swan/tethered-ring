@@ -68,9 +68,10 @@ const _sunWorld = new THREE.Vector3()
 const _sunTarget = new THREE.Vector3()
 
 export class App {
-  constructor(container, { presetId, enableVR = false, quality } = {}) {
+  constructor(container, { presetId, enableVR = false, quality, antialias = true } = {}) {
     this.container = container
     this.enableVR = enableVR
+    this.antialias = antialias
     this.presetId = findPreset(presetId) ? presetId : DEFAULT_PRESET_ID
     this.clock = new SimClock()
     this.specs = {}
@@ -124,7 +125,7 @@ export class App {
 
   buildRenderer() {
     const canvas = this.container.querySelector('canvas')
-    this.renderer = createRenderer(canvas, { alpha: this.d.enableBackgroundAlpha.value, enableVR: this.enableVR })
+    this.renderer = createRenderer(canvas, { alpha: this.d.enableBackgroundAlpha.value, enableVR: this.enableVR, antialias: this.antialias })
     this.renderer.setClearColor(0x000000, this.d.enableBackgroundAlpha.value ? 0 : 1)
     this.nonGUIParams.renderer = this.renderer
     this.nonGUIParams.maxTextureAnisotropy = this.renderer.capabilities.getMaxAnisotropy()

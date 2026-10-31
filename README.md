@@ -51,6 +51,7 @@ Open the URL Vite prints (usually http://localhost:5173/). Useful URL parameters
 | `?planetAssets=earth,hawaii` | Override which terrain tile sets are streamed. |
 | `?earthTiles=earth` | Use the Earth's original global tile set instead of `earth_hires` (see [docs/ASSETS.md](docs/ASSETS.md)). |
 | `?quality=auto\|high\|balanced\|low` | Graphics quality (see below). Without it, the last choice is remembered. |
+| `?msaa=off` | No multisample antialiasing on the canvas (on by default). About 20% faster per frame at 1920 × 1080 on a desktop GPU; for weak graphics. Recordings can still be supersampled. |
 
 ### Graphics quality
 
@@ -132,9 +133,28 @@ Two example shots for the default preset are in `docs/examples/shots/`; **Import
 
 The panel estimates how many renders the shot will take. **Preview this frame** renders the frame at the playhead as the recording will and shows it.
 
+**Supersampling** renders each recorded frame at 1.5 to 4 times the output resolution in each direction and filters it down (a Mitchell-Netravali filter in linear light), which removes the shimmer on thin lines and distant detail that the canvas's 4× MSAA leaves. 2 × 2 is a good default; it takes roughly 2 to 2.5 times as long per frame as no supersampling, and 3 × 3 about 4.5 times (measured at 1280 × 720 on a desktop GPU). The factor is lowered automatically if the GPU cannot render that size.
+
 **Wait for terrain tiles** pauses each frame until the planet's terrain has finished streaming, so frames never contain half-loaded terrain.
 
 **Export…** saves a `.shot.json` file. **Import…** on any computer restores the preset, every parameter (including the sun), the simulated start time (and therefore where every vehicle is on its track), the camera path and the output settings, so rendering it produces the same footage. Importing a shot made with another preset reloads the page with that preset first. Shot files from before keyframes could follow objects still load.
+
+### Rendering many shots (overnight)
+
+The **Render queue** section of the panel renders shots one after another without anyone at the computer. **+ This shot** adds a copy of the current shot (with the scene as it is now and its output settings); **+ Shot files…** adds `.shot.json` files (or every shot in a `.queue.json` file). Each queued shot has its own output settings (the ✎ button: file name, resolution, frame rate, codec, bitrate, supersampling, motion blur), and can be moved up or down or removed. **▶ Render the queue** renders every waiting shot at the fixed time step and saves it. In Chrome and Edge, choose the folder the videos go in first (**Choose…**), so no save dialog appears for each video; other browsers download each video when it is finished. Before each shot the page reloads with that shot's preset (and, with **Fresh page for every shot**, before every shot), so each shot is rendered with its own scene. A shot that fails is marked failed with the reason, and the queue carries on with the next one. The queue and its log are kept in the browser, so they survive reloads; if the browser asks for folder access again after a reload, press **Continue**. Keep the tab visible and the computer awake (the run asks the screen to stay on); a hidden tab is throttled.
+
+For long unattended runs the command-line renderer is more robust: it renders shot files, or a queue saved with **Export queue…**, in headless Chrome/Chromium/Edge, one fresh browser page per shot, and writes each video straight into a folder:
+
+```
+# POSIX
+npm run render -- --out renders shots/first.shot.json shots/second.shot.json
+npm run render -- --out renders render.queue.json
+# Windows PowerShell
+npm run render -- --out renders shots\first.shot.json shots\second.shot.json
+npm run render -- --out renders render.queue.json
+```
+
+Each shot is rendered with its own preset, parameters and output settings, exactly as **⏺ Render video** would. Progress is printed, and a log is kept in `render-log.txt` in the output folder. A shot that fails, or makes no progress for 30 minutes (`--stall-minutes`), is logged and skipped, and the next one starts in a new browser. Videos already in the output folder are skipped, so running the same command again carries on where it stopped (`--overwrite` renders them again). Videos are written to `<name>.part` and renamed when finished, so a half-written file is never mistaken for a finished one. Options that apply to every shot: `--width`, `--height`, `--fps`, `--codec av1|avc|hevc|vp9`, `--container mp4|mkv`, `--bitrate <Mbps>`, `--supersample 1|1.5|2|3|4`, `--motion-blur off|fixed|adaptive`; `--headful` shows the browser window. The full list is at the top of `scripts/render-shots.mjs`. Set `CHROME_PATH` if Chrome, Chromium or Edge is not found automatically. The GPU is used; on Linux the renderer asks for ANGLE's `gl-egl` backend (`--angle <backend>` changes it). Keep the computer from sleeping during the run (on Windows: Settings → System → Power; on macOS, `caffeinate -i npm run render -- …`).
 
 ### Converting or re-encoding (optional)
 
@@ -156,6 +176,7 @@ The command is identical in PowerShell and POSIX shells once ffmpeg is on your P
 | `npm run lint` | ESLint |
 | `npm test` | Unit tests (Node's built-in test runner) |
 | `npm run smoke` | Loads the app in headless Chrome/Chromium and reports console errors plus a screenshot |
+| `npm run render -- --out <folder> <shot files>` | Renders shot or queue files to video, headless (see [Rendering many shots](#rendering-many-shots-overnight)) |
 
 `npm run profile -- --preset <id>` reports per-subsystem CPU time, GPU time, draw calls, triangles and the heaviest objects in view. Add `--width 1920 --height 1080 --dpr 2` to emulate a 4K screen (the same options work for `npm run smoke`), and `--camera "<js>"` to move the camera first (`app` is in scope). `npm run smoke -- --cpu-throttle 4` slows the browser's CPU down four times, roughly a low-end laptop.
 

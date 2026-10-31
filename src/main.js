@@ -7,11 +7,14 @@ import { App } from './app/App.js'
 //   ?planetAssets=a,b override the planet tile sets to stream
 //   ?earthTiles=<name> the Earth's global tile set (earth or earth_hires)
 //   ?quality=auto|high|balanced|low  graphics quality (otherwise the last choice, default auto)
+//   ?msaa=off         no multisample antialiasing on the canvas (faster on weak graphics; recordings
+//                     can still be supersampled)
 const url = new URL(window.location.href)
 const app = new App(document.querySelector('#simContainer'), {
   presetId: url.searchParams.get('preset') ?? undefined,
   enableVR: url.searchParams.get('enableVR') === 'true',
   quality: url.searchParams.get('quality') ?? undefined,
+  antialias: url.searchParams.get('msaa') !== 'off',
 })
 
 try {

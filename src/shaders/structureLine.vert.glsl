@@ -9,6 +9,7 @@
 
 uniform float structureMaxCoverage;
 uniform float structureGlowDistance;   // m
+uniform float structurePixelScale;     // drawing-buffer pixels per output pixel across (supersampling)
 uniform float referenceDiameter;       // m: the structure's thickest member
 uniform float hazeActive;
 uniform vec4 atmoCamera;   // xyz: stretched camera position relative to the planet centre (world axes)
@@ -61,7 +62,9 @@ void main() {
     // Extinction at sea level (1/m) for Rayleigh (green) and Mie, as in atmosphere.frag.glsl.
     coverage *= exp(-(13.5e-6 * airR + 8.8e-6 * airM));
   }
-  vCoverage = coverage;
+  // A 1 px line on a supersampled canvas is a fraction of an output pixel wide: it covers that much
+  // more of its own pixel, so the filtered result is the same.
+  vCoverage = min(1.0, coverage * structurePixelScale);
   // A thin cable of any direction: the sun on its lit side, half of the sky and of the ground, and the
   // night light, relative to full sunlight; 1 without the sun and sky light (other scenes).
   vLight = vec3(1.0);

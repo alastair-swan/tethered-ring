@@ -349,6 +349,85 @@ html, body {
   font-weight: 600;
 }
 
+.ss-queue {
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.ss-queue-item {
+  padding: 4px 6px;
+  border-radius: 4px;
+  border-left: 3px solid transparent;
+}
+
+.ss-queue-item + .ss-queue-item {
+  margin-top: 4px;
+}
+
+.ss-queue-item.open {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ss-queue-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ss-queue-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ss-queue-head .ss-icon {
+  /* Text glyphs, not SVG icons. */
+  min-width: 22px;
+  padding: 1px 4px;
+  line-height: 1.3;
+  font-size: 11px;
+}
+
+.ss-queue-item .ss-number {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+}
+
+.ss-queue-status {
+  color: var(--ss-dim);
+  font-size: 11px;
+}
+
+.ss-queue-rendering { border-left-color: var(--ss-accent); }
+.ss-queue-done { border-left-color: #40c870; }
+.ss-queue-failed { border-left-color: #e04040; }
+
+.ss-queue-error {
+  color: #ff8080;
+}
+
+.ss-queue-folder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ss-queue-progress {
+  font-variant-numeric: tabular-nums;
+}
+
+.ss-queue-log {
+  max-height: 160px;
+  overflow: auto;
+  margin: 4px 0 0;
+  font-size: 10px;
+  white-space: pre-wrap;
+  color: var(--ss-dim);
+}
+
 .ss-status {
   padding: 6px 12px;
   min-height: 1.5em;

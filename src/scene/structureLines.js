@@ -30,6 +30,7 @@ const uniforms = {
   structureBrightness: { value: BRIGHTNESS },
   structureMaxCoverage: { value: MAX_COVERAGE },
   structureGlowDistance: { value: 1e7 },
+  structurePixelScale: { value: 1 },
   hazeActive: { value: 0 },
   // Replaced by the planet's atmosphere uniforms (shared objects) in setHaze.
   atmoCamera: { value: new THREE.Vector4() },
@@ -43,6 +44,14 @@ export const StructureLines = {
   // distance (m): how far away the lines keep their full coverage.
   setGlowDistance(distance) {
     uniforms.structureGlowDistance.value = distance
+  },
+
+  // Drawing-buffer pixels per output pixel across: the supersampling factor while recording (see
+  // src/capture/Supersampler.js), else 1. A line is one drawing-buffer pixel wide, so it covers this
+  // many times as much of its pixel. (Coverage is limited to the whole pixel, so above 2x the strongest
+  // lines come out a little fainter.)
+  setPixelScale(scale) {
+    uniforms.structurePixelScale.value = scale
   },
 
   // Haze from the planet's atmosphere (Planet.atmosphereUniforms, updated every frame there).
