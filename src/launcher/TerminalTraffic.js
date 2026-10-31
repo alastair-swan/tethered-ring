@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
-import { AGV, CONTAINER, CRANE, DOOR, INSIDE_Z, MAX_CONTAINERS, PIER, RACK_HEIGHT, RACK_Z, agvAt, containerAt, craneAt, shipPose, visitsAt } from './terminalPort.js'
+import { AGV, CONTAINER, CRANE, DOOR, INSIDE_Z, MAX_CONTAINERS, PIER, RACK_HEIGHT, RACK_Z, agvAt, containerAt, craneAt, shipPose, visitsAt, DEFAULT_SCHEDULE } from './terminalPort.js'
 import { withPortLamps } from './portLamps.js'
 
 // Draws the ocean terminal's cargo traffic (the timetable is terminalPort.js) in the terminal model's
@@ -122,6 +122,7 @@ export class TerminalTraffic {
     this.containerShips = containerShips
     this.shaftZ = shaftZ
     this.site = 0
+    this.schedule = DEFAULT_SCHEDULE
     this.group = new THREE.Group()
     this.group.name = 'terminalTraffic'
     parent.add(this.group)
@@ -155,9 +156,11 @@ export class TerminalTraffic {
     this.ships = new Map()  // visit n -> { object, boxes (the ship's containers), hidden (Set of box indices) }
   }
 
-  setSite(site) {
-    if (site === this.site) return
+  /** The terminal's seed and its timetable (terminalPort.terminalSchedule). */
+  setSite(site, schedule = DEFAULT_SCHEDULE) {
+    if (site === this.site && schedule.interval === this.schedule.interval && schedule.firstArrival === this.schedule.firstArrival) return
     this.site = site
+    this.schedule = schedule
     for (const ship of this.ships.values()) this._drop(ship)
     this.ships.clear()
   }
@@ -169,8 +172,8 @@ export class TerminalTraffic {
 
   /** Places everything for simulated time t; `near`: whether the camera is close enough to see the detail. */
   update(t, near) {
-    const site = this.site
-    const visits = visitsAt(t, site)
+    const { site, schedule } = this
+    const visits = visitsAt(t, site, schedule)
     // Ships
     const seen = new Set()
     for (const visit of visits) {
@@ -192,7 +195,7 @@ export class TerminalTraffic {
       if (ship.boxes) {
         let changed = false
         visit.containers.forEach((c, j) => {
-          const off = containerAt(visit, j, t, site).where !== 'ship'
+          const off = containerAt(visit, j, t, site, schedule).where !== 'ship'
           if (off === ship.hidden.has(c.box)) return
           const d = visit.design.boxes
           ship.boxes.setMatrixAt(c.box, off ? HIDDEN : _m.makeTranslation(d[4 * c.box], d[4 * c.box + 1], d[4 * c.box + 2]))
@@ -214,7 +217,7 @@ export class TerminalTraffic {
 
     // Cranes: slewed towards the hook, the jib luffed to put its tip over it.
     for (const crane of this.cranes) {
-      const state = craneAt(crane.side, t, site)
+      const state = craneAt(crane.side, t, site, schedule)
       const dx = state.x - crane.side * CRANE.x, dz = state.z - CRANE.z
       const radius = Math.hypot(dx, dz), angle = Math.atan2(dz, dx)
       crane.slew.rotation.y = -angle
@@ -232,7 +235,7 @@ export class TerminalTraffic {
     }
     // AGVs
     for (const agv of this.agvs) {
-      const state = agvAt(agv.side, t, site)
+      const state = agvAt(agv.side, t, site, schedule)
       agv.group.visible = !!state
       if (!state) continue
       agv.group.position.z = state.z
@@ -242,7 +245,7 @@ export class TerminalTraffic {
     let k = 0
     for (const visit of visits) {
       visit.containers.forEach((c, j) => {
-        const state = containerAt(visit, j, t, site)
+        const state = containerAt(visit, j, t, site, schedule)
         if (state.where === 'ship' || state.where === 'gone' || k >= this.containers.count) return
         this.containers.setMatrixAt(k, _m.makeTranslation(state.x, state.y, state.z))
         this.containers.setColorAt(k++, _c.setHex(c.color))

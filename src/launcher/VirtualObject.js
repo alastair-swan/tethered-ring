@@ -14,9 +14,12 @@
 //
 // Moving objects (vehicles, sleds, nuts) are not stored persistently: every frame the set of objects
 // in flight is derived from the animation time alone (the k-th launch happens at k * launch spacing),
-// so the animation is a pure function of (parameters, time).
+// so the animation is a pure function of (parameters, time). At a launcher with an ocean terminal, each
+// launch first spends egress.duration being drawn out of the underwater terminal (launchCadence.js):
+// deltaT, the time since the launch started accelerating, runs from -egress.duration.
 
 import * as tram from '../utils/tram.js'
+import { egressDistanceBehind } from './launchCadence.js'
 
 // Disposes the GPU resources of a set of models exactly once each. Geometries/materials flagged with
 // userData.shared = true (owned by a model factory or another model) are left alone.
@@ -204,31 +207,43 @@ export class MovingVirtualObject extends VirtualObject {
   static slowDownPassageOfTime = 1
   static launcherStartDelayInSeconds = 0
   static launchStride = 1         // Only every launchStride-th launch is shown (see launcher.updateLaunchStride)
+  static egress = null            // { duration, distance, endSpeed } (launchCadence.js), shared by every moving class; set by the launcher
+
+  // Launcher time each launch spends leaving the terminal before it starts accelerating (0 without a terminal).
+  static get egressDuration() {
+    return MovingVirtualObject.egress?.duration ?? 0
+  }
   static activeObjects = new Map() // launchIndex -> virtual object; MUST be redeclared per subclass
 
+  // The launcher's clock. It stands at 0 until the start delay is over (the screws wait for it too), except
+  // with a terminal to leave: then the first launch's egress runs during the delay, before the screws start.
   static adjustedTime(timeSinceStart) {
+    if (MovingVirtualObject.egress) return (timeSinceStart - this.launcherStartDelayInSeconds) * this.slowDownPassageOfTime
     return tram.adjustedTimeSinceStart(this.slowDownPassageOfTime, timeSinceStart, this.launcherStartDelayInSeconds)
   }
 
   // Minimum stride so that no more than `numObjects` launches are in flight over `duration` seconds.
+  // (`duration` includes the egress.)
   static strideNeeded(duration) {
     const n = this.numObjects
     if (!(n > 0) || !(this.tInc > 0) || !(duration > 0)) return 1
     return Math.floor(duration / (n * this.tInc)) + 1
   }
 
-  // Launch indices in flight at adjusted time `adj` on a trajectory lasting `duration` seconds.
+  // Launch indices in flight (or leaving the terminal) at adjusted time `adj` on a trajectory lasting
+  // `duration` seconds.
   static activeLaunchIndices(adj, duration) {
     const indices = []
     if (!(this.numObjects > 0) || !Number.isFinite(adj)) return indices
+    const lead = this.egressDuration
     if (!(this.tInc > 0) || !(duration >= 0)) {
       // Degenerate spacing: a single launch at t = 0
-      if (adj >= 0 && adj <= Math.max(0, duration)) indices.push(0)
+      if (adj >= -lead && adj <= Math.max(0, duration)) indices.push(0)
       return indices
     }
     const m = Math.max(1, this.launchStride | 0)
     const step = m * this.tInc
-    const jMax = Math.floor(adj / step)
+    const jMax = Math.floor((adj + lead) / step)
     const jMin = Math.max(Math.ceil((adj - duration) / step), jMax - this.numObjects + 1)
     for (let j = jMin; j <= jMax; j++) indices.push(j * m)
     return indices
@@ -253,7 +268,8 @@ export class MovingVirtualObject extends VirtualObject {
     })
     refFrame.wedges.forEach(wedge => { wedge[this.className].length = 0 })
     next.forEach(obj => {
-      const zoneIndex = refFrame.curve.getZoneIndex(adj - obj.timeLaunched)
+      // (While leaving the terminal it is in the zone of the start of its path.)
+      const zoneIndex = refFrame.curve.getZoneIndex(Math.max(0, adj - obj.timeLaunched))
       refFrame.wedges[zoneIndex][this.className].push(obj)
       const visible = this.isVisible && visibleZones[zoneIndex] === 1
       if (visible && !obj.model) obj.model = this.acquireModel(obj, refFrame)
@@ -283,12 +299,20 @@ export class MovingVirtualObject extends VirtualObject {
     refFrames.forEach(refFrame => { refFrame.forceVisibilityRefresh = true })
   }
 
-  // Time along this object's trajectory at (refFrame time + dt), or null if it is not in flight.
+  // Time along this object's trajectory at (refFrame time + dt) (negative while leaving the terminal), or
+  // null if it is not in flight.
   deltaTAt(refFrame, timeDeltaInSeconds = 0) {
     const ctor = this.constructor
     const adj = ctor.adjustedTime(refFrame.timeSinceStart + timeDeltaInSeconds)
     const deltaT = adj - this.timeLaunched
-    return (deltaT >= 0 && deltaT <= refFrame.curve.getDuration()) ? deltaT : null
+    return (deltaT >= -ctor.egressDuration && deltaT <= refFrame.curve.getDuration()) ? deltaT : null
+  }
+
+  // Time along this object's trajectory at refFrame's time, kept to it (from its egress to its end).
+  clampedDeltaT(refFrame) {
+    const ctor = this.constructor
+    const deltaT = ctor.adjustedTime(refFrame.timeSinceStart) - this.timeLaunched
+    return Math.max(-ctor.egressDuration, Math.min(refFrame.curve.getDuration(), deltaT))
   }
 
   // Default getFutureFrame: frameAt() is implemented by subclasses and returns the rendered model's
@@ -303,7 +327,7 @@ export class MovingVirtualObject extends VirtualObject {
     if (deltaT === null) {
       // Clamp to the trajectory so that trackers following an object that just finished get its end point
       const adj = this.constructor.adjustedTime(refFrame.timeSinceStart + timeDeltaInSeconds)
-      deltaT = Math.max(0, Math.min(refFrame.curve.getDuration(), adj - this.timeLaunched))
+      deltaT = Math.max(-this.constructor.egressDuration, Math.min(refFrame.curve.getDuration(), adj - this.timeLaunched))
     }
     const frame = this.frameAt(refFrame, deltaT)
     return {
@@ -320,7 +344,17 @@ export class MovingVirtualObject extends VirtualObject {
 // useT selects the curve's own spline parameter (tToi) instead of arc length (tTod); curves without a
 // tToi converter, and the animated coiled tube (whose spline parameter does not match the converters
 // of the uncoiled tube), always use arc length.
+// Before the path (deltaT < 0, leaving the terminal: MovingVirtualObject.egress), the object is on the
+// line of the path's start, `egress` behind it, and the result has egress: true and a negative distance.
 export function curveFrameAtTime(path, deltaT, useT = false) {
+  if (deltaT < 0) {
+    const f = curveFrameAtTime(path, 0, useT)
+    const behind = egressDistanceBehind(deltaT, MovingVirtualObject.egress)
+    f.point.addScaledVector(f.forward, -behind)
+    f.distance -= behind
+    f.egress = true
+    return f
+  }
   const res = path.findRelevantCurve(deltaT)
   const curve = res.relevantCurve
   const t = Math.max(0, deltaT - res.relevantCurveStartTime)
@@ -333,5 +367,5 @@ export function curveFrameAtTime(path, deltaT, useT = false) {
   const forward = (byT ? curve.getTangent(i) : curve.getTangentAt(d)).normalize()
   const upward = (byT ? curve.getNormal(i) : curve.getNormalAt(d))
   upward.addScaledVector(forward, -upward.dot(forward)).normalize()
-  return { res, curve, t, i, d, distance, byT, point, forward, upward }
+  return { res, curve, t, i, d, distance, byT, point, forward, upward, egress: false }
 }

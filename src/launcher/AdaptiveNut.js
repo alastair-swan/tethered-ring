@@ -434,7 +434,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     om.visible = v.isVisible
     if (!v.isVisible) return
     const adjustedTimeSinceStart = v.adjustedTime(refFrame.timeSinceStart)
-    const deltaT = Math.max(0, adjustedTimeSinceStart - this.timeLaunched)
+    const deltaT = this.clampedDeltaT(refFrame)   // (negative while leaving the terminal)
     const frame = this.frameAt(refFrame, deltaT)
     const relevantCurve = frame.f.curve
     const distanceToSledAft = v.distanceAlongScrews(refFrame.curve, frame.f)
@@ -493,8 +493,9 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     if (!padsWanted && !hardwareWanted) return
     const activeGrapplers = Math.min(numGrapplers, g.numGrapplers)
 
-    // Engage the grapplers only if we're on the part of the curve path that has the twin-screws
-    const onScrews = (relevantCurve.name=='massDriver1Curve') || (relevantCurve.name=='massDriver2Curve')
+    // Engage the grapplers only if we're on the part of the curve path that has the twin-screws (not
+    // while still leaving the terminal)
+    const onScrews = !frame.f.egress && ((relevantCurve.name=='massDriver1Curve') || (relevantCurve.name=='massDriver2Curve'))
     const speed = Math.sqrt(Math.max(1, initialVelocity**2 + 2 * acceleration * Math.max(0, distanceToSledAft)))
     const info = makeInfo(distanceToSledAft, additionalRotation)
     info.nutSpeed = speed

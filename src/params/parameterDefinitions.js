@@ -279,7 +279,8 @@ export function createParameterDefinitions() {
   launchVehicleNonPayloadMass: {value: 400, units: 'kg', autoMap: true, min: 0, max: 100000, onChange: 'updateLauncher', folder: 'Launcher'},
   launchVehicleCostPerKg: {value: 1000, units: 'USD/kg', autoMap: true, min: 0, max: 100000, onChange: 'updateLauncher', folder: 'Launcher'},
   launchVehicleScaleFactor: {value: 1.5, units: 'm', autoMap: true, min: .1, max: 1000, onChange: 'updateLauncher', folder: 'Launcher'},
-  launchVehicleSpacingInSeconds: {value: 20, units: 's', autoMap: true, min: 0.1, max: 60, onChange: 'updateLauncher', folder: 'Launcher'},
+  // The launch cadence (launcher time between launches); the ocean terminal's ships keep up with it (src/launcher/launchCadence.js).
+  launchVehicleSpacingInSeconds: {value: 20, units: 's', autoMap: true, min: 0.1, max: 7200, onChange: 'updateLauncher', folder: 'Launcher'},
   numVirtualLaunchVehicles: {value: 1, units: '', autoMap: true, min: 0, max: 3600, step: 1, onChange: 'updateLauncher', folder: 'Launcher'},
   launchVehicleNumModels: {value: 1, units: '', autoMap: true, min: 0, max: 3600, step: 1, onChange: 'updateLauncher', folder: 'Launcher'},
   launchVehicleShowCrew: {value: true, units: '', autoMap: true, onChange: 'updateLauncher', folder: 'Launcher'},
@@ -292,6 +293,8 @@ export function createParameterDefinitions() {
 
   launcherSlowDownPassageOfTime: {value: 1, units: '', autoMap: true, min: 0, max: 2, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherStartDelayInSeconds: {value: 25, units: 's', autoMap: true, min: 0, max: 300, onChange: 'updateLauncher', folder: 'Launcher'},
+  // Launcher time each launch's vehicle and nut take to be drawn out of the ocean terminal into the tube before accelerating (src/launcher/launchCadence.js).
+  launcherTerminalEgressDuration: {value: 120, units: 's', autoMap: true, min: 0, max: 600, onChange: 'updateLauncher', folder: 'Launcher'},
   numVirtualMassDriverTubes: {value: 256, units: "", autoMap: true, min: 0, max: 3600, step: 1, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverRailWidth: {value: 1.0, units: 'm', autoMap: true, min: 1, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},
   launcherMassDriverRailHeight: {value: 0.25, units: 'm', autoMap: true, min: 1, max: 2000, onChange: 'updateLauncher', folder: 'Launcher'},

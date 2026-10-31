@@ -22,6 +22,9 @@ import * as SaveGeometryAsSTL from '../export/SaveGeometryAsSTL.js'
 import * as EngineeringDetails from './EngineeringDetails.js'
 import { ExtractedTelemetryLoader } from './ExtractedTelemetryLoader.js'
 import { nearestOnCurve } from '../curves/curveDistance.js'
+import { launchCadence } from './launchCadence.js'
+import { terminalSchedule } from './terminalPort.js'
+import { MIN_DEPTH } from './OceanTerminal.js'
 
 //import { arrow } from '../ring/markers.js'
 //import { FrontSide } from 'three'
@@ -265,18 +268,49 @@ export class launcher {
         case virtualHumanFigure: objectClass.update(dParamWithUnits, this.versionNumber); objectClass.modelFactory = this.humanFigureModelObject; break
       }
     })
+    this.updateCadence(dParamWithUnits, planetSpec)
     this.updateLaunchStride()
+  }
+
+  // The launch cadence (launchCadence.js): whether the launches leave from an ocean terminal (the breech
+  // deep enough under the sea for one: OceanTerminal.js; whether it is drawn does not matter), so are
+  // drawn out of it first, and the timetable of the ships that bring their cargo.
+  updateCadence(dParamWithUnits, planetSpec) {
+    const breech = this.objectClasses.includes(virtualMassDriverTube) ? this.startFrame() : null
+    let terminal = false
+    if (breech && planetSpec.hasOcean) {
+      const geo = tram.ecefToGeodetic(breech.point.x, breech.point.y, breech.point.z, planetSpec.ellipsoid)
+      terminal = geo.alt <= -MIN_DEPTH
+    }
+    this.cadence = launchCadence({
+      spacing: dParamWithUnits['launchVehicleSpacingInSeconds'].value,
+      slowDown: dParamWithUnits['launcherSlowDownPassageOfTime'].value,
+      startDelay: dParamWithUnits['launcherStartDelayInSeconds'].value,
+      egressDuration: dParamWithUnits['launcherTerminalEgressDuration'].value,
+      endSpeed: dParamWithUnits['launcherMassDriver1InitialVelocity'].value,
+      terminal,
+    })
+    MovingVirtualObject.egress = this.cadence.egress
+    this.shipSchedule = terminalSchedule(terminal ? this.cadence : null)
+  }
+
+  // The ocean terminal's timetable (terminalPort.js), on the launch cadence.
+  terminalSchedule() {
+    return this.shipSchedule ?? terminalSchedule(null)
   }
 
   // If numVirtual* is too small to hold every launch that is in flight at the configured spacing, only
   // every launchStride-th launch is shown. A single stride is shared by vehicles, sleds and nuts so that
-  // each shown launch has all three.
+  // each shown launch has all three. At an ocean terminal it is a whole number of ships, so that the
+  // launches shown are each the first a ship brings cargo for (launchCadence.js).
   updateLaunchStride() {
     const moving = this.objectClasses.filter(c => c.prototype instanceof MovingVirtualObject)
     let stride = 1
     moving.forEach(c => {
-      if (c.numObjects > 0 && c.refFrames[0]) stride = Math.max(stride, c.strideNeeded(c.refFrames[0].curve.getDuration()))
+      if (c.numObjects > 0 && c.refFrames[0]) stride = Math.max(stride, c.strideNeeded(c.refFrames[0].curve.getDuration() + c.egressDuration))
     })
+    const perShip = this.cadence?.terminal ? this.cadence.launchesPerShip : 1
+    stride = Math.ceil(stride / perShip) * perShip
     moving.forEach(c => { c.launchStride = stride })
     this.launchStride = stride
   }
@@ -425,13 +459,14 @@ export class launcher {
   }
 
   // { position (the object's centre), forward, upward, rightward } in planet coordinates, for launch
-  // `launchIndex` at `simTime` (before the launch: at the start of its path; after: at the end), or null.
+  // `launchIndex` at `simTime` (before the launch: in the terminal, or at the start of its path without
+  // one; after: at the end), or null.
   movingObjectFrameAt(className, launchIndex, simTime) {
     const objectClass = this.movingObjectClass(className)
     if (!objectClass) return null
     const refFrame = objectClass.refFrames[0]
     const adj = objectClass.adjustedTime(this.animationTimeAt(simTime))
-    const deltaT = Math.max(0, Math.min(refFrame.curve.getDuration(), adj - launchIndex * objectClass.tInc))
+    const deltaT = Math.max(-objectClass.egressDuration, Math.min(refFrame.curve.getDuration(), adj - launchIndex * objectClass.tInc))
     const object = Object.create(objectClass.prototype)
     object.launchIndex = launchIndex
     object.timeLaunched = launchIndex * objectClass.tInc
@@ -462,12 +497,14 @@ export class launcher {
     return Math.max(0, Math.ceil(adj / (step * objectClass.tInc) - 1e-9)) * step
   }
 
-  // Named stages of a launch's path: [{ name, deltaT }], from the sub-curves of the object's path.
+  // Named stages of a launch's path: [{ name, deltaT }], from the sub-curves of the object's path (and
+  // its egress from the terminal, before it, at negative deltaT).
   launchStages(className) {
     const objectClass = this.movingObjectClass(className)
     if (!objectClass) return []
     const path = objectClass.refFrames[0].curve
     const stages = []
+    if (objectClass.egressDuration > 0) stages.push({ name: 'egress', deltaT: -objectClass.egressDuration })
     let t = 0
     for (const curve of path.superCurves) {
       stages.push({ name: curve.name, deltaT: t })

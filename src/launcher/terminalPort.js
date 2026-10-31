@@ -8,8 +8,10 @@ import { shipDesign, shipDimensions } from '../scene/ContainerShips.js'
 // Everything is in the terminal model's coordinates (models/launcher_ocean_terminal.obj: metres, +Y up,
 // sea level at y = 0), which turn with the pier: the pier runs along -Z from the terminal, downwind.
 //
-// Small container ships (feeders) call one after another, every INTERVAL, at the berths either side of
-// the pier in turn (side +1 is +X). Each sails in from APPROACH downwind along a line SIDESTEP off its
+// Small container ships (feeders) call one after another, every schedule.interval, at the berths either
+// side of the pier in turn (side +1 is +X). The launcher sets the schedule (terminalSchedule, from its
+// launch cadence: launchCadence.js): each ship's containers are all in the terminal READY_LEAD after it
+// arrives, in time for the launch they are loaded into to leave its bay. Each sails in from APPROACH downwind along a line SIDESTEP off its
 // berth, heading into the wind, slows to a stop, and is moved sideways onto the berth (by tugs, not
 // drawn). The volumes are small, more like a ship-to-ship transfer than a container port, so each berth
 // has a pedestal crane on the pier's edge (a slewing tower with a luffing jib, its spreader's rotator
@@ -47,15 +49,18 @@ const APPROACH = 8000      // how far downwind they come from and go to
 const CRUISE = 5           // m/s
 const EASE = 600           // m to stop in, and to get under way in
 const TURN = 250           // the radius of the turn away from the pier
-const INTERVAL = 1200      // s between ships
+const INTERVAL = 1200      // s between ships, by default (when no launches set the cadence)
 const SIDESTEP_TIME = 180
 const MOOR = 60            // from berthed to the first lift
 const CYCLE = 120          // per container
 const LEAVE = 90           // from the last container's lift to unberthing
 const AGV_START = 100      // an AGV sets off this long after its container's cycle begins
+const LOADING = 300        // from the last container into the terminal to the launch it is loaded into leaving its bay (down the shaft, into the vehicle)
 const EARTH_RADIUS = 6371000
 // The first ship is in its second crane cycle at time 0 (another approaches, another leaves).
 const FIRST_ARRIVAL = -(travelTime(APPROACH) + SIDESTEP_TIME + MOOR + CYCLE + 30)
+/** The default timetable: { interval (s between ships), firstArrival (s, when ship 0 sets off towards the pier) }. */
+export const DEFAULT_SCHEDULE = Object.freeze({ interval: INTERVAL, firstArrival: FIRST_ARRIVAL })
 
 // Crane cycle (s from its start): move over the container, lower, lock, hoist, carry over the rack,
 // lower, unlock, hoist; the rest of the cycle it waits.
@@ -99,6 +104,20 @@ function driven(u, distance) {
   return AGV.accel * ramp * ramp / 2 + vMax * (u - ramp)
 }
 
+/** From a ship's arrival to the latest its cargo is in the terminal and loaded (s): for 10 containers. */
+export const READY_LEAD = travelTime(APPROACH) + SIDESTEP_TIME + MOOR + (MAX_CONTAINERS - 1) * CYCLE + AGV_START +
+  2 * driveTime(INSIDE_Z - RACK_Z) + AGV.lift + LOADING
+
+/**
+ * The timetable that keeps up with a launch cadence (launchCadence.js): a ship every cadence.shipInterval,
+ * ship n's cargo loaded by the time launch cadence.shipLaunch(n) leaves its bay. DEFAULT_SCHEDULE when no
+ * launches are running.
+ */
+export function terminalSchedule(cadence) {
+  if (!cadence?.running || !(cadence.shipInterval > 0) || !Number.isFinite(cadence.shipInterval)) return DEFAULT_SCHEDULE
+  return { interval: cadence.shipInterval, firstArrival: cadence.egressStart(cadence.shipLaunch(0)) - READY_LEAD }
+}
+
 // The containers a ship unloads: `count` of those for which reachable(box), each the top of its stack when
 // it is lifted (box indices into design.boxes / 4): the tops of the stacks in a random order, then the
 // boxes under them, and so on.
@@ -126,13 +145,13 @@ function pickContainers(design, count, r, reachable) {
 const visits = new Map()
 
 /**
- * Ship visit n at the terminal with seed `site` (memoised): { n, side, design, dims, berth: { x, z }
- * (the ship's origin when berthed), containers: [{ box (index into design.boxes / 4), color, pick: { x,
- * y, z } (its bottom centre on the ship), cycle (its crane cycle's start, s) }], arrive, berthed, leave,
- * away, end (s) }.
+ * Ship visit n at the terminal with seed `site` on `schedule` (memoised): { n, side, design, dims, berth:
+ * { x, z } (the ship's origin when berthed), containers: [{ box (index into design.boxes / 4), color,
+ * pick: { x, y, z } (its bottom centre on the ship), cycle (its crane cycle's start, s) }], arrive,
+ * berthed, leave, away, end, ready (s: by when its cargo is loaded, for any number of containers) }.
  */
-export function shipVisit(n, site) {
-  const key = `${site}:${n}`
+export function shipVisit(n, site, schedule = DEFAULT_SCHEDULE) {
+  const key = `${site}:${schedule.interval}:${schedule.firstArrival}:${n}`
   let visit = visits.get(key)
   if (visit) return visit
   const seed = hash(site, n, 21)
@@ -145,7 +164,7 @@ export function shipVisit(n, site) {
   for (let i = 2; i < design.boxes.length; i += 4) cargo += design.boxes[i]
   cargo = design.boxes.length ? 10 * cargo / (design.boxes.length / 4) : 0
   const berth = { x: side * (PIER.edge + FENDER + dims.halfBeam), z: Math.min(CRANE.z - cargo, BOW_Z - dims.bow) }
-  const arrive = FIRST_ARRIVAL + n * INTERVAL
+  const arrive = schedule.firstArrival + n * schedule.interval
   const berthed = arrive + travelTime(APPROACH) + SIDESTEP_TIME
   const count = Math.min(MAX_CONTAINERS, 5 + Math.floor(6 * r()))
   const at = (box) => ({ x: berth.x + 10 * design.boxes[4 * box], z: berth.z + 10 * design.boxes[4 * box + 2] })
@@ -159,7 +178,7 @@ export function shipVisit(n, site) {
   })
   const leave = containers[containers.length - 1].cycle + C.lock + LEAVE
   const away = leave + SIDESTEP_TIME
-  visit = { n, side, design, dims, berth, containers, arrive, berthed, leave, away, end: away + DEPART_TIME }
+  visit = { n, side, design, dims, berth, containers, arrive, berthed, leave, away, end: away + DEPART_TIME, ready: arrive + READY_LEAD }
   visits.set(key, visit)
   if (visits.size > 64) visits.delete(visits.keys().next().value)
   return visit
@@ -168,11 +187,12 @@ export function shipVisit(n, site) {
 const LIFETIME = travelTime(APPROACH) + 2 * SIDESTEP_TIME + MOOR + (MAX_CONTAINERS - 1) * CYCLE + C.lock + LEAVE + DEPART_TIME
 
 /** The ship visits under way at time t (arrived and not yet gone). */
-export function visitsAt(t, site) {
+export function visitsAt(t, site, schedule = DEFAULT_SCHEDULE) {
   const out = []
-  const last = Math.floor((t - FIRST_ARRIVAL) / INTERVAL)
-  for (let n = last; n >= Math.floor((t - FIRST_ARRIVAL - LIFETIME) / INTERVAL); n--) {
-    const visit = shipVisit(n, site)
+  const { interval, firstArrival } = schedule
+  const last = Math.floor((t - firstArrival) / interval)
+  for (let n = last; n >= Math.floor((t - firstArrival - LIFETIME) / interval); n--) {
+    const visit = shipVisit(n, site, schedule)
     if (t >= visit.arrive && t < visit.end) out.push(visit)
   }
   return out
@@ -231,8 +251,8 @@ export function shipPose(visit, t, shaftZ = 0) {
 
 // The visit being unloaded on `side` at time t (from just before its first cycle until its crane is
 // parked again), or null.
-function unloadingAt(side, t, site) {
-  for (const visit of visitsAt(t, site)) {
+function unloadingAt(side, t, site, schedule) {
+  for (const visit of visitsAt(t, site, schedule)) {
     if (visit.side !== side) continue
     const last = visit.containers[visit.containers.length - 1].cycle
     if (t >= visit.containers[0].cycle && t < last + CYCLE + C.over) return visit
@@ -257,11 +277,11 @@ function swing(side, a, b, f) {
  * The pedestal crane on `side` at time t: { x, z (its hook, over the pier or the ship), y (the bottom of
  * its spreader), carrying: { visit, j } | null }.
  */
-export function craneAt(side, t, site) {
+export function craneAt(side, t, site, schedule = DEFAULT_SCHEDULE) {
   const safe = CRANE.safe + CONTAINER.height
   const park = parkPolar(side)
   const parked = swing(side, park, park, 0)
-  const visit = unloadingAt(side, t, site)
+  const visit = unloadingAt(side, t, site, schedule)
   if (!visit) return { ...parked, y: safe, carrying: null }
   const { containers } = visit
   const rack = rackPoint(side)
@@ -300,8 +320,8 @@ function agvTrip(visit, j) {
  * The AGV on `side` at time t: { z (its centre), deck (its lift deck's top, above the deck of the pier),
  * carrying: { visit, j } | null }, or null while it is inside the terminal.
  */
-export function agvAt(side, t, site) {
-  for (const visit of visitsAt(t, site)) {
+export function agvAt(side, t, site, schedule = DEFAULT_SCHEDULE) {
+  for (const visit of visitsAt(t, site, schedule)) {
     if (visit.side !== side) continue
     for (let j = 0; j < visit.containers.length; j++) {
       const trip = agvTrip(visit, j)
@@ -322,18 +342,18 @@ export function agvAt(side, t, site) {
  * Container j of a visit at time t: { where: 'ship' | 'crane' | 'rack' | 'agv' | 'gone', x, y (its
  * bottom), z } (positions for crane, rack and agv; on the ship it is drawn with the ship).
  */
-export function containerAt(visit, j, t, site) {
+export function containerAt(visit, j, t, site, schedule = DEFAULT_SCHEDULE) {
   const c = visit.containers[j]
   if (t < c.cycle + C.lock) return { where: 'ship' }
   if (t < c.cycle + C.unlock - 2) {
-    const crane = craneAt(visit.side, t, site)
+    const crane = craneAt(visit.side, t, site, schedule)
     return { where: 'crane', x: crane.x, y: crane.y - CONTAINER.height, z: crane.z }
   }
   const trip = agvTrip(visit, j)
   const rack = rackPoint(visit.side)
   if (t >= trip.end) return { where: 'gone' }
   if (t < trip.start + trip.out) return { where: 'rack', ...rack }
-  const agv = agvAt(visit.side, t, site)
+  const agv = agvAt(visit.side, t, site, schedule)
   if (!agv?.carrying) return { where: 'rack', ...rack }
   return { where: 'agv', x: rack.x, y: PIER.deck + agv.deck, z: agv.z }
 }
