@@ -11,15 +11,17 @@ import { shipDesign, shipDimensions } from '../scene/ContainerShips.js'
 // Small container ships (feeders) call one after another, every INTERVAL, at the berths either side of
 // the pier in turn (side +1 is +X). Each sails in from APPROACH downwind along a line SIDESTEP off its
 // berth, heading into the wind, slows to a stop, and is moved sideways onto the berth (by tugs, not
-// drawn). The quay crane on that side then lifts 5 to 10 containers off it, one every CYCLE, each the top
-// of a stack, and sets them down on steel racks in a row along the pier (the nearest the terminal
-// first). An automated guided vehicle (AGV) comes out of the terminal's door on that side for each, lifts
-// it off its rack from below and carries it back in through the door. Once its last container is off,
-// the ship is moved out sideways again, turns away from the pier and sails off downwind.
+// drawn). The volumes are small, more like a ship-to-ship transfer than a container port, so each berth
+// has a pedestal crane on the pier's edge (a slewing tower with a luffing jib, its spreader's rotator
+// keeping the container square to the pier) rather than a quay crane. It lifts 5 to 10 containers off
+// the ship, one every CYCLE, each the top of a stack within its reach, and sets each down on a steel rack
+// beside it on the pier. An automated guided vehicle (AGV) comes out of the terminal's door on that side
+// for each, lifts it off the rack from below and carries it back in through the door. Once its last
+// container is off, the ship is moved out sideways again, turns away from the pier and sails off
+// downwind.
 //
-// The racks are filled from the terminal end of the pier outwards, and each AGV is back inside before the
-// next container is set down, so an AGV never has to pass under a loaded rack, and the crane never sets a
-// container down over an AGV.
+// Each AGV is back inside before the next container is set down, so the crane never sets a container
+// down over an AGV.
 
 export const PIER = { deck: 3.33, edge: 26.68 }        // the pier's deck height, and its half-width
 export const DOOR = { x: 13.13, z: 80.85, width: 5, height: 5 } // the terminal's doors at the pier, one per side (their centres)
@@ -27,19 +29,19 @@ export const INSIDE_Z = 92                               // where the AGVs wait,
 export const CONTAINER = { width: 2.44, height: 2.99, length: 12 }  // as on the ships (ContainerShips.js)
 export const RACK_HEIGHT = 1.8                           // above the deck: the rails a container rests on
 export const MAX_CONTAINERS = 10
-export const rackZ = (j) => 58 - 16 * j                  // the racks, along the line of the door
 export const CRANE = {
-  landRail: 18.5, waterRail: 25.5,   // the rails (|x|)
-  legSpacing: 18,                    // between its legs along the rails
-  height: 38,                        // the portal's top, above the deck
-  boom: 42, boomFrom: 5, boomTo: 62, // the boom's height (above the deck) and reach (|x|)
-  safe: 30,                          // containers are carried with their bottom this high (above sea level)
-  park: -40,                         // where it waits between ships (z)
+  x: 20.5, z: -15,       // the pedestal (|x|, between the lampposts and the pier's edge)
+  tower: 18,             // the jib's foot, above the deck
+  jib: 40,               // the jib's length
+  reach: [7, 36.5],      // the radius its hook works over
+  safe: 23,              // containers are carried with their bottom this high (above sea level), over the ships' bridges
+  park: { radius: 18, angle: -Math.PI / 2 },  // where it waits between ships: jib along the pier, away from the terminal
 }
+export const RACK_Z = CRANE.z                            // the rack, beside the crane, on the line of the door
 export const AGV = { speed: 5, accel: 1, lift: 8, length: 14, width: 2.2, deck: 1.4, raised: RACK_HEIGHT + 0.2 }
 
 const FENDER = 1.5         // between the pier and a ship's side
-const BOW_Z = 40           // where a berthed ship's bow is
+const BOW_Z = 40           // a berthed ship's bow is no nearer the terminal than this
 const SIDESTEP = 40        // the ships approach and leave this far off their berths
 const APPROACH = 8000      // how far downwind they come from and go to
 const CRUISE = 5           // m/s
@@ -97,21 +99,28 @@ function driven(u, distance) {
   return AGV.accel * ramp * ramp / 2 + vMax * (u - ramp)
 }
 
-// The containers a ship unloads: the tops of `count` of its stacks (box indices into design.boxes / 4).
-function pickContainers(design, count, r) {
-  const tops = new Map()
+// The containers a ship unloads: `count` of those for which reachable(box), each the top of its stack when
+// it is lifted (box indices into design.boxes / 4): the tops of the stacks in a random order, then the
+// boxes under them, and so on.
+function pickContainers(design, count, r, reachable) {
+  const stacks = new Map()
   const boxes = design.boxes
   for (let i = 0; i < boxes.length / 4; i++) {
+    if (!reachable(i)) continue
     const key = `${boxes[4 * i].toFixed(3)},${boxes[4 * i + 2].toFixed(3)}`
-    const top = tops.get(key)
-    if (top === undefined || boxes[4 * top + 1] < boxes[4 * i + 1]) tops.set(key, i)
+    if (!stacks.has(key)) stacks.set(key, [])
+    stacks.get(key).push(i)
   }
-  const candidates = [...tops.values()]
-  for (let i = candidates.length - 1; i > 0; i--) {
+  const order = [...stacks.values()].map((stack) => stack.sort((a, b) => boxes[4 * b + 1] - boxes[4 * a + 1]))
+  for (let i = order.length - 1; i > 0; i--) {
     const k = Math.floor(r() * (i + 1))
-    ;[candidates[i], candidates[k]] = [candidates[k], candidates[i]]
+    ;[order[i], order[k]] = [order[k], order[i]]
   }
-  return candidates.slice(0, count)
+  const picks = []
+  for (let tier = 0; picks.length < count && order.some((stack) => stack.length > tier); tier++) {
+    for (const stack of order) if (stack.length > tier && picks.length < count) picks.push(stack[tier])
+  }
+  return picks
 }
 
 const visits = new Map()
@@ -131,17 +140,22 @@ export function shipVisit(n, site) {
   const side = n & 1 ? -1 : 1
   const design = shipDesign(hash(seed, 1), [['feeder', 1]], [0.6, 0.95])
   const dims = shipDimensions(design)
-  const berth = { x: side * (PIER.edge + FENDER + dims.halfBeam), z: BOW_Z - dims.bow }
+  // Berthed with its cargo centred on the crane, but its bow short of the terminal.
+  let cargo = 0
+  for (let i = 2; i < design.boxes.length; i += 4) cargo += design.boxes[i]
+  cargo = design.boxes.length ? 10 * cargo / (design.boxes.length / 4) : 0
+  const berth = { x: side * (PIER.edge + FENDER + dims.halfBeam), z: Math.min(CRANE.z - cargo, BOW_Z - dims.bow) }
   const arrive = FIRST_ARRIVAL + n * INTERVAL
   const berthed = arrive + travelTime(APPROACH) + SIDESTEP_TIME
   const count = Math.min(MAX_CONTAINERS, 5 + Math.floor(6 * r()))
-  const containers = pickContainers(design, count, r).map((box, j) => {
-    const [x, y, z, color] = design.boxes.slice(4 * box, 4 * box + 4)
-    return {
-      box, color,
-      pick: { x: berth.x + 10 * x, y: 10 * y - CONTAINER.height / 2, z: berth.z + 10 * z },
-      cycle: berthed + MOOR + j * CYCLE,
-    }
+  const at = (box) => ({ x: berth.x + 10 * design.boxes[4 * box], z: berth.z + 10 * design.boxes[4 * box + 2] })
+  const reachable = (box) => {
+    const { x, z } = at(box), radius = Math.hypot(x - side * CRANE.x, z - CRANE.z)
+    return radius >= CRANE.reach[0] && radius <= CRANE.reach[1]
+  }
+  const containers = pickContainers(design, count, r, reachable).map((box, j) => {
+    const [, y, , color] = design.boxes.slice(4 * box, 4 * box + 4)
+    return { box, color, pick: { ...at(box), y: 10 * y - CONTAINER.height / 2 }, cycle: berthed + MOOR + j * CYCLE }
   })
   const leave = containers[containers.length - 1].cycle + C.lock + LEAVE
   const away = leave + SIDESTEP_TIME
@@ -226,53 +240,57 @@ function unloadingAt(side, t, site) {
   return null
 }
 
-const parkPoint = (side) => ({ x: side * (CRANE.landRail + CRANE.waterRail) / 2, z: CRANE.park })
-const dropPoint = (side, j) => ({ x: side * DOOR.x, y: PIER.deck + RACK_HEIGHT, z: rackZ(j) })
+const rackPoint = (side) => ({ x: side * DOOR.x, y: PIER.deck + RACK_HEIGHT, z: RACK_Z })
+// A point over the pier as the crane on `side` sees it: { angle (about its pedestal, from +X towards +Z),
+// radius }, and back.
+const polar = (side, p) => ({ angle: Math.atan2(p.z - CRANE.z, p.x - side * CRANE.x), radius: Math.hypot(p.x - side * CRANE.x, p.z - CRANE.z) })
+const parkPolar = (side) => ({ angle: side > 0 ? CRANE.park.angle : Math.PI - CRANE.park.angle, radius: CRANE.park.radius })
+// Slewing and luffing from a to b (polar), f of the way, the shorter way round.
+function swing(side, a, b, f) {
+  let turn = b.angle - a.angle
+  turn -= 2 * Math.PI * Math.round(turn / (2 * Math.PI))
+  const angle = a.angle + turn * f, radius = lerp(a.radius, b.radius, f)
+  return { x: side * CRANE.x + radius * Math.cos(angle), z: CRANE.z + radius * Math.sin(angle) }
+}
 
 /**
- * The quay crane on `side` at time t: { z (along its rails, where its trolley's line is), x (its
- * trolley), y (the bottom of its spreader), carrying: { visit, j } | null }.
+ * The pedestal crane on `side` at time t: { x, z (its hook, over the pier or the ship), y (the bottom of
+ * its spreader), carrying: { visit, j } | null }.
  */
 export function craneAt(side, t, site) {
   const safe = CRANE.safe + CONTAINER.height
-  const park = parkPoint(side)
+  const park = parkPolar(side)
+  const parked = swing(side, park, park, 0)
   const visit = unloadingAt(side, t, site)
-  if (!visit) return { x: park.x, z: park.z, y: safe, carrying: null }
+  if (!visit) return { ...parked, y: safe, carrying: null }
   const { containers } = visit
+  const rack = rackPoint(side)
   let j = containers.findLastIndex((c) => c.cycle <= t)
   const u = t - containers[j].cycle
   if (u >= CYCLE) {
     // After the last cycle: back to where it waits.
-    const from = dropPoint(side, j), f = smooth((u - CYCLE) / C.over)
-    return { x: lerp(from.x, park.x, f), z: lerp(from.z, park.z, f), y: safe, carrying: null }
+    return { ...swing(side, polar(side, rack), park, smooth((u - CYCLE) / C.over)), y: safe, carrying: null }
   }
-  const from = j > 0 ? dropPoint(side, j - 1) : park
+  const from = j > 0 ? polar(side, rack) : park
   const pick = containers[j].pick
   const top = pick.y + CONTAINER.height
-  const drop = dropPoint(side, j)
-  const dropTop = drop.y + CONTAINER.height
+  const rackTop = rack.y + CONTAINER.height
   const carrying = u >= C.lock && u < C.unlock - 2 ? { visit, j } : null
-  if (u < C.over) {
-    const f = smooth(u / C.over)
-    return { x: lerp(from.x, pick.x, f), z: lerp(from.z, pick.z, f), y: safe, carrying }
-  }
+  if (u < C.over) return { ...swing(side, from, polar(side, pick), smooth(u / C.over)), y: safe, carrying }
   if (u < C.up) {
     const y = u < C.down ? lerp(safe, top, smooth((u - C.over) / (C.down - C.over)))
       : u < C.lock ? top : lerp(top, safe, smooth((u - C.lock) / (C.up - C.lock)))
     return { x: pick.x, z: pick.z, y, carrying }
   }
-  if (u < C.across) {
-    const f = smooth((u - C.up) / (C.across - C.up))
-    return { x: lerp(pick.x, drop.x, f), z: lerp(pick.z, drop.z, f), y: safe, carrying }
-  }
-  const y = u < C.set ? lerp(safe, dropTop, smooth((u - C.across) / (C.set - C.across)))
-    : u < C.unlock ? dropTop : lerp(dropTop, safe, smooth((u - C.unlock) / (C.clear - C.unlock)))
-  return { x: drop.x, z: drop.z, y, carrying }
+  if (u < C.across) return { ...swing(side, polar(side, pick), polar(side, rack), smooth((u - C.up) / (C.across - C.up))), y: safe, carrying }
+  const y = u < C.set ? lerp(safe, rackTop, smooth((u - C.across) / (C.set - C.across)))
+    : u < C.unlock ? rackTop : lerp(rackTop, safe, smooth((u - C.unlock) / (C.clear - C.unlock)))
+  return { x: rack.x, z: rack.z, y, carrying }
 }
 
 // Container j's AGV trip: { start, out (s driving out), lift, end } and the distance it drives each way.
 function agvTrip(visit, j) {
-  const distance = INSIDE_Z - rackZ(j)
+  const distance = INSIDE_Z - RACK_Z
   const out = driveTime(distance)
   const start = visit.containers[j].cycle + AGV_START
   return { start, out, distance, end: start + 2 * out + AGV.lift }
@@ -292,9 +310,9 @@ export function agvAt(side, t, site) {
       if (u < trip.out) return { z: INSIDE_Z - driven(u, trip.distance), deck: AGV.deck, carrying: null }
       if (u < trip.out + AGV.lift) {
         const deck = lerp(AGV.deck, AGV.raised, smooth((u - trip.out) / AGV.lift))
-        return { z: rackZ(j), deck, carrying: deck > RACK_HEIGHT ? { visit, j } : null }
+        return { z: RACK_Z, deck, carrying: deck > RACK_HEIGHT ? { visit, j } : null }
       }
-      return { z: rackZ(j) + driven(u - trip.out - AGV.lift, trip.distance), deck: AGV.raised, carrying: { visit, j } }
+      return { z: RACK_Z + driven(u - trip.out - AGV.lift, trip.distance), deck: AGV.raised, carrying: { visit, j } }
     }
   }
   return null
@@ -312,7 +330,7 @@ export function containerAt(visit, j, t, site) {
     return { where: 'crane', x: crane.x, y: crane.y - CONTAINER.height, z: crane.z }
   }
   const trip = agvTrip(visit, j)
-  const rack = dropPoint(visit.side, j)
+  const rack = rackPoint(visit.side)
   if (t >= trip.end) return { where: 'gone' }
   if (t < trip.start + trip.out) return { where: 'rack', ...rack }
   const agv = agvAt(visit.side, t, site)

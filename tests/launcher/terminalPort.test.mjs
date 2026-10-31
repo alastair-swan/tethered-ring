@@ -1,24 +1,25 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { shipVisit, visitsAt, shipPose, craneAt, agvAt, containerAt, containerTimes, rackZ, PIER, CONTAINER, siteSeed } from '../../src/launcher/terminalPort.js'
+import { shipVisit, visitsAt, shipPose, craneAt, agvAt, containerAt, containerTimes, RACK_Z, CRANE, PIER, CONTAINER, siteSeed } from '../../src/launcher/terminalPort.js'
 import { terminalModel } from '../../src/launcher/terminalModel.js'
 
 const SITE = siteSeed(19.6234, -163.4055)
 const VISITS = Array.from({ length: 40 }, (_, k) => shipVisit(k - 10, SITE))
 
-test('a visit is the same from the same seed, and unloads 5 to 10 containers off the tops of its stacks', () => {
+test('a visit is the same from the same seed, and unloads 5 to 10 containers, each off the top of its stack', () => {
   for (const visit of VISITS) {
     assert.equal(shipVisit(visit.n, SITE), visit)
     const count = visit.containers.length
     assert.ok(count >= 5 && count <= 10, `ship ${visit.n}: ${count} containers`)
+    // Each is the top of its stack when it is lifted: any box above it was lifted before.
     const boxes = visit.design.boxes
-    for (const { box } of visit.containers) {
+    visit.containers.forEach(({ box }, j) => {
       for (let i = 0; i < boxes.length / 4; i++) {
         const above = boxes[4 * i] === boxes[4 * box] && boxes[4 * i + 2] === boxes[4 * box + 2] && boxes[4 * i + 1] > boxes[4 * box + 1]
-        assert.ok(!above, `ship ${visit.n}: box ${box} is under box ${i}`)
+        if (above) assert.ok(visit.containers.slice(0, j).some((c) => c.box === i), `ship ${visit.n}: box ${box} is under box ${i}`)
       }
-    }
+    })
   }
 })
 
@@ -75,20 +76,23 @@ test('each container goes ship, crane, rack, AGV, then into the terminal', () =>
   }
 })
 
-test('the crane sets a container down where it then sits, and an AGV never meets a loaded rack', () => {
+test('the crane works within its reach, and sets each container down on the rack while no AGV is out', () => {
   for (const visit of VISITS.slice(5, 15)) {
+    for (let t = visit.containers[0].cycle; t < visit.leave; t += 1) {
+      const crane = craneAt(visit.side, t, SITE)
+      const radius = Math.hypot(crane.x - visit.side * CRANE.x, crane.z - CRANE.z)
+      assert.ok(radius >= CRANE.reach[0] - 1e-9 && radius <= CRANE.reach[1] + 1e-9, `ship ${visit.n}: hook at ${radius} m at ${t}`)
+    }
     visit.containers.forEach((c, j) => {
       const times = containerTimes(visit, j)
       const crane = craneAt(visit.side, times.set - 1, SITE)
-      assert.ok(Math.abs(crane.z - rackZ(j)) < 1e-9)
+      assert.ok(Math.abs(crane.z - RACK_Z) < 1e-9)
       assert.ok(Math.abs(crane.y - CONTAINER.height - (PIER.deck + 1.8)) < 1e-9)
-      // Before its AGV sets off the previous container is inside, and the next is not yet set down.
-      if (j > 0) assert.ok(containerTimes(visit, j - 1).agvEnd < times.agvStart, `ship ${visit.n}: AGVs ${j - 1} and ${j} overlap`)
-      if (j + 1 < visit.containers.length) assert.ok(times.agvEnd < containerTimes(visit, j + 1).set - 12, `ship ${visit.n}: rack ${j + 1} loaded while AGV ${j} is out`)
-      // While carrying, the AGV is at its rack or between it and the door.
+      if (j > 0) assert.ok(containerTimes(visit, j - 1).agvEnd < times.set - 12, `ship ${visit.n}: container ${j} set down while AGV ${j - 1} is out`)
+      // While carrying, the AGV is between the rack and the door.
       for (let t = times.agvLift; t < times.agvEnd; t += 1) {
         const agv = agvAt(visit.side, t, SITE)
-        if (agv) assert.ok(agv.z >= rackZ(j) - 1e-9)
+        if (agv) assert.ok(agv.z >= RACK_Z - 1e-9)
       }
     })
   }
@@ -110,7 +114,7 @@ test('there is a ship at the terminal at the start, and a steady stream after', 
 })
 
 test('the model has its markers, lamps, windows and doors', () => {
-  const model = terminalModel(fs.readFileSync(new URL('../../models/launcher_ocean_terminal.obj', import.meta.url), 'utf8'))
+  const model = terminalModel(fs.readFileSync(new globalThis.URL('../../models/launcher_ocean_terminal.obj', import.meta.url), 'utf8'))
   assert.ok(model.markers.launcher && model.markers.anchorRear && model.markers.anchorFront)
   assert.equal(model.lamps.length, 24)
   for (const lamp of model.lamps) assert.ok(lamp.direction.y < -0.5)

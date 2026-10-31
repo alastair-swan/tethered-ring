@@ -97,7 +97,7 @@ const BRIDGE_CLEARANCE = 0.45         // the bridge's height above the highest t
 // Rows, slots (including the superstructure's), tiers, hull depth (relative to the model) and FEU on deck.
 // Feeders are the small ships that call at the launcher's ocean terminal (OceanTerminal.js).
 const SIZES = {
-  feeder: { rows: [5, 7], slots: [6, 8], tiers: [2, 3], depth: 0.7, feu: [0, Infinity] },
+  feeder: { rows: [6, 7], slots: [7, 9], tiers: [2, 3], depth: 0.7, feu: [0, Infinity] },
   small: { rows: [7, 8], slots: [9, 12], tiers: [3, 4], depth: 0.8, feu: [200, 400] },
   medium: { rows: [11, 11], slots: [21, 21], tiers: [5, 5], depth: 1, feu: [0, Infinity] },
   large: { rows: [19, 23], slots: [26, 30], tiers: [7, 9], depth: 1.25, feu: [2500, Infinity] },
