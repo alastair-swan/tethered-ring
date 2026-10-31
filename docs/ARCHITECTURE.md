@@ -198,6 +198,10 @@ While recording, the path overlay and the tracking markers are hidden, and every
 
 Motion blur (`src/capture/MotionBlur.js`) is temporal supersampling: each video frame averages several sub-frames at moments spread over the shutter interval, centred on the frame's own moment. Each sub-frame is stepped and rendered to the canvas exactly as an ordinary frame (so nothing in the renderer knows about it), copied into a texture, converted to linear light and added into a float buffer; the average is converted back to sRGB and drawn to the canvas for the encoder. In adaptive mode the number of sub-frames per frame comes from the shot camera's motion over that frame's shutter (`adaptiveSubFrames`): a step of at most `motionBlurMaxStep` metres near things, growing with the distance to the nearest scenery (the closer of the camera's target and the ground) so that it moves at most `motionBlurMaxPixels` on screen. Terrain is waited for once per frame, not per sub-frame.
 
+Supersampling (`src/capture/Supersampler.js`) enlarges the canvas itself (pixel ratio = the factor) while recording, so everything sized in pixels (the clouds' targets, pixel-based level of detail, line coverage) follows; the frame is filtered down with a Mitchell-Netravali filter in linear light into the canvas's output-sized bottom-left corner (where motion blur averages it), and copied to a 2D canvas for the encoder. Things whose look depends on pixel size are told the factor so a supersampled frame matches an ordinary one. Every recorded frame is made opaque, because the canvas has an alpha channel and the sky is nearly transparent there.
+
+The render queue (`src/shots/RenderQueue.js`: the data and its pure operations, tested; `RenderQueueRunner.js`: running it in the page) renders many shots unattended. Each item holds a whole shot, so it carries its own preset, parameters, start time and output settings. Presets set construction-time options, so the page reloads to switch preset (and, by default, before every shot); the queue, the run state, the log and the output folder's handle live in IndexedDB, and `ShotController.resumePendingShot` carries a run on after the reload. Each shot is rendered by `ShotController.renderShotUnattended`, the same fixed-step path as **Render video**, with no dialogs. `scripts/render-shots.mjs` (`npm run render`) does the same from the command line: it starts Vite, opens a fresh headless page per shot with `?preset=`, calls `renderShotUnattended` with a `WritableStream` whose chunks are passed back to Node and written into the output file, and has a watchdog for shots that stop making progress.
+
 `VideoRecorder` encodes the canvas with WebCodecs through mediabunny:
 
 - AV1 is preferred; it falls back to H.264, then HEVC, then VP9.
@@ -206,7 +210,7 @@ Motion blur (`src/capture/MotionBlur.js`) is temporal supersampling: each video 
 
 ## Testing
 
-- `npm test` runs the unit tests: physics maths, the shot format, the camera path and the time warp.
+- `npm test` runs the unit tests: physics maths, the shot format, the camera path, the time warp, supersampling filter weights and the render queue.
 - `npm run lint` runs ESLint.
 - `npm run smoke` loads the full app in headless Chrome/Chromium and fails on any console error. Use `SMOKE_GPU=1` with real hardware; the software renderer takes over a minute to decode a single terrain tile. `--eval "<js>"` runs code against `window.tetheredRing` and prints the result, `--steps <file.mjs>` runs a multi-step check with screenshots, and `--page /tests/planet.html` targets a standalone test page.
 
