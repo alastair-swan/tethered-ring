@@ -806,6 +806,7 @@ export class App {
     if (setWeatherDate(startDay, startHours)) {
       this.sailboats?.resetWeather()
       this.containerShips?.resetWeather()
+      this.launchSystem?.resetWeather()
     }
     const date = advanceDate(Math.max(1, this.store.get('sunDayOfYear')), Math.max(0, this.store.get('sunTimeOfDayUTC')), this.clock.time)
     this.clouds?.update(this.renderer, date.dayOfYear, date.utcHours, this.clock.time)

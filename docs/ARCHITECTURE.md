@@ -134,8 +134,8 @@ Where it is used:
 | Object | Technique |
 |---|---|
 | Screws | PixelLOD per screw: three thread levels sampled per turn to a chord-error tolerance, then a cylinder; geometry shared by the left/right pair and built by Web Workers (`ScrewGeometryBuilder.js`, most urgent first, dropping builds for screws that have gone past); fast segments (up to a turn of thread) share one geometry per 0.1% of thread speed, rotated onto each segment; models handed out early enough for the first thread level to be ready (`modelRange`); objects changing size by over 25% a frame (screws flashing past a tracking camera) skip their expensive levels (`PixelLOD.fleetingRatio`) |
-| Adaptive nut grapplers | Two sets of InstancedMeshes per nut (pads, hardware; one InstancedMesh per part shape) inside PixelLODs; placement skipped when not drawn |
-| Lift fans | Instanced per chunk of 32 fans with full and low-poly levels; below 1.5 px each fan fades out by its on-screen size (`src/scene/SubPixelFade.js`) instead of popping in, and stops drawing at 0.3 px |
+| Adaptive nut grapplers | Two sets of InstancedMeshes per nut (pads, hardware; one InstancedMesh per part shape) inside PixelLODs; each part fades out by its own thickness (`SubPixelFade`, rods by width rather than area), and its PixelLOD stops drawing once the longest-lasting part has faded; placement skipped when not drawn |
+| Lift fans | Instanced per chunk of 32 fans with full and low-poly levels; below 1.5 px each fan fades out by its on-screen size (`src/scene/SubPixelFade.js`) instead of popping in, and stops drawing at 0.3 px. Each chunk's fans lean into the wind at its centre (1° per m/s, at most 20°), worked out when the chunk is built and rebuilt when the weather date changes |
 | Brackets | InstancedProxyPool with full and low-detail (4-segment arcs) shapes |
 | Transit ring segments | Instanced layers (`src/ring/RingInstancedLayer.js`) |
 | Planet | Screen-space texel error, edges matched to coarser neighbours (positions and heights) for crack-free LOD transitions, without skirts |
