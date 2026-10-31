@@ -13,9 +13,11 @@ import { MULTIPLE_SCATTERING } from '../../scene/skyIrradiance.js'
 // 1. Distance: the scene again, writing each pixel's distance from the camera, so the clouds stop at
 //    whatever is in front of them (the ground, the sea, the ring, a vehicle in a cloud).
 // 2. Clouds: each pixel's line of sight is marched through the cloud shell (sea level to SHELL_TOP over
-//    the ellipsoid, stretched to a sphere as the sky does), up to the ground or the scene, in MARCH_STEPS
-//    steps spaced more finely near the camera, with a fixed per-pixel jitter (no noise that changes
-//    from frame to frame, so recordings are repeatable). At each step:
+//    the ellipsoid, stretched to a sphere as the sky does), up to the ground or the scene, in steps a
+//    share of their distance in the cloud layer, split finer where there is cloud (fewer below it),
+//    sampled at their middles without jitter (a jitter stays where the camera puts it while the clouds
+//    move behind it, which looked like rippled glass); nothing changes from frame to frame, so
+//    recordings are repeatable. At each step:
 //    - The weather map gives the cover, the low cloud layer's base and top, the convective share, the
 //      rain and the wind. Convective weather gives cumulus, rising into towers in heavy showers;
 //      otherwise the layer is stratiform.
@@ -44,7 +46,18 @@ import { MULTIPLE_SCATTERING } from '../../scene/skyIrradiance.js'
 const RESOLUTION = 0.5
 const HIGH_RESOLUTION = [100000, 300000] // m: the camera altitudes over which it rises to full
 const SHELL_TOP = 13000 // m
-const MARCH_STEPS = 64
+// The march (see main): steps in the cloud layer a share CLOUD_STEP of their distance, at least MIN_STEP
+// (m), split into FINE_STEPS where there is cloud; at most MAX_STEPS in each stretch; MURK_STEPS across each stretch below the layer, which is from
+// LAYER_BOTTOM (m) up (below the lowest cloud bases).
+const CLOUD_STEP = 0.03
+const FINE_STEPS = 4
+const MIN_STEP = 25
+const MAX_STEPS = 160
+const MURK_STEPS = 10
+// At least this many steps across the line of sight's path through the cloud layer (from far away, a
+// share of the distance would step right over it).
+const LAYER_STEPS = 24
+const LAYER_BOTTOM = 250
 const LIGHT_STEPS = 5
 // The noise tiles (m): shape and detail.
 const SHAPE_TILE = 24000
@@ -128,6 +141,12 @@ layout(location = 0) out vec4 outClouds;
 layout(location = 1) out vec4 outShade;  // r: the scene's dimming by the clouds; g: rain at the camera (mm/h)
 
 const float SHELL_TOP = ${SHELL_TOP.toFixed(1)};
+const float CLOUD_STEP = ${CLOUD_STEP.toFixed(3)};
+const int FINE_STEPS = ${FINE_STEPS};
+const float MIN_STEP = ${MIN_STEP.toFixed(1)};
+const int MURK_STEPS = ${MURK_STEPS};
+const float LAYER_STEPS = ${LAYER_STEPS.toFixed(1)};
+const float LAYER_BOTTOM = ${LAYER_BOTTOM.toFixed(1)};
 const float EXTINCTION = ${EXTINCTION.toFixed(4)};
 
 float remap(float v, float a, float b, float c, float d) { return c + (v - a) / (b - a) * (d - c); }
@@ -278,6 +297,19 @@ float cloudShadow(vec3 p, vec3 local, vec3 sunS, float footprint) {
   return exp(-EXTINCTION * od);
 }
 
+// Whether there may be cloud at distance t along the line of sight, for the march to split its step
+// there: the clouds' expected density (cloudDensity from far away), which is not zero wherever the
+// weather has cover at that height. (Testing the clouds' own shapes at a few points would miss small
+// clouds between them, depending on just where the camera is: distant clouds snapped in and out as it
+// moved.)
+float cloudProbe(vec3 c, vec3 d, vec3 dirWorld, float stretch, float t) {
+  vec3 p = c + d * t;
+  float h = length(p) - slParams.z;
+  if (h < 0.0 || h > SHELL_TOP) return 0.0;
+  float unused;
+  return cloudDensity(mapUv(latLon(p)), p, worldToPlanet * (dirWorld * (t / stretch)), h, false, 1e9, unused);
+}
+
 // The air's murk at a point (extinction, 1/m), beyond the clear air the atmosphere model already has:
 // haze from the surface humidity, thickening into mist and, near saturation, a shallow fog.
 float airMurk(vec2 uv, float h) {
@@ -353,8 +385,13 @@ void main() {
   float rainHere = cameraRain(c, vec3(0.0));
   outShade = vec4(shade, rainHere, 0.0, 1.0);
   if (outer.y <= 0.0 || t1 <= t0) { outClouds = vec4(0.0, 0.0, 0.0, 1.0); return; }
-  // Steps spaced as the square of their index (finer near the start), with a fixed per-pixel jitter.
-  float jitter = hash12(gl_FragCoord.xy);
+  // The cloud layer (from LAYER_BOTTOM to the shell's top) is marched in steps that grow with the
+  // distance, a share CLOUD_STEP of it, and wherever a probe at a step's start, middle or end finds that
+  // there may be cloud there (cloudProbe), the step is split into FINE_STEPS (so the clouds are sampled as finely, relative to their size
+  // on screen, near and far). The samples are at the middles of the steps, without jitter: any jitter
+  // stays where the camera puts it while the clouds move behind it (fixed to the screen it was a noise
+  // mask, fixed to cells of space a grid), and with steps this fine there is little banding to hide. The
+  // stretches of the line of sight below the layer hold only the murk, which is smooth: MURK_STEPS each.
   float transmittance = 1.0;
   vec3 light = vec3(0.0);
   float depthSum = 0.0, depthWeight = 0.0;
@@ -362,68 +399,97 @@ void main() {
   float phase = mix(phaseHG(sunCos, 0.65), phaseHG(sunCos, -0.2), 0.3);
   float sunIntensity = exposure.y;
   float murkPhase = mix(phaseHG(sunCos, 0.5), 1.0 / (4.0 * PI), 0.5);
-  float prev = t0;
-  for (int i = 0; i < ${MARCH_STEPS}; i++) {
-    float f = (float(i) + jitter) / float(${MARCH_STEPS});
-    float t = t0 + (t1 - t0) * f * f;
-    float dt = t - prev;
-    prev = t;
-    vec3 p = c + d * t;
-    float h = length(p) - a;
-    if (h < 0.0 || h > SHELL_TOP) continue;
-    vec3 local = worldToPlanet * (dirWorld * (t / stretch));
-    float footprint = t / stretch * pixelAngle;
-    vec2 uv = mapUv(latLon(p));
-    // The murk (haze, fog and rain), lit by the sun reaching the line of sight's end, and the sky.
-    float murk = airMurk(uv, h) + rainShaft(uv, p, local, h);
-    if (murk > 1e-7) {
-      vec3 skyDown, groundUp, direct, upW;
-      slLightAt(dirWorld * (t / stretch), direct, skyDown, groundUp, upW);
-      vec3 murkLight = (direct * sceneSun * murkPhase * 4.0 * PI * 0.25 + (skyDown + groundUp) * RECIPROCAL_PI * 0.5)
-        * mix(vec3(1.0), SL_WHITE, slParams.y) * sunIntensity;
-      float murkT = exp(-murk * dt);
-      light += transmittance * murkLight * (1.0 - murkT);
-      transmittance *= murkT;
+  // The stretches: below the layer before it (from a camera under it), in it, and below it after it
+  // (looking down through it).
+  vec2 bottom = sphere(c, d, a + LAYER_BOTTOM);
+  float tLayer0 = t0, tLayer1 = t1;
+  if (length(c) < a + LAYER_BOTTOM) tLayer0 = min(max(bottom.y, t0), t1);
+  else if (bottom.x > t0) tLayer1 = min(bottom.x, t1);
+  for (int stretchIndex = 0; stretchIndex < 3; stretchIndex++) {
+    float ta = stretchIndex == 0 ? t0 : stretchIndex == 1 ? tLayer0 : tLayer1;
+    float tb = stretchIndex == 0 ? tLayer0 : stretchIndex == 1 ? tLayer1 : t1;
+    if (tb <= ta) continue;
+    bool inLayer = stretchIndex == 1;
+    float murkStep = (tb - ta) / float(MURK_STEPS);
+    float t = ta;
+    float probeEnd = inLayer ? cloudProbe(c, d, dirWorld, stretch, t) : 0.0;
+    for (int i = 0; i < ${MAX_STEPS}; i++) {
+      float coarse = inLayer ? min(max(t / stretch * CLOUD_STEP, MIN_STEP) * stretch, (tb - ta) / LAYER_STEPS) : murkStep;
+      if (t + coarse > tb) coarse = tb - t;
+      if (coarse <= 0.0) break;
+      // Split the step where there may be cloud in it.
+      int parts = 1;
+      if (inLayer) {
+        float probeStart = probeEnd;
+        probeEnd = cloudProbe(c, d, dirWorld, stretch, t + coarse);
+        if (probeStart + probeEnd + cloudProbe(c, d, dirWorld, stretch, t + 0.5 * coarse) > 0.0) parts = FINE_STEPS;
+      }
+      float dt = coarse / float(parts);
+      for (int part = 0; part < FINE_STEPS; part++) {
+        if (part >= parts) break;
+        float ts = t + dt * (float(part) + 0.5);
+        vec3 p = c + d * ts;
+        float h = length(p) - a;
+        if (h < 0.0 || h > SHELL_TOP) continue;
+        vec3 local = worldToPlanet * (dirWorld * (ts / stretch));
+        float footprint = ts / stretch * pixelAngle;
+        vec2 uv = mapUv(latLon(p));
+        // The murk (haze, fog and rain), lit by the sun reaching the line of sight's end, and the sky.
+        float murk = airMurk(uv, h) + rainShaft(uv, p, local, h);
+        if (murk > 1e-7) {
+          vec3 skyDown, groundUp, direct, upW;
+          slLightAt(dirWorld * (ts / stretch), direct, skyDown, groundUp, upW);
+          vec3 murkLight = (direct * sceneSun * murkPhase * 4.0 * PI * 0.25 + (skyDown + groundUp) * RECIPROCAL_PI * 0.5)
+            * mix(vec3(1.0), SL_WHITE, slParams.y) * sunIntensity;
+          float murkT = exp(-murk * dt);
+          light += transmittance * murkLight * (1.0 - murkT);
+          transmittance *= murkT;
+        }
+        if (!inLayer) continue;
+        float layer;
+        float density = cloudDensity(uv, p, local, h, true, footprint, layer);
+        if (density <= 0.001) continue;
+        float sigma = EXTINCTION * density;
+        // Light towards the sun through the cloud.
+        float od = 0.0;
+        float step = 60.0;
+        for (int j = 0; j < ${LIGHT_STEPS}; j++) {
+          vec3 q = p + sunDirS * step * (float(j) + 0.5);
+          vec3 ql = local + worldToPlanet * (slSun * step * (float(j) + 0.5));
+          float unused;
+          od += cloudDensity(mapUv(latLon(q)), q, ql, length(q) - a, false, footprint, unused) * step;
+          step *= 2.0;
+        }
+        od *= EXTINCTION;
+        vec3 sunlight = slSunTransmittance(p) * mix(vec3(1.0), SL_WHITE, slParams.y) * sunIntensity;
+        // Multiple scattering, approximately: octaves of weaker extinction and flatter phase.
+        float scatter = 0.0;
+        float att = 1.0, ext = 1.0, ph = 1.0;
+        for (int k = 0; k < 3; k++) {
+          scatter += att * exp(-od * ext) * mix(1.0 / (4.0 * PI), phase, ph);
+          att *= 0.5; ext *= 0.25; ph *= 0.5;
+        }
+        // The powder effect: the sunlit side of a cloud's surface is darker than its depths' glow.
+        scatter *= 1.0 - 0.6 * exp(-od * 2.0);
+        // Sky and ground light: from the sky above (brighter towards the top of the layer) and the ground.
+        vec3 skyDown, groundUp, direct, upW;
+        slLightAt(dirWorld * (ts / stretch), direct, skyDown, groundUp, upW);
+        vec3 ambient = (skyDown * 1.6 + groundUp * 0.6) * sunIntensity * RECIPROCAL_PI * 0.5;
+        // Sunlight scattered many times inside the cloud, which lights even its shaded depths and base:
+        // more higher up, nearer the sunlit top.
+        vec3 diffuse = sunlight * 0.05 * mix(0.35, 1.0, layer);
+        vec3 sourceLight = sunlight * scatter * 4.0 + ambient + diffuse;
+        // Energy-conserving integration across the step.
+        float stepT = exp(-sigma * dt);
+        light += transmittance * sourceLight * (1.0 - stepT);
+        depthSum += transmittance * (1.0 - stepT) * ts;
+        depthWeight += transmittance * (1.0 - stepT);
+        transmittance *= stepT;
+        if (transmittance < 0.01) break;
+      }
+      t += coarse;
+      if (transmittance < 0.01) break;
     }
-    float layer;
-    float density = cloudDensity(uv, p, local, h, true, footprint, layer);
-    if (density <= 0.001) continue;
-    float sigma = EXTINCTION * density;
-    // Light towards the sun through the cloud.
-    float od = 0.0;
-    float step = 60.0;
-    for (int j = 0; j < ${LIGHT_STEPS}; j++) {
-      vec3 q = p + sunDirS * step * (float(j) + 0.5);
-      vec3 ql = local + worldToPlanet * (slSun * step * (float(j) + 0.5));
-      float unused;
-      od += cloudDensity(mapUv(latLon(q)), q, ql, length(q) - a, false, footprint, unused) * step;
-      step *= 2.0;
-    }
-    od *= EXTINCTION;
-    vec3 sunlight = slSunTransmittance(p) * mix(vec3(1.0), SL_WHITE, slParams.y) * sunIntensity;
-    // Multiple scattering, approximately: octaves of weaker extinction and flatter phase.
-    float scatter = 0.0;
-    float att = 1.0, ext = 1.0, ph = 1.0;
-    for (int k = 0; k < 3; k++) {
-      scatter += att * exp(-od * ext) * mix(1.0 / (4.0 * PI), phase, ph);
-      att *= 0.5; ext *= 0.25; ph *= 0.5;
-    }
-    // The powder effect: the sunlit side of a cloud's surface is darker than its depths' glow.
-    scatter *= 1.0 - 0.6 * exp(-od * 2.0);
-    // Sky and ground light: from the sky above (brighter towards the top of the layer) and the ground.
-    vec3 skyDown, groundUp, direct, upW;
-    slLightAt(dirWorld * (t / stretch), direct, skyDown, groundUp, upW);
-    vec3 ambient = (skyDown * 1.6 + groundUp * 0.6) * sunIntensity * RECIPROCAL_PI * 0.5;
-    // Sunlight scattered many times inside the cloud, which lights even its shaded depths and base:
-    // more higher up, nearer the sunlit top.
-    vec3 diffuse = sunlight * 0.05 * mix(0.35, 1.0, layer);
-    vec3 sourceLight = sunlight * scatter * 4.0 + ambient + diffuse;
-    // Energy-conserving integration across the step.
-    float stepT = exp(-sigma * dt);
-    light += transmittance * sourceLight * (1.0 - stepT);
-    depthSum += transmittance * (1.0 - stepT) * t;
-    depthWeight += transmittance * (1.0 - stepT);
-    transmittance *= stepT;
     if (transmittance < 0.01) break;
   }
   // Haze between the camera and the cloud (by its opacity-weighted distance). The air's light in front of
@@ -484,7 +550,7 @@ float streaks(vec2 uv, float rain) {
 }
 
 void main() {
-  // A small tent filter over the half-resolution clouds (smooths the march's per-pixel jitter).
+  // A small tent filter over the half-resolution clouds (softens their upscaling).
   vec4 c = 0.4 * texture2D(clouds, vUv)
     + 0.15 * (texture2D(clouds, vUv + vec2(texel.x, 0.0)) + texture2D(clouds, vUv - vec2(texel.x, 0.0))
             + texture2D(clouds, vUv + vec2(0.0, texel.y)) + texture2D(clouds, vUv - vec2(0.0, texel.y)));
