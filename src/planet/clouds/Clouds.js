@@ -58,7 +58,7 @@ const FINE_STEPS = 6
 const FINE_SHARE = 0.005
 const FINE_MIN = 8
 const FINE_MAX_SPLIT = 12
-const MAX_FINE_SAMPLES = 96
+const MAX_FINE_SAMPLES = 160
 // The probes' margin (cloudProbe): PROBE_GROW[0] plus PROBE_GROW[1] per PROBE_GROW[2] m of step, at most
 // PROBE_GROW[3] (in the shape noise's units; its middle 80% spans about 0.15).
 const PROBE_GROW = [0.02, 0.05, 400, 0.25]
@@ -368,7 +368,8 @@ float columnDensity(CloudColumn col, vec3 local, float h, bool full, float footp
   // High cloud: streaks along the wind aloft.
   float hb = col.highBase;
   float hh = (h - hb) / ${HIGH_THICKNESS.toFixed(1)};
-  if (highCover > 0.005 && hh > 0.0 && hh < 1.0) {
+  // (Not for the march's probes: thin and soft, it does not need its steps split.)
+  if (probeGrow == 0.0 && highCover > 0.005 && hh > 0.0 && hh < 1.0) {
     layer = 1.0;
     float profile = smoothstep(0.0, 0.3, hh) * smoothstep(1.0, 0.6, hh);
     vec3 windAloft = surfaceWind * ${CIRRUS_WIND.toFixed(1)};
@@ -577,6 +578,7 @@ void main() {
   vec3 sunNear = slSunTransmittance(c + d * lightNear) * white, sunFar = slSunTransmittance(c + d * lightFar) * white;
   // Interleaved gradient noise (Jimenez): a hash of the pixel that is well spread at a pixel's scale.
   float pixelJitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  float lightJitter = fract(pixelJitter + 0.61803399);
   for (int stretchIndex = 0; stretchIndex < 3; stretchIndex++) {
     float ta = stretchIndex == 0 ? t0 : stretchIndex == 1 ? tLayer0 : tLayer1;
     float tb = stretchIndex == 0 ? tLayer0 : stretchIndex == 1 ? tLayer1 : t1;
@@ -619,7 +621,12 @@ void main() {
             // Fine steps of FINE_SHARE of the distance (at least FINE_STEPS): coarser ones slice the clouds
             // into terraces at fixed distances from the camera, which slide over them as it moves (moire).
             float fineLength = max(tm / stretch * ${FINE_SHARE.toFixed(4)}, ${FINE_MIN.toFixed(1)}) * stretch;
+            // Only as far as the samples left allow, keeping enough coarse steps to reach the layer's end
+            // (splitting every step near the camera used them all up, and the clouds beyond vanished).
+            int coarseLeft = int(ceil(log((tb / stretch + STEP_ORIGIN) / (t / stretch + STEP_ORIGIN)) / log(1.0 + g)));
+            int spare = ${MAX_STEPS * 2 + MAX_FINE_SAMPLES} - i - coarseLeft;
             fineLeft = clamp(int(ceil(coarse / fineLength)), FINE_STEPS, ${FINE_MAX_SPLIT});
+            fineLeft = clamp(fineLeft, 1, max(spare, 1));
           }
         }
         dt = coarse / float(fineLeft);
@@ -660,8 +667,11 @@ void main() {
       float od = 0.0;
       float step = 60.0;
       for (int j = 0; j < ${LIGHT_STEPS}; j++) {
-        vec3 q = p + sunDirS * step * (float(j) + 0.5);
-        vec3 ql = local + worldToPlanet * (slSun * step * (float(j) + 0.5));
+        // (Jittered within its step: at fixed points, the light changed in steps as they left a cloud's
+        // top, which banded the clouds into stripes.)
+        float lightAt = step * (float(j) + lightJitter);
+        vec3 q = p + sunDirS * lightAt;
+        vec3 ql = local + worldToPlanet * (slSun * lightAt);
         float unused;
         od += columnDensity(col, ql, length(q) - a, false, footprint, unused) * step;
         step *= 2.0;
