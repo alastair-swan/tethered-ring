@@ -65,8 +65,19 @@ export function weatherDraws(dayOfYear, utcHours) {
 // organises the weather, to convective clusters. Unscaled.
 function drawAnomaly(lat, x, y, z, draw) {
   const s = Math.max(-1, Math.min(1, lat / TROPICS))
+  return -s * streamFunction(x, y, z, draw) / STREAM_RMS + Math.sqrt(1 - s * s) * clusterNoise(x, y, z, draw) / NOISE_RMS
+}
+
+// The convective clusters' noise: two value-noise samples in differently rotated lattices, averaged (a
+// single lattice's axis-aligned cells show through as squares once the cover's steep transform sharpens
+// them). The rotations are fixed rotations about the (1, 1, 1) and (1, -1, 0) axes.
+const ROT_A = [[0.9107, -0.2440, 0.3333], [0.3333, 0.9107, -0.2440], [-0.2440, 0.3333, 0.9107]]
+const ROT_B = [[0.8660, 0.1294, 0.4830], [0.1294, 0.8660, -0.4830], [-0.4830, 0.4830, 0.7321]]
+const rotate = (m, x, y, z) => [m[0][0] * x + m[0][1] * y + m[0][2] * z, m[1][0] * x + m[1][1] * y + m[1][2] * z, m[2][0] * x + m[2][1] * y + m[2][2] * z]
+function clusterNoise(x, y, z, draw) {
   const k = PLANET_RADIUS / CLUSTER_SIZE
-  return -s * streamFunction(x, y, z, draw) / STREAM_RMS + Math.sqrt(1 - s * s) * noise(x * k, y * k, z * k, draw * 7 + 5) / NOISE_RMS
+  const a = rotate(ROT_A, x * k, y * k, z * k), b = rotate(ROT_B, x * k, y * k, z * k)
+  return noise(a[0], a[1], a[2], draw * 7 + 5) + noise(b[0] + 17.3, b[1] + 41.1, b[2] + 5.7, draw * 7 + 6)
 }
 
 // The RMS of the stream function and of one octave of noise (measured once, deterministically, with
@@ -81,7 +92,7 @@ function rms(f) {
   return Math.sqrt(sum / 4000)
 }
 const STREAM_RMS = rms(streamFunction)
-const NOISE_RMS = rms((x, y, z, draw) => noise(x * PLANET_RADIUS / CLUSTER_SIZE, y * PLANET_RADIUS / CLUSTER_SIZE, z * PLANET_RADIUS / CLUSTER_SIZE, draw * 7 + 5))
+const NOISE_RMS = rms(clusterNoise)
 
 /**
  * The weather's pressure anomaly at geodetic latitude/longitude (degrees) and date: about normally
@@ -134,10 +145,16 @@ float weatherStream(vec3 p, int draw) {
   return ${EDDIES.map(([size, amplitude], i) => `${amplitude.toFixed(4)} * weatherNoise(p * ${(PLANET_RADIUS / size).toFixed(6)}, draw * 7 + ${i})`).join(' + ')};
 }
 
+float weatherCluster(vec3 p, int draw) {
+  vec3 q = p * ${(PLANET_RADIUS / CLUSTER_SIZE).toFixed(6)};
+  vec3 a = vec3(${ROT_A.map(r => `dot(vec3(${r.map(v => v.toFixed(4)).join(', ')}), q)`).join(', ')});
+  vec3 b = vec3(${ROT_B.map(r => `dot(vec3(${r.map(v => v.toFixed(4)).join(', ')}), q)`).join(', ')});
+  return weatherNoise(a, draw * 7 + 5) + weatherNoise(b + vec3(17.3, 41.1, 5.7), draw * 7 + 6);
+}
+
 float weatherDrawAnomaly(float lat, vec3 p, int draw) {
   float s = clamp(lat / ${TROPICS.toFixed(1)}, -1.0, 1.0);
-  return -s * weatherStream(p, draw) / ${STREAM_RMS.toFixed(6)}
-    + sqrt(1.0 - s * s) * weatherNoise(p * ${(PLANET_RADIUS / CLUSTER_SIZE).toFixed(6)}, draw * 7 + 5) / ${NOISE_RMS.toFixed(6)};
+  return -s * weatherStream(p, draw) / ${STREAM_RMS.toFixed(6)} + sqrt(1.0 - s * s) * weatherCluster(p, draw) / ${NOISE_RMS.toFixed(6)};
 }
 
 float weatherAnomaly(float lat, vec3 p, int d0, int d1, float f) {

@@ -21,6 +21,7 @@ import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
 import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
 import { Sailboats } from '../scene/Sailboats.js'
+import { Clouds } from '../planet/clouds/Clouds.js'
 import { setWeatherDate, windAt } from '../scene/seaPlacement.js'
 import { ContainerShips } from '../scene/ContainerShips.js'
 
@@ -225,6 +226,8 @@ export class App {
     this.planet.setVisible(d.showEarthsSurface.value)
     this.planet.setSeaIceVisible(d.showSeaIce.value)
     if (this.planetSpec.name === 'Earth' && this.planetSpec.hasOcean) {
+      this.clouds = new Clouds(this.planet, this.planetCoordSys)
+      this.clouds.enabled = d.showClouds.value
       this.sailboats = new Sailboats(this.planet, this.planetCoordSys, this.planetSpec.ellipsoid)
       this.sailboats.setVisible(d.showSailboats.value)
       if (this.lighting.enableLocalShadows()) this.sailboats.setShadowLight(this.lighting.sunLight)
@@ -511,6 +514,7 @@ export class App {
       adjustOcean: visibility((p) => this.applyOceanSettings(p)),
       adjustSeaIce: visibility((p) => this.planet.setSeaIceVisible(p.showSeaIce.value)),
       adjustSailboats: visibility((p) => this.sailboats?.setVisible(p.showSailboats.value)),
+      adjustClouds: visibility((p) => { if (this.clouds) this.clouds.enabled = p.showClouds.value }),
       adjustContainerShips: visibility((p) => this.containerShips?.setVisible(p.showContainerShips.value)),
       adjustEarthAtmosphereVisibility: visibility((p) => this.planet.setAtmosphereVisible(p.showEarthsAtmosphere.value)),
       adjustTerrainExaggeration: visibility((p) => this.planet.setDisplacementScale((this.nonGUIParams.planet2DisplacementScaleMultiplier ?? 1) * p.terrainExaggeration.value)),
@@ -523,7 +527,7 @@ export class App {
     this.store.derive()
     const handlers = this.parameterHandlers()
     for (const name of ['adjustEarthSurfaceVisibility', 'adjustEarthAtmosphereVisibility', 'adjustEarthTextureOpacity', 'adjustEarthTextureSidedness',
-      'adjustTerrainExaggeration', 'adjustSeaIce', 'adjustSailboats', 'adjustContainerShips', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
+      'adjustTerrainExaggeration', 'adjustSeaIce', 'adjustSailboats', 'adjustContainerShips', 'adjustClouds', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
       'updateOrbitControlsRotateSpeed', 'adjustTetherOpacity', 'adjustStructureGlow', 'adjustBackgroundOpacity']) handlers[name]()
     this.rebuildRing()
     this.ring.adjustLatLon(0)
@@ -781,6 +785,7 @@ export class App {
       this.containerShips?.resetWeather()
     }
     const date = advanceDate(Math.max(1, this.store.get('sunDayOfYear')), Math.max(0, this.store.get('sunTimeOfDayUTC')), this.clock.time)
+    this.clouds?.update(this.renderer, date.dayOfYear, date.utcHours, this.clock.time)
     this.planet.setDayOfYear(date.dayOfYear + date.utcHours / 24)
     if (!this.sunFollowsDate) return
     const s = subsolarPoint(date.dayOfYear, date.utcHours)
@@ -850,6 +855,9 @@ export class App {
     this.lighting.updateSkyLight(true, this.planet, this.planetSpec.hasOcean === true)
     renderer.render(this.scene, this.camera3d)
     this.lighting.updateSkyLight(false)
+    if (!underwater && atmosphereVisible) {
+      this.clouds?.render(renderer, this.scene, this.camera3d, this.lighting.sunLight.intensity, this.planet.atmosphereUniforms.atmoParams.value.y)
+    }
     if (underwater) {
       renderer.setClearColor(this._clearColor, this._clearAlpha)
       this.planet.atmosphere.visible = atmosphereVisible

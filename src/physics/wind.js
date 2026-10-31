@@ -22,6 +22,11 @@ const DATA = Int8Array.from(atob(climatology.data), (c) => {
   return b > 127 ? b - 256 : b
 })
 const U = fields.indexOf('u'), V = fields.indexOf('v'), SIGMA = fields.indexOf('sigma')
+
+/** The climatology as floats ([month][row][column][field]) with its grid, for the GPU (clouds). */
+export function windClimatologyTable() {
+  return { rows, cols, gridDegrees, fields, values: Float32Array.from(DATA, (v) => v * scale) }
+}
 const U_COS = fields.indexOf('uCos'), U_SIN = fields.indexOf('uSin'), V_COS = fields.indexOf('vCos'), V_SIN = fields.indexOf('vSin')
 
 const GRADIENT_STEP = 20e3 / PLANET_RADIUS // radians
@@ -64,7 +69,7 @@ function eddies(phi, lambda, draw, out) {
 
 // The eddies' RMS per component, so that sigma scales them to the data (sampled once, deterministically).
 let eddyRms = 0
-function eddyScale() {
+export function eddyScale() {
   if (eddyRms) return eddyRms
   const e = [0, 0]
   let sum = 0, n = 0

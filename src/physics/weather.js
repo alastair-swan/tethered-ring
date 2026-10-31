@@ -8,8 +8,9 @@ import { windAt } from './wind.js'
 // wind.
 //
 // - The climate: a monthly climatology from NCEP/NCAR reanalysis fields (2022-2023; baked by
-//   tools/sources/build_weather.py into weatherClimatology.data.js) on a 5-degree grid, interpolated
-//   bilinearly between nodes and linearly between months, as the wind's is.
+//   tools/sources/build_weather.py into weatherClimatology.data.js) on a 5-degree grid, smoothed by a
+//   cubic B-spline between nodes (bilinear interpolation has kinks along the grid lines, which the
+//   cover's steep transform would turn into visible squares) and interpolated linearly between months.
 // - The weather: the pressure anomaly (weatherNoise.js; about normal with unit variance, negative under
 //   lows) moves the cloud cover through a probit transform (coverFor), which keeps it between 0 and 1
 //   with the climate's mean and about its spread, and the humidity by HUMIDITY_GAIN of its spread; it rains
@@ -26,6 +27,11 @@ const DATA = Int8Array.from(atob(climatology.data), (c) => {
   return b > 127 ? b - 256 : b
 })
 const F = Object.fromEntries(fields.map((name, i) => [name, i]))
+
+/** The climatology as floats ([month][row][column][field]) with its grid, for the GPU (clouds). */
+export function weatherClimatologyTable() {
+  return { rows, cols, gridDegrees, fields, values: Float32Array.from(DATA, (v, i) => v * scales[i % FIELDS]) }
+}
 const HUMIDITY_GAIN = 1.2
 // Squalls: under heavy showers the wind at the surface rises by up to SQUALL_GAIN, reaching it at
 // SQUALL_RAIN (mm/h) of convective rain.
@@ -38,20 +44,26 @@ function node(month, row, col, out, weight) {
   for (let f = 0; f < FIELDS; f++) out[f] += weight * DATA[o + f] * scales[f]
 }
 
-/** The climate fields (see build_weather.py's FIELDS), interpolated in place and season. */
+// Cubic B-spline weights for the four nodes around fraction f.
+export function bSpline(f) {
+  const g = 1 - f
+  return [g * g * g / 6, (3 * f * f * f - 6 * f * f + 4) / 6, (-3 * f * f * f + 3 * f * f + 3 * f + 1) / 6, f * f * f / 6]
+}
+
+/** The climate fields (see build_weather.py's FIELDS), smoothed in place and interpolated in season. */
 export function weatherClimate(lat, lon, dayOfYear, utcHours, out = new Float64Array(FIELDS)) {
   out.fill(0)
   const m = ((dayOfYear - 1 + utcHours / 24) / DAYS_PER_YEAR) * 12 - 0.5
   const m0 = Math.floor(m), fm = m - m0
-  const r = Math.min(Math.max((lat + 90) / gridDegrees, 0), rows - 1.000001)
-  const r0 = Math.floor(r), fr = r - r0
+  const r = (lat + 90) / gridDegrees
+  const r0 = Math.floor(r), wr = bSpline(r - r0)
   const c = lon / gridDegrees
-  const c0 = Math.floor(c), fc = c - c0
+  const c0 = Math.floor(c), wc = bSpline(c - c0)
   for (const [month, wm] of [[(m0 % 12 + 12) % 12, 1 - fm], [((m0 + 1) % 12 + 12) % 12, fm]]) {
-    node(month, r0, c0, out, wm * (1 - fr) * (1 - fc))
-    node(month, r0, c0 + 1, out, wm * (1 - fr) * fc)
-    node(month, r0 + 1, c0, out, wm * fr * (1 - fc))
-    node(month, r0 + 1, c0 + 1, out, wm * fr * fc)
+    for (let i = 0; i < 4; i++) {
+      const row = Math.min(Math.max(r0 - 1 + i, 0), rows - 1)
+      for (let j = 0; j < 4; j++) node(month, row, c0 - 1 + j, out, wm * wr[i] * wc[j])
+    }
   }
   return out
 }
