@@ -46,8 +46,9 @@ import { MULTIPLE_SCATTERING } from '../../scene/skyIrradiance.js'
 const RESOLUTION = 0.5
 const HIGH_RESOLUTION = [100000, 300000] // m: the camera altitudes over which it rises to full
 const SHELL_TOP = 13000 // m
-// The march (see main): steps in the cloud layer a share CLOUD_STEP of their distance, at least MIN_STEP
-// (m), split into FINE_STEPS where there is cloud; at most MAX_STEPS in each stretch; MURK_STEPS across each stretch below the layer, which is from
+// The march (see main): steps in the cloud layer a share CLOUD_STEP of their distance (more if MAX_STEPS
+// would not reach the layer's end), starting at MIN_STEP (m), split into FINE_STEPS where there is cloud;
+// at most MAX_STEPS in each stretch; MURK_STEPS across each stretch below the layer, which is from
 // LAYER_BOTTOM (m) up (below the lowest cloud bases).
 const CLOUD_STEP = 0.03
 const FINE_STEPS = 4
@@ -142,8 +143,8 @@ layout(location = 1) out vec4 outShade;  // r: the scene's dimming by the clouds
 
 const float SHELL_TOP = ${SHELL_TOP.toFixed(1)};
 const float CLOUD_STEP = ${CLOUD_STEP.toFixed(3)};
+const float STEP_ORIGIN = ${(MIN_STEP / CLOUD_STEP).toFixed(1)};
 const int FINE_STEPS = ${FINE_STEPS};
-const float MIN_STEP = ${MIN_STEP.toFixed(1)};
 const int MURK_STEPS = ${MURK_STEPS};
 const float LAYER_STEPS = ${LAYER_STEPS.toFixed(1)};
 const float LAYER_BOTTOM = ${LAYER_BOTTOM.toFixed(1)};
@@ -411,10 +412,18 @@ void main() {
     if (tb <= ta) continue;
     bool inLayer = stretchIndex == 1;
     float murkStep = (tb - ta) / float(MURK_STEPS);
+    // In the layer, steps grow geometrically: each a share g of (distance + STEP_ORIGIN), STEP_ORIGIN
+    // making the first ones MIN_STEP long. g is CLOUD_STEP where the budget of MAX_STEPS reaches the
+    // layer's end, and larger where it would not (a fixed share ran out of steps tens of kilometres off,
+    // a distance limit that came and went with where the march began, i.e. the camera's height); it is
+    // at most the share that crosses the layer in LAYER_STEPS (from far away a share of the distance
+    // would step right over it). It changes smoothly with the camera, so nothing pops.
+    float ratio = (tb / stretch + STEP_ORIGIN) / (ta / stretch + STEP_ORIGIN);
+    float g = min(max(CLOUD_STEP, pow(ratio, 1.0 / float(${MAX_STEPS})) - 1.0), pow(ratio, 1.0 / LAYER_STEPS) - 1.0);
     float t = ta;
     float probeEnd = inLayer ? cloudProbe(c, d, dirWorld, stretch, t) : 0.0;
     for (int i = 0; i < ${MAX_STEPS}; i++) {
-      float coarse = inLayer ? min(max(t / stretch * CLOUD_STEP, MIN_STEP) * stretch, (tb - ta) / LAYER_STEPS) : murkStep;
+      float coarse = inLayer ? g * (t / stretch + STEP_ORIGIN) * stretch : murkStep;
       if (t + coarse > tb) coarse = tb - t;
       if (coarse <= 0.0) break;
       // Split the step where there may be cloud in it.
@@ -660,7 +669,7 @@ export class Clouds {
     const t = this.time ?? 0
     const phase = t / DRIFT_PERIOD
     const ages = [((phase % 1) + 1) % 1, (((phase + 0.5) % 1) + 1) % 1]
-    u.drift.value.set(ages[0] * DRIFT_PERIOD, ages[1] * DRIFT_PERIOD, 1 - Math.abs(2 * ages[0] - 1))
+    u.drift.value.set(ages[0] * DRIFT_PERIOD, ages[1] * DRIFT_PERIOD, Math.abs(2 * ages[0] - 1))
     // Each copy restarts from a different place in the tile (so a restart does not repeat it).
     ages.forEach((age, i) => {
       const cycle = Math.floor(phase + (i ? 0.5 : 0))
