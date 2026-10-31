@@ -95,7 +95,9 @@ const SUPERSTRUCTURE = { z: -7.905, base: 1.117, top: 2.867 }
 const BRIDGE_CLEARANCE = 0.45         // the bridge's height above the highest tier
 
 // Rows, slots (including the superstructure's), tiers, hull depth (relative to the model) and FEU on deck.
+// Feeders are the small ships that call at the launcher's ocean terminal (OceanTerminal.js).
 const SIZES = {
+  feeder: { rows: [5, 7], slots: [6, 8], tiers: [2, 3], depth: 0.7, feu: [0, Infinity] },
   small: { rows: [7, 8], slots: [9, 12], tiers: [3, 4], depth: 0.8, feu: [200, 400] },
   medium: { rows: [11, 11], slots: [21, 21], tiers: [5, 5], depth: 1, feu: [0, Infinity] },
   large: { rows: [19, 23], slots: [26, 30], tiers: [7, 9], depth: 1.25, feu: [2500, Infinity] },
@@ -117,6 +119,10 @@ const CONTAINERS = {
 }
 const OWN_LINE = 0.35        // the share of a ship's containers in its own line's colour
 const SUPERSTRUCTURE_COLOR = 0xf2f2ee
+// The model's hull: stern and bow (z), and keel (y).
+const HULL_STERN = -12.794
+const HULL_BOW = 15.959
+const HULL_KEEL = -0.776
 const ANTIFOULING = 0x7a2b25
 
 const range = (r, [lo, hi]) => lo + Math.floor(r * (hi - lo + 1))
@@ -160,6 +166,16 @@ export function shipDesign(seed, sizeWeights, loaded) {
   }
   design.boxes = boxes
   return design
+}
+
+// A design's hull, in metres from the model's origin: half its beam, its stern and bow (z) and its draft.
+export function shipDimensions(design) {
+  return {
+    halfBeam: SHIP_SCALE * ((design.rows - 1) / 2 * ROW + BEAM_MARGIN),
+    stern: SHIP_SCALE * HULL_STERN,
+    bow: SHIP_SCALE * (HULL_BOW + (design.slots - STERN_SLOTS - BOW_SLOTS - MID_SLOTS) * SLOT),
+    draft: -SHIP_SCALE * HULL_KEEL * design.depth,
+  }
 }
 
 // The bays of a ship with `slots` slots (the superstructure's included): { slot, z, rows, tiers }.
@@ -572,6 +588,19 @@ if (vShipModelY < -0.02) diffuseColor.rgb = vec3(${red.r.toFixed(4)}, ${red.g.to
       this.hullMaterials.set(key, material)
     }
     return material
+  }
+
+  /** Whether the container ship model has loaded (buildShip needs it). */
+  get ready() {
+    return this.model !== null
+  }
+
+  /**
+   * A container ship (a group, in metres: +Y up, bow along +Z, waterline at y = 0) for a shipDesign. Its
+   * containers are its last child, an InstancedMesh with one instance per design box, in order.
+   */
+  buildShip(design) {
+    return this._buildShip(design)
   }
 
   _buildShip(design) {

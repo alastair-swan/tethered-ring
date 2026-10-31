@@ -368,6 +368,13 @@ export class launcher {
     return curve ? curve.getPointAt(0, new THREE.Vector3()) : null
   }
 
+  // The breech: the start of the tube and its direction there ({ point, tangent }, planet coordinates), or
+  // null before it is built.
+  startFrame() {
+    const curve = virtualMassDriverTube.refFrames?.[0]?.curve?.superCurves?.[0]
+    return curve ? { point: curve.getPointAt(0, new THREE.Vector3()), tangent: curve.getTangentAt(0, new THREE.Vector3()).normalize() } : null
+  }
+
   // Points along the launcher's tube from its start, every `step` metres (planet coordinates); empty
   // before it is built.
   pathPoints(step = 1000) {
