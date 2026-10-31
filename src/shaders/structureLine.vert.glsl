@@ -1,9 +1,11 @@
 // Thin structural lines (tethers, elevator and mooring cables), drawn at their real diameter: see
 // src/scene/structureLines.js. Per vertex: how much of its pixel the line covers (vCoverage: the glow,
-// times the haze transmittance of the air between the camera and the vertex).
+// times the haze transmittance of the air between the camera and the vertex), and the light on it
+// (vLight: sun, sky and ground, see src/scene/sunAndSkyLight.js).
 #include <common>
 #include <logdepthbuf_pars_vertex>
 #include <fog_pars_vertex>
+#include <sun_and_sky_light>
 
 uniform float structureMaxCoverage;
 uniform float structureGlowDistance;   // m
@@ -15,6 +17,7 @@ uniform vec4 atmoParams;   // z: a (m)
 attribute float diameter;  // m
 attribute float strands;   // full-detail strands this line stands for (merged distant forks)
 varying float vCoverage;
+varying vec3 vLight;
 
 // Air (density-weighted metres, scale height H) from p out along `up`, a direction at or above p's
 // horizon: H exp(-h/H) ch(r/H, c) with Schuler's Chapman approximation ch ~ k / ((k - 1) c + 1).
@@ -59,4 +62,12 @@ void main() {
     coverage *= exp(-(13.5e-6 * airR + 8.8e-6 * airM));
   }
   vCoverage = coverage;
+  // A thin cable of any direction: the sun on its lit side, half of the sky and of the ground, and the
+  // night light, relative to full sunlight; 1 without the sun and sky light (other scenes).
+  vLight = vec3(1.0);
+  if (slParams.x > 0.5) {
+    vec3 direct, skyDown, groundUp, up;
+    slLightAt(transpose(mat3(viewMatrix)) * mvPosition.xyz, direct, skyDown, groundUp, up);
+    vLight = (direct + 0.5 * (skyDown + groundUp)) * slLineLight.w + slLineLight.xyz;
+  }
 }

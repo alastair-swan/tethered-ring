@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import vertexShader from '../shaders/structureLine.vert.glsl?raw'
 import fragmentShader from '../shaders/structureLine.frag.glsl?raw'
 import { SeaDarkening } from '../planet/seaDarkening.js'
+import { SunAndSkyLight } from './sunAndSkyLight.js' // registers <sun_and_sky_light>
 
 // Thin structural lines (tethers, elevator cables, mooring cables) drawn at their real diameters.
 //
@@ -18,6 +19,8 @@ import { SeaDarkening } from '../planet/seaDarkening.js'
 // as 1 / distance beyond it, as a sub-pixel line does. The
 // many sub-pixel strands of the tethers sum to a visible structure from space. The coverage also
 // fades with the haze of the air between the camera and the line (the same density model as the sky).
+// BRIGHTNESS is for a line in full sunlight; it is lit by the sun, sky and ground like everything else
+// (sunAndSkyLight.js), so lines in the planet's shadow only show faintly.
 //
 // The uniforms are shared by every line material (one update per frame).
 const BRIGHTNESS = 0.25 // linear, times the colour
@@ -61,6 +64,7 @@ export const StructureLines = {
     return new THREE.ShaderMaterial({
       uniforms: {
         ...uniforms,
+        ...SunAndSkyLight.uniforms,
         color: { value: new THREE.Color(color) },
         referenceDiameter: { value: referenceDiameter },
         ...(fog ? { ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog), ...SeaDarkening.uniforms() } : {}),

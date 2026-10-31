@@ -818,7 +818,9 @@ export class App {
       renderer.render(this.background.scene, this.background.camera)
       renderer.clearDepth()
     }
+    this.lighting.updateSkyLight(true, this.planet, this.planetSpec.hasOcean === true)
     renderer.render(this.scene, this.camera3d)
+    this.lighting.updateSkyLight(false)
     if (underwater) {
       renderer.setClearColor(this._clearColor, this._clearAlpha)
       this.planet.atmosphere.visible = atmosphereVisible

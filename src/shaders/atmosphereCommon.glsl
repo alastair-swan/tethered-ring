@@ -9,6 +9,11 @@
 // (stretched along the polar axis), relative to the planet's centre; with the ray's direction stretched
 // the same way, a parameter t along it is still metres along the real line of sight. Needs PI (<common>).
 
+// Included by both the fog chunk (aerialPerspective.js) and the lights chunk (sunAndSkyLight.js), so
+// guarded against a second copy in the same shader.
+#ifndef ATMOSPHERE_COMMON
+#define ATMOSPHERE_COMMON
+
 // Scattering coefficients at sea level (1/m) and scale heights (m).
 const vec3 ATMO_BETA_R = vec3(5.8e-6, 13.5e-6, 33.1e-6);
 const float ATMO_BETA_M = 8e-6;   // a clear day (21e-6 is hazy)
@@ -91,3 +96,5 @@ void atmoScatter(vec3 camera, vec3 ds, vec3 d, float t0, float t1, vec3 sun, flo
   light = ATMO_SUN_INTENSITY * (sumR * ATMO_BETA_R * phaseR + sumM * ATMO_BETA_M * phaseM);
   transmittance = exp(-(ATMO_BETA_R * viewDepth.x + ATMO_BETA_M * 1.1 * viewDepth.y));
 }
+
+#endif

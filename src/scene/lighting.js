@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { SunAndSkyLight } from './sunAndSkyLight.js'
 
 // How far out the (directional) sun light is placed; only its direction matters.
 const SUN_DISTANCE = 1e9
@@ -6,13 +7,22 @@ const SUN_DISTANCE = 1e9
 // camera is placed (m).
 const LOCAL_SHADOW_EXTENT = 40
 const LOCAL_SHADOW_DISTANCE = 200
+// The sun's irradiance above the atmosphere: pi lights a level surface under an overhead sun to its full
+// albedo (three.js divides diffuse light by pi).
+const SUN_INTENSITY = Math.PI
+// The ambient light, which sunAndSkyLight.js adds to the sky's: a little moonlight-coloured light so
+// things stay visible at night.
+const NIGHT_LIGHT_INTENSITY = 0.15
+const NIGHT_LIGHT_COLOR = 0xb0c4ff
 
-// Sun and ambient light. When a preset enables surface shadows, the directional light gets a small,
+// Sun and ambient light. The sun is dimmed by the air and shadowed by the planet, and the sky and the
+// ground add their own light, per fragment (sunAndSkyLight.js, while updateSkyLight has it active); the
+// ambient light is only what is left at night. When a preset enables surface shadows, the directional light gets a small,
 // dense shadow frustum that is re-centred on the camera target every frame (see updateShadowFocus);
 // a planet-sized shadow map would be far too coarse for metre-scale vehicles.
 export class Lighting {
   constructor(scene, planetCoordSys, nonGUIParams, planetRadius, renderer) {
-    this.sunLight = new THREE.DirectionalLight(0xffffff, nonGUIParams.sunLightIntensity ?? 1)
+    this.sunLight = new THREE.DirectionalLight(0xffffff, nonGUIParams.sunLightIntensity ?? SUN_INTENSITY)
     this.sunLight.name = 'sunlight'
     if (nonGUIParams.sunLightPosition) this.sunLight.position.copy(nonGUIParams.sunLightPosition)
     else this.sunLight.position.set(0, -6 * planetRadius / 8, -20 * planetRadius / 8)
@@ -53,9 +63,18 @@ export class Lighting {
       scene.add(this.sunLight)
     }
 
-    this.ambientLight = new THREE.AmbientLight(0xffffff, nonGUIParams.ambientLightIntensity ?? 2)
+    this.ambientLight = new THREE.AmbientLight(NIGHT_LIGHT_COLOR, nonGUIParams.ambientLightIntensity ?? NIGHT_LIGHT_INTENSITY)
     this.ambientLight.name = 'ambientLight'
     scene.add(this.ambientLight)
+  }
+
+  /**
+   * Turns the per-fragment sun and sky light (sunAndSkyLight.js) on for the main scene's render and off
+   * for the others. `planet` (Planet) has updated its atmosphere uniforms for this frame's camera.
+   */
+  updateSkyLight(active, planet, air) {
+    const night = (this._nightLight ??= new THREE.Color()).copy(this.ambientLight.color).multiplyScalar(this.ambientLight.intensity)
+    SunAndSkyLight.update(active, planet?.atmosphereUniforms, air, this.sunLight.intensity, night)
   }
 
   // Points the shadow frustum at a fixed solar direction from a new focus point (planet frame).

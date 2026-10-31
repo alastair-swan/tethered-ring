@@ -108,14 +108,13 @@ const WATER_UNDERSIDE_FROM_ABOVE = [0.015, 0.035, 0.06];
 // Sea floor seen from under the surface (linear RGB), and the depth over which it replaces the imagery.
 const SEAFLOOR_COLOR = [0.30, 0.28, 0.22];
 const SEAFLOOR_BLEND_DEPTH = 20;
-// Light left on the night side, as a fraction of the day side's (see _configureDaylight).
-const NIGHT_LIGHT = 0.05;
 const _daylightQuaternion = new THREE.Quaternion();
 
-// GLSL expression: the daylight factor (NIGHT_LIGHT .. 1) at a point (planet-centred position, any
-// length) for a sun direction, with a soft twilight band around the terminator.
+// GLSL expression: 0 (night) .. 1 (day) at a point (planet-centred position, any length) for a sun
+// direction, with a soft twilight band around the terminator. (The light itself comes from
+// sunAndSkyLight.js; this is for the sea's reflection of the sky.)
 function daylightGlsl(position, sun) {
-  return `mix(${NIGHT_LIGHT.toFixed(3)}, 1.0, smoothstep(-0.1, 0.06, dot(normalize(${position}), ${sun})))`;
+  return `smoothstep(-0.1, 0.06, dot(normalize(${position}), ${sun}))`;
 }
 // Fractal noise on the sea floor: octave frequencies (1/m) and the contrast it adds.
 const SEAFLOOR_FREQS = [1 / 1600, 1 / 400, 1 / 100, 1 / 25];
@@ -460,7 +459,7 @@ export class CubedSpherePlanetRenderer {
     // 0..1: how strongly ground below sea level is drawn as sea floor (see _configureSeafloor). Set
     // while the camera is under the sea surface; shared by every tile material.
     this.seafloorView = { value: 0 };
-    // Direction to the sun in this renderer's (surface) frame, for the night side (_configureDaylight).
+    // Direction to the sun in this renderer's (surface) frame, for the sea's reflection of the sky.
     this.daylightSun = { value: new THREE.Vector3(0, 1, 0) };
     this.textureAnisotropy = Math.max(1, options.textureAnisotropy ?? 4);
     this.displacementScaleMultiplier = Math.max(0, options.displacementScaleMultiplier ?? 1);
@@ -1620,7 +1619,6 @@ export class CubedSpherePlanetRenderer {
     const material = this.baseMaterial.clone();
     this._configureSurfaceDetail(material, tile);
     if (this.hasWater) this._configureSeafloor(material, tile);
-    this._configureDaylight(material, tile);
     const mesh = new THREE.Mesh(geometry, material);
     mesh.name = `tile:${tile.id}`;
     mesh.frustumCulled = false; // we do our own conservative culling
@@ -2109,9 +2107,7 @@ float seaIce = 0.0;
         .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
 normal = seaViewNormal();`)
         .replace('#include <lights_phong_fragment>', `#include <lights_phong_fragment>
-material.specularStrength *= 1.0 - seaIce; // ice is matte: no sun glint`)
-        .replace('#include <opaque_fragment>', `outgoingLight *= ${daylightGlsl('vSeaPlanet', 'daylightSun')};
-#include <opaque_fragment>`);
+material.specularStrength *= 1.0 - seaIce; // ice is matte: no sun glint`);
     };
     material.customProgramCacheKey = () => 'seaSurface';
     return material;
@@ -2188,34 +2184,7 @@ if (seafloorView < 1.0 && vSeafloorAltitude < ${SEA_ICE_SHORE_HEIGHT.toFixed(1)}
     material.customProgramCacheKey = () => (previousKey ? previousKey.call(material) : '') + '|seafloor';
   }
 
-  // The night side: the terrain's light falls to NIGHT_LIGHT where the sun is below the horizon, with a
-  // soft twilight band (about +-6 degrees), so the day-night terminator shows. (Only the planet: the
-  // ring and launcher keep their lighting, so they stay visible at night.) Chained after any other
-  // shader customisation.
-  _configureDaylight(material, tile) {
-    const previous = material.onBeforeCompile;
-    const previousKey = material.customProgramCacheKey;
-    material.onBeforeCompile = (shader, renderer) => {
-      if (previous) previous.call(material, shader, renderer);
-      shader.uniforms.daylightSun = this.daylightSun;
-      shader.uniforms.daylightTileCenter = { value: tile.center };
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', `#include <common>
-uniform vec3 daylightTileCenter;
-varying vec3 vDaylightUp;`)
-        .replace('#include <begin_vertex>', `#include <begin_vertex>
-vDaylightUp = transformed + daylightTileCenter;`);
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', `#include <common>
-uniform vec3 daylightSun;
-varying vec3 vDaylightUp;`)
-        .replace('#include <opaque_fragment>', `outgoingLight *= ${daylightGlsl('vDaylightUp', 'daylightSun')};
-#include <opaque_fragment>`);
-    };
-    material.customProgramCacheKey = () => (previousKey ? previousKey.call(material) : '') + '|daylight';
-  }
-
-  // Sets the direction to the sun, in world axes (see _configureDaylight).
+  // Sets the direction to the sun, in world axes (see daylightGlsl).
   setSunDirection(worldDirection) {
     this.group.updateWorldMatrix(true, false);
     this.daylightSun.value.copy(worldDirection).applyQuaternion(this.group.getWorldQuaternion(_daylightQuaternion).invert()).normalize();
