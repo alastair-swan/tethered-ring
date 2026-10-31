@@ -1,0 +1,284 @@
+import * as THREE from 'three'
+import { fbmGlsl } from './seaNoise.js'
+
+// Wind-driven waves on the sea surface (CubedSpherePlanetRenderer._createWaterMaterial): the slopes
+// that set where the sun glints and what the water reflects, gusts, and whitecaps. Only the shading
+// changes (the surface itself stays at sea level).
+//
+// The waves are WAVE_BANDS wavelength bands (WAVELENGTH_MAX down to WAVELENGTH_MIN) of WAVE_DIRECTIONS
+// trains each, travelling in fixed pseudo-random directions with deep-water dispersion. Their phase at
+// a point is |k| d . x - omega t, a pure function of place and time (so shots repeat), split as for the
+// sea's noise (seaNoise.js): each tile's material has its centre's part, |k| d . centre mod 2 pi, worked
+// out in float64 (tileWaveOffsets), and the time's part, omega t mod 2 pi, is shared (update).
+//
+// The wind (at the camera: the waves' detail is only seen within a few kilometres of it) sets only
+// their amplitudes, so the pattern does not shift as the wind changes:
+// - The total mean square slope is Cox and Munk's (1954) for a clean sea, 0.003 + 0.00512 U (U the
+//   wind speed in m/s), which is what the width of the sun's glitter on the sea measures. It is split
+//   between the bands by the Pierson-Moskowitz spectrum's cut-off below its peak, kp = 0.77 g / U^2
+//   (equal slope per band above it), so stronger wind raises longer waves. A little swell (SWELL_SLOPE)
+//   is always there in the longest bands.
+// - Within a band, trains running with the wind are strongest (0.3 + cos^2 of the angle, downwind
+//   only, so the sea is short-crested), and each train's weight is scaled by how much of its direction lies in the surface there.
+// - Waves come in groups: each band's amplitude varies over a few of its wavelengths.
+// - Gusts (patches a few hundred metres across, fading in and out) roughen the short waves, so at low
+//   winds the sea is glassy with patches of ripples ("cat's paws").
+// - Whitecaps cover a fraction 3.84e-6 U^3.41 of the sea (Monahan and O'Muircheartaigh, 1980; none
+//   below about 3.5 m/s), in patches a few metres across that come and go, more in the gusts.
+//
+// Waves too fine for their pixel are left out of the normal (they would shimmer), and their slope
+// variance goes into the roughness of the sun's glint instead, so close up it glints off individual
+// waves and far away it spreads into a glitter path.
+
+const G = 9.81
+const SURFACE_TENSION = 7.4e-5 // m^3/s^2 (sigma / rho): capillary waves
+export const WAVE_BANDS = 9
+export const WAVE_DIRECTIONS = 8
+const WAVE_COUNT = WAVE_BANDS * WAVE_DIRECTIONS
+const WAVELENGTH_MAX = 300 // m
+const WAVELENGTH_MIN = 0.1
+// Bands shorter than this (m) are roughened by gusts.
+const GUSTED_WAVELENGTH = 2
+const SWELL_SLOPE = 0.02 // RMS slope of the swell
+// Gust and whitecap patches: noise frequencies (1/m), and how long each pattern lasts (s).
+export const GUST_FREQUENCIES = [1 / 400, 1 / 150]
+export const FOAM_FREQUENCIES = [1 / 6, 1 / 2.2, 1 / 0.8]
+const GUST_SECONDS = 25
+const FOAM_SECONDS = 5
+const FOAM_NOISE_SD = 0.247 // of the 3-octave noise (seaNoise.js fbm)
+
+// The trains: wavenumber (rad/m; jittered within the band so they do not beat regularly) and direction.
+function trains() {
+  let s = 0x2545f491
+  const r = () => {
+    s = (s + 0x6d2b79f5) >>> 0
+    let t = Math.imul(s ^ (s >>> 15), 1 | s)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+  const ratio = Math.pow(WAVELENGTH_MAX / WAVELENGTH_MIN, 1 / (WAVE_BANDS - 1))
+  const list = []
+  for (let b = 0; b < WAVE_BANDS; b++) {
+    const bandK = 2 * Math.PI / (WAVELENGTH_MAX / Math.pow(ratio, b))
+    for (let d = 0; d < WAVE_DIRECTIONS; d++) {
+      const z = 2 * r() - 1, phi = 2 * Math.PI * r(), rho = Math.sqrt(1 - z * z)
+      const k = bandK * (0.85 + 0.3 * r())
+      list.push({ band: b, bandK, k, omega: Math.sqrt(G * k + SURFACE_TENSION * k * k * k), dir: new THREE.Vector3(rho * Math.cos(phi), z, rho * Math.sin(phi)) })
+    }
+  }
+  return list
+}
+const TRAINS = trains()
+// Wave groups: each band's amplitude varies over about GROUP_WAVELENGTHS of its wavelength.
+const GROUP_WAVELENGTHS = 5
+export const GROUP_FREQUENCIES = Array.from({ length: WAVE_BANDS }, (_, b) => TRAINS[b * WAVE_DIRECTIONS].bandK / (2 * Math.PI * GROUP_WAVELENGTHS))
+
+/** A tile's part of the wave phases: |k| d . centre mod 2 pi (centre in the renderer's frame). */
+export function tileWaveOffsets(center) {
+  return TRAINS.map((w) => {
+    const p = w.k * (w.dir.x * center.x + w.dir.y * center.y + w.dir.z * center.z)
+    return p - 2 * Math.PI * Math.floor(p / (2 * Math.PI))
+  })
+}
+
+// Shared by every tile's material.
+export const seaWaveUniforms = {
+  seaWavePhase: { value: new Float32Array(WAVE_COUNT) },
+  seaBandSlope: { value: new Float32Array(WAVE_BANDS) },
+  seaWind: { value: new THREE.Vector4(1, 0, 0, 0) },        // xyz: where the wind blows to (renderer frame); w: speed (m/s)
+  seaFoam: { value: new THREE.Vector4(10, 0, 0, 0) },       // x: noise threshold; y: coverage; z: pattern cross-fade
+  seaFoamSlice: { value: [new THREE.Vector3(), new THREE.Vector3()] },
+  seaGust: { value: new THREE.Vector4(0, 0, 0, 0) },        // z: pattern cross-fade
+  seaGustSlice: { value: [new THREE.Vector3(), new THREE.Vector3()] },
+}
+
+// The standard normal quantile (Abramowitz and Stegun 26.2.23), for 0 < p < 1.
+function probit(p) {
+  const q = p < 0.5 ? p : 1 - p
+  const t = Math.sqrt(-2 * Math.log(q))
+  const x = t - (2.515517 + 0.802853 * t + 0.010328 * t * t) / (1 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t)
+  return p < 0.5 ? -x : x
+}
+
+// A whole-lattice offset for pattern number n (so the noise stays seamless across tiles).
+function slice(n, out) {
+  const h = (a) => (Math.imul(n + 1, a) >>> 0) % 1024
+  return out.set(h(0x9e3779b1), h(0x85ebca6b), h(0xc2b2ae35))
+}
+
+/**
+ * Sets the sea state for this frame: simulated time t (s), and the wind at the camera's point on the
+ * sea: `direction` (the way it blows, a unit vector in the planet renderer's frame) and speed (m/s).
+ */
+export function updateSeaWaves(t, direction, speed) {
+  const u = seaWaveUniforms
+  TRAINS.forEach((w, i) => {
+    const p = w.omega * t
+    u.seaWavePhase.value[i] = p - 2 * Math.PI * Math.floor(p / (2 * Math.PI))
+  })
+  const mss = 0.003 + 0.00512 * speed
+  const kp = 0.77 * G / Math.max(speed * speed, 0.25)
+  const weights = Array.from({ length: WAVE_BANDS }, (_, b) => Math.exp(-1.25 * (kp / TRAINS[b * WAVE_DIRECTIONS].bandK) ** 2))
+  const total = weights.reduce((a, b) => a + b, 0)
+  weights.forEach((w, b) => {
+    const swell = b < 2 ? SWELL_SLOPE * SWELL_SLOPE / 2 : 0
+    u.seaBandSlope.value[b] = Math.sqrt(mss * w / total + swell)
+  })
+  u.seaWind.value.set(direction.x, direction.y, direction.z, speed)
+  const coverage = speed > 3.5 ? Math.min(0.2, 3.84e-6 * Math.pow(speed, 3.41)) : 0
+  u.seaFoam.value.set(coverage > 0 ? FOAM_NOISE_SD * probit(1 - coverage) : 10, coverage, 0, 0)
+  for (const [vec, slices, seconds] of [[u.seaFoam.value, u.seaFoamSlice.value, FOAM_SECONDS], [u.seaGust.value, u.seaGustSlice.value, GUST_SECONDS]]) {
+    const n = Math.floor(t / seconds)
+    const f = t / seconds - n
+    slice(n, slices[0])
+    slice(n + 1, slices[1])
+    vec.z = f * f * f * (f * (f * 6 - 15) + 10)
+  }
+}
+
+// The sky's reflection in the sea is full out to the first distance (m) from the camera and falls to
+// SKY_REFLECTION_FAR of it by the second, so that from afar the sea keeps the imagery's colour (and its
+// coastline, drawn from the imagery's coarse pixels, does not stand out).
+const SKY_REFLECTION_RANGE = [4000, 30000]
+const SKY_REFLECTION_FAR = 0.15
+// The same for the sea the sky shader draws near the horizon (atmosphere.frag.glsl), as defines.
+export const SEA_REFLECTION_DEFINES = {
+  SEA_REFLECTION_NEAR: SKY_REFLECTION_RANGE[0].toFixed(1),
+  SEA_REFLECTION_FAR: SKY_REFLECTION_RANGE[1].toFixed(1),
+  SEA_REFLECTION_FAR_SHARE: SKY_REFLECTION_FAR.toFixed(2),
+}
+
+// GLSL for lit materials (after their lights pars chunk, with vViewPosition declared):
+// seaSkyReflection(r), the sky seen in direction r (view space), and seaReflectance(cosine, distance),
+// the share of it the water reflects (Fresnel, with the fade above).
+export const seaSkyReflectionGlsl = `
+// The sky seen from this point in direction r (view space), as the sky is drawn (atmosphereCommon.glsl,
+// with sunAndSkyLight.js's uniforms). Reflections that dip below the horizon (off the back of a wave)
+// see the sky just above it.
+vec3 seaSkyReflection(vec3 r) {
+  if (slParams.x < 0.5 || slParams.y < 0.5) return vec3(0.0);
+  vec3 o = (vec4(-vViewPosition, 0.0) * viewMatrix).xyz;
+  vec3 p = slCamera.xyz + o + slPole.w * dot(o, slPole.xyz) * slPole.xyz;
+  vec3 up = normalize(p);
+  vec3 d = (vec4(r, 0.0) * viewMatrix).xyz;
+  d = normalize(d + max(0.02 - dot(d, up), 0.0) * up);
+  vec3 ds = d + slPole.w * dot(d, slPole.xyz) * slPole.xyz;
+  float top = slParams.z + 100000.0;
+  float t0, t1;
+  if (!atmoRoots(dot(ds, ds), dot(p, ds), dot(p, p) - top * top, t0, t1)) return vec3(0.0);
+  vec3 light, transmittance;
+  atmoScatter(p, ds, d, max(t0, 0.0), t1, slSun, slParams.z, 6, light, transmittance);
+  return 1.0 - exp(-light);
+}
+
+float seaReflectance(float facing, float viewDistance) {
+  return (0.02 + 0.98 * pow(1.0 - clamp(facing, 0.0, 1.0), 5.0))
+    * mix(1.0, ${SKY_REFLECTION_FAR.toFixed(2)}, smoothstep(${SKY_REFLECTION_RANGE[0].toFixed(1)}, ${SKY_REFLECTION_RANGE[1].toFixed(1)}, viewDistance));
+}
+`
+
+const vec3 = (v) => `vec3(${v.x.toFixed(6)}, ${v.y.toFixed(6)}, ${v.z.toFixed(6)})`
+
+// Fractal noise cross-faded between two patterns (sliced by whole-lattice offsets), in about [-1, 1]
+// with the variance kept.
+function slicedFbmGlsl(prefix, n) {
+  return `
+float ${prefix}Sliced(vec3 local, float viewDistance, vec3 slices[2], float fade) {
+  float a = 0.0, b = 0.0, weight = 0.0, amplitude = 1.0;
+  for (int i = 0; i < ${n}; i++) {
+    float wavelengthPixels = 1000.0 / (${prefix}Freq[i] * viewDistance);
+    float visible = smoothstep(2.0, 6.0, wavelengthPixels);
+    vec3 p = ${prefix}Rotation[i] * local * ${prefix}Freq[i] + ${prefix}Offset[i];
+    a += amplitude * visible * (${prefix}Noise(p + slices[0]) * 2.0 - 1.0);
+    b += amplitude * visible * (${prefix}Noise(p + slices[1]) * 2.0 - 1.0);
+    weight += amplitude;
+    amplitude *= 0.6;
+  }
+  return mix(a, b, fade) / (weight * sqrt(fade * fade + (1.0 - fade) * (1.0 - fade)));
+}
+`
+}
+
+// GLSL for the sea surface's fragment shader (needs <common>; declares the per-tile uniforms
+// seaWaveOffset, seaGustOffset, seaFoamOffset and seaGroupOffset).
+export const seaWavesGlsl = `
+uniform float seaWaveOffset[${WAVE_COUNT}];
+uniform float seaWavePhase[${WAVE_COUNT}];
+uniform float seaBandSlope[${WAVE_BANDS}];
+uniform vec4 seaWind;
+uniform vec4 seaFoam;
+uniform vec3 seaFoamSlice[2];
+uniform vec4 seaGust;
+uniform vec3 seaGustSlice[2];
+const vec3 SEA_WAVE_DIR[${WAVE_COUNT}] = vec3[](${TRAINS.map(w => vec3(w.dir)).join(', ')});
+const float SEA_WAVE_K[${WAVE_COUNT}] = float[](${TRAINS.map(w => w.k.toExponential(6)).join(', ')});
+const float SEA_GUSTED_K = ${(2 * Math.PI / GUSTED_WAVELENGTH).toFixed(4)};
+${fbmGlsl('seaGust', GUST_FREQUENCIES)}
+${fbmGlsl('seaFoam', FOAM_FREQUENCIES)}
+${fbmGlsl('seaGroup', GROUP_FREQUENCIES)}
+${slicedFbmGlsl('seaGust', GUST_FREQUENCIES.length)}
+${slicedFbmGlsl('seaFoam', FOAM_FREQUENCIES.length)}
+
+// The gust factor at a point (1 on average): how much rougher than average the short waves are.
+float seaGustFactor(vec3 local, float viewDistance) {
+  return clamp(1.0 + 0.8 * seaGustSliced(local, viewDistance, seaGustSlice, seaGust.z), 0.35, 1.8);
+}
+
+// The waves' slope (the height's gradient along the surface, renderer frame) at a point: local, its
+// tile-local position; up, the surface normal there. unresolved: the slope variance of the waves too
+// fine to draw here.
+vec3 seaWaveSlope(vec3 local, vec3 up, float gust, out float unresolved) {
+  vec3 wind = seaWind.xyz - dot(seaWind.xyz, up) * up;
+  wind /= max(length(wind), 1e-6);
+  // Short waves follow the wind where it gusts (none in a calm).
+  float shortWaves = gust * smoothstep(0.3, 3.0, seaWind.w * gust);
+  vec3 slope = vec3(0.0);
+  unresolved = 0.0;
+  // The smaller side of a pixel on the surface (m): bands whose waves are all well under it are left
+  // out wholesale (their slope variance is the band's, by construction).
+  float pixel = min(length(dFdx(local)), length(dFdy(local)));
+  for (int b = 0; b < ${WAVE_BANDS}; b++) {
+    float gusted = SEA_WAVE_K[b * ${WAVE_DIRECTIONS}] > SEA_GUSTED_K ? shortWaves : 1.0;
+    if (0.6 * SEA_WAVE_K[b * ${WAVE_DIRECTIONS}] * pixel > 2.0) {
+      unresolved += seaBandSlope[b] * seaBandSlope[b] * gusted * gusted;
+      continue;
+    }
+    vec3 along[${WAVE_DIRECTIONS}];
+    float weight[${WAVE_DIRECTIONS}];
+    float sum = 0.0;
+    for (int d = 0; d < ${WAVE_DIRECTIONS}; d++) {
+      int j = b * ${WAVE_DIRECTIONS} + d;
+      vec3 t = SEA_WAVE_DIR[j] - dot(SEA_WAVE_DIR[j], up) * up;   // its projection on the surface
+      float inPlane = dot(t, t);
+      float c = max(dot(t, wind), 0.0) / sqrt(max(inPlane, 1e-6));
+      along[d] = t;
+      weight[d] = (0.3 + c * c) * inPlane;
+      sum += weight[d] * weight[d] * inPlane;
+    }
+    // Two group envelopes, for alternate trains (so no two trains keep the same weight everywhere and
+    // beat into a lattice). Shifted by whole lattice cells, so they stay seamless across tiles.
+    vec3 g = seaGroupRotation[b] * local * seaGroupFreq[b] + seaGroupOffset[b];
+    vec2 group = clamp(1.0 + 1.3 * (vec2(seaGroupNoise(g), seaGroupNoise(g + vec3(17.0, 41.0, 5.0))) * 2.0 - 1.0), 0.25, 2.0);
+    float band = seaBandSlope[b] * gusted * 1.41421 / sqrt(max(sum, 1e-8));
+    for (int d = 0; d < ${WAVE_DIRECTIONS}; d++) {
+      int j = b * ${WAVE_DIRECTIONS} + d;
+      float phase = SEA_WAVE_K[j] * dot(SEA_WAVE_DIR[j], local) + seaWaveOffset[j] - seaWavePhase[j];
+      float amplitude = band * weight[d];                          // slope amplitude, a k
+      float visible = 1.0 - smoothstep(0.5, 1.2, fwidth(phase));   // phase change across a pixel
+      slope += visible * amplitude * group[d - 2 * (d / 2)] * cos(phase) * along[d];
+      // (Without the groups: those of waves too fine to draw are finer still, so they average out.)
+      unresolved += (1.0 - visible) * 0.5 * amplitude * amplitude * dot(along[d], along[d]);
+    }
+  }
+  return slope;
+}
+
+// Whitecap cover (0..1) at a point, given the gust factor; footprint: the size of a pixel there (m).
+float seaWhitecaps(vec3 local, float viewDistance, float gust, float footprint) {
+  if (seaFoam.y <= 0.0) return 0.0;
+  float coverage = clamp(seaFoam.y * gust * gust, 0.0, 0.5);
+  float pattern = smoothstep(seaFoam.x / gust, seaFoam.x / gust + 0.12, seaFoamSliced(local, viewDistance, seaFoamSlice, seaFoam.z));
+  // Too small to see: their average cover.
+  return mix(pattern, coverage, smoothstep(0.5, 3.0, footprint));
+}
+`

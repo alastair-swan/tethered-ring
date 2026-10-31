@@ -53,8 +53,25 @@ void main() {
     atmoScatter(atmoCamera.xyz, ds, d, t0, max(g0, t0), atmoSun, a, VIEW_SAMPLES, groundLight, groundTransmittance);
     groundLight *= atmoParams.y * atmoHazeScale(groundTransmittance);
     vec3 hit = atmoCamera.xyz + ds * g0;
-    float lit = smoothstep(-0.1, 0.1, dot(normalize(hit), atmoSun));
-    gl_FragColor = vec4((1.0 - exp(-groundLight)) + groundTransmittance * GROUND_COLOR * lit, 1.0);
+    vec3 up = normalize(hit);
+    float lit = smoothstep(-0.1, 0.1, dot(up, atmoSun));
+    vec3 sea = GROUND_COLOR * lit;
+  #ifdef SEA_REFLECTION_NEAR
+    // The sea reflects the sky, by Fresnel's law, fading with distance, as the sea surface does
+    // (src/planet/seaWaves.js, seaReflectance), which is most of what it shows near the horizon.
+    vec3 r = reflect(d, up);
+    r = normalize(r + max(0.02 - dot(r, up), 0.0) * up);
+    vec3 rs = r + atmoPole.w * dot(r, atmoPole.xyz) * atmoPole.xyz;
+    float r0, r1;
+    if (atmoRoots(dot(rs, rs), dot(hit, rs), dot(hit, hit) - atmoParams.w * atmoParams.w, r0, r1)) {
+      vec3 skyLight, skyTransmittance;
+      atmoScatter(hit, rs, r, max(r0, 0.0), r1, atmoSun, a, 6, skyLight, skyTransmittance);
+      float fresnel = (0.02 + 0.98 * pow(1.0 - abs(dot(d, up)), 5.0))
+        * mix(1.0, SEA_REFLECTION_FAR_SHARE, smoothstep(SEA_REFLECTION_NEAR, SEA_REFLECTION_FAR, g0));
+      sea = mix(sea, 1.0 - exp(-skyLight), fresnel);
+    }
+  #endif
+    gl_FragColor = vec4((1.0 - exp(-groundLight)) + groundTransmittance * sea, 1.0);
     #include <colorspace_fragment>
     return;
   }

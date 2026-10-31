@@ -4,11 +4,14 @@ import { loadSeaIce, setSeaIceDayOfYear, setSeaIceVisible } from './seaIce.js';
 import atmosphereVertexShader from '../shaders/atmosphere.vert.glsl?raw';
 import atmosphereFragmentShader from '../shaders/atmosphere.frag.glsl?raw';
 import './aerialPerspective.js'; // registers <atmosphere_common>
+import { SEA_REFLECTION_DEFINES, updateSeaWaves } from './seaWaves.js';
 
 // Top of the atmosphere shell above sea level (m), where the sky's scattering stops. High enough that
 // the air left above it would not show: a line of sight grazing the top crosses ~1100 km of air at
 // 4e-6 of sea-level density, under a level of brightness. (At 60 km a grazing line still met ~1%
 // optical depth, and the sky ended in a visible edge.)
+const _seaWind = new THREE.Vector3();
+const _seaQuaternion = new THREE.Quaternion();
 const ATMOSPHERE_HEIGHT = 100000;
 // Exposure of the scattered light (sky and haze): 1 within the air, falling to SPACE_EXPOSURE as the
 // camera climbs from EXPOSURE_FADE[0] to EXPOSURE_FADE[1] above the sea. Within the air the sky fills
@@ -218,7 +221,6 @@ export class Planet {
     this.renderers = new Map();
     this.settings = new Map(); // renderer method -> its last arguments
     this.visible = true;
-    this.sunDirection = null;
     this.lod = this._createRenderer(assetNames);
     // Seasonal sea ice on the Earth's sea surface (seaIce.js; the date is set by setDayOfYear).
     if (bodyKey(planetSpec) === 'earth' && this.rendererOptions.water) loadSeaIce();
@@ -239,7 +241,9 @@ export class Planet {
     this.atmosphere = new THREE.Mesh(
       new THREE.SphereGeometry(1, 256, 128),
       new THREE.ShaderMaterial({
+        // (The sea it draws near the horizon reflects the sky as the sea surface does: seaWaves.js.)
         uniforms: this.atmosphereUniforms,
+        defines: planetSpec.hasOcean === true ? { ...SEA_REFLECTION_DEFINES } : {},
         vertexShader: atmosphereVertexShader,
         fragmentShader: atmosphereFragmentShader,
         side: THREE.BackSide,
@@ -261,6 +265,16 @@ export class Planet {
    * Updates the atmosphere for this frame: camera (world) and the direction to the sun (world).
    * The large terms are computed here in float64 so the shader works with small numbers.
    */
+  /**
+   * The sea's waves for simulated time t (s), in the wind at the camera's point on the sea: the way it
+   * blows (a unit vector, world axes) and its speed (m/s). See seaWaves.js.
+   */
+  updateSea(t, windDirection, windSpeed) {
+    this.lod.group.updateWorldMatrix(true, false);
+    _seaWind.copy(windDirection).applyQuaternion(this.lod.group.getWorldQuaternion(_seaQuaternion).invert()).normalize();
+    updateSeaWaves(t, _seaWind, windSpeed);
+  }
+
   updateAtmosphere(camera, sunDirection) {
     const { a, b } = this.ellipsoid;
     const k = a / b;
@@ -281,8 +295,6 @@ export class Planet {
     const fade = THREE.MathUtils.smoothstep(Math.sqrt(c2) - a, EXPOSURE_FADE[0], EXPOSURE_FADE[1]);
     u.atmoParams.value.y = THREE.MathUtils.lerp(1, SPACE_EXPOSURE, fade);
     u.atmoSun.value.copy(sunDirection).normalize();
-    this.sunDirection = sunDirection;
-    this.lod.setSunDirection(sunDirection);
   }
 
   _createRenderer(assetNames) {
@@ -330,7 +342,6 @@ export class Planet {
     const next = this.renderers.get(name) ?? this._createRenderer(assetNames);
     for (const [method, args] of this.settings) next[method](...args);
     next.sseThreshold = previous.sseThreshold; // (graphics quality sets it directly)
-    if (this.sunDirection) next.setSunDirection(this.sunDirection);
     previous.setEnabled(false);
     previous.group.visible = false;
     next.group.visible = true;

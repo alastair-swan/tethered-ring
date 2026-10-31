@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
-import { fbmGlsl, noiseOffsets, SEA_SURFACE_FREQUENCIES, seaSurfaceLookGlsl } from './seaNoise.js';
+import { fbmGlsl, noiseOffsets } from './seaNoise.js';
+import '../scene/sunAndSkyLight.js'; // registers <sun_and_sky_light>, which the sea surface uses
+import { FOAM_FREQUENCIES, GROUP_FREQUENCIES, GUST_FREQUENCIES, seaSkyReflectionGlsl, seaWaveUniforms, seaWavesGlsl, tileWaveOffsets } from './seaWaves.js';
 import { SEA_ICE_FREQUENCIES, seaIceGlsl, seaIceUniforms } from './seaIce.js';
 import { PixelLOD } from '../scene/PixelLOD.js';
 
@@ -96,7 +98,8 @@ const WGS84_E2 = 2 / 298.257223563 - 1 / (298.257223563 * 298.257223563);
 const DEG2RAD = Math.PI / 180;
 // Sea surface (options.water): opacity of deep water, the depth over which it fades in from the
 // coastline, and its colour before a tile's imagery has loaded.
-const WATER_OPACITY = 0.12; // looking straight into it (more at grazing angles: see seaNoise.js)
+const WATER_OPACITY = 0.12; // looking straight into it (the surface's reflection comes on top: see _createWaterMaterial)
+const WATER_GRAZING_OPACITY = 0.35;
 const WATER_SHALLOWS_DEPTH = 30;
 // Sea ice on the ground fades out over this height above sea level (m; see _configureSeafloor).
 const SEA_ICE_SHORE_HEIGHT = 40;
@@ -108,14 +111,7 @@ const WATER_UNDERSIDE_FROM_ABOVE = [0.015, 0.035, 0.06];
 // Sea floor seen from under the surface (linear RGB), and the depth over which it replaces the imagery.
 const SEAFLOOR_COLOR = [0.30, 0.28, 0.22];
 const SEAFLOOR_BLEND_DEPTH = 20;
-const _daylightQuaternion = new THREE.Quaternion();
 
-// GLSL expression: 0 (night) .. 1 (day) at a point (planet-centred position, any length) for a sun
-// direction, with a soft twilight band around the terminator. (The light itself comes from
-// sunAndSkyLight.js; this is for the sea's reflection of the sky.)
-function daylightGlsl(position, sun) {
-  return `smoothstep(-0.1, 0.06, dot(normalize(${position}), ${sun}))`;
-}
 // Fractal noise on the sea floor: octave frequencies (1/m) and the contrast it adds.
 const SEAFLOOR_FREQS = [1 / 1600, 1 / 400, 1 / 100, 1 / 25];
 const SEAFLOOR_CONTRAST = 0.45;
@@ -459,8 +455,6 @@ export class CubedSpherePlanetRenderer {
     // 0..1: how strongly ground below sea level is drawn as sea floor (see _configureSeafloor). Set
     // while the camera is under the sea surface; shared by every tile material.
     this.seafloorView = { value: 0 };
-    // Direction to the sun in this renderer's (surface) frame, for the sea's reflection of the sky.
-    this.daylightSun = { value: new THREE.Vector3(0, 1, 0) };
     this.textureAnisotropy = Math.max(1, options.textureAnisotropy ?? 4);
     this.displacementScaleMultiplier = Math.max(0, options.displacementScaleMultiplier ?? 1);
     // Startup tracing (console logs, resource-timing scans and the ASCII chart)
@@ -1979,10 +1973,12 @@ roughnessFactor = clamp(roughnessFactor + lunarFade * lunarRoughnessStrength *
     }
   }
 
-  // The sea's underside as seen from above it: opaque deep water (shared by every tile).
+  // The sea's underside as seen from above it (shared by every tile): opaque deep water, with the sky
+  // reflected as a level surface there would reflect it (seaWaves.js), so where it shows through cracks
+  // between tiles near the horizon it matches the surface around it.
   _waterUndersideMaterial() {
     if (this._undersideMaterial) return this._undersideMaterial;
-    const material = new THREE.MeshBasicMaterial({
+    const material = new THREE.MeshLambertMaterial({
       color: new THREE.Color(...WATER_UNDERSIDE_FROM_ABOVE),
       side: THREE.BackSide,
     });
@@ -1996,42 +1992,62 @@ vSeaDepth = seaDepth;`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
 varying float vSeaDepth;`)
+        .replace('#include <lights_lambert_pars_fragment>', `#include <lights_lambert_pars_fragment>
+${seaSkyReflectionGlsl}`)
         .replace('#include <alphatest_fragment>', `if (vSeaDepth <= 0.0) discard; // land
-#include <alphatest_fragment>`);
+#include <alphatest_fragment>`)
+        .replace('#include <opaque_fragment>', `{
+  vec3 view = normalize(vViewPosition);
+  vec3 up = normalize(vNormal);
+  outgoingLight = mix(diffuseColor.rgb, seaSkyReflection(reflect(-view, up)), seaReflectance(abs(dot(up, view)), length(vViewPosition)));
+}
+#include <opaque_fragment>`);
     };
     material.customProgramCacheKey = () => 'seaUndersideFromAbove';
     this._undersideMaterial = material;
     return material;
   }
 
-  // Mostly clear (so the tube and cables show through), more opaque at grazing angles, with fine
-  // ripples (seaNoise.js) that show where the surface is and how far away; tinted by the imagery's
-  // ocean colour and clearer still in the shallows. Where there is sea ice at the simulated date
-  // (seaIce.js), it covers the water: opaque and matte. (Front faces; see _updateTileWater.)
+  // The sea surface (front faces; see _updateTileWater). Two layers, composited over what is under the
+  // surface (the sea floor, and the tube and cables in the water, which show through):
+  // - The water: the imagery's ocean colour, lit, mostly clear (WATER_OPACITY, clearer still in the
+  //   shallows, so the coastline is soft).
+  // - The surface: wind-driven waves (seaWaves.js) that reflect the sky (by Fresnel's law, little when
+  //   looked into and nearly all at grazing angles; the sky by the atmosphere's own model) and glint
+  //   in the sun (Blinn-Phong, as rough as the waves too fine to draw), with whitecaps in strong wind.
+//   Far from the camera the sky's reflection fades (seaWaves.js: seaReflectance); the glint does not.
+  // Since a glint is far brighter than the water's opacity allows in normal blending, the opacity is
+  // raised to at least the brightness, with the colour divided by it: the same result over what is
+  // behind, without clamping. Where there is sea ice at the simulated date (seaIce.js), it covers the
+  // water: opaque, matte and flat.
   _createWaterMaterial(tile) {
     const material = new THREE.MeshPhongMaterial({
       color: tile.texture ? 0xffffff : WATER_FALLBACK_COLOR,
       map: tile.texture ?? null,
-      specular: 0x7d97a8,
-      shininess: 80,
+      specular: new THREE.Color().setRGB(0.02, 0.02, 0.02), // water's reflectance looking straight in (Fresnel F0)
       transparent: true,
       depthWrite: false,
     });
-    const offsets = noiseOffsets(tile.center, SEA_SURFACE_FREQUENCIES);
+    const waveOffsets = tileWaveOffsets(tile.center);
+    const gustOffsets = noiseOffsets(tile.center, GUST_FREQUENCIES);
+    const foamOffsets = noiseOffsets(tile.center, FOAM_FREQUENCIES);
+    const groupOffsets = noiseOffsets(tile.center, GROUP_FREQUENCIES);
     const iceOffsets = noiseOffsets(tile.center, SEA_ICE_FREQUENCIES);
     const invA2 = (1 / (this.a * this.a)).toExponential(10);
     const invB2 = (1 / (this.b * this.b)).toExponential(10);
     material.onBeforeCompile = (shader) => {
-      shader.uniforms.seaRippleOffset = { value: offsets };
+      Object.assign(shader.uniforms, seaWaveUniforms, seaIceUniforms);
+      shader.uniforms.seaWaveOffset = { value: waveOffsets };
+      shader.uniforms.seaGustOffset = { value: gustOffsets };
+      shader.uniforms.seaFoamOffset = { value: foamOffsets };
+      shader.uniforms.seaGroupOffset = { value: groupOffsets };
       shader.uniforms.seaIceOffset = { value: iceOffsets };
-      Object.assign(shader.uniforms, seaIceUniforms);
       shader.uniforms.seaTileCenter = { value: tile.center };
       // The sea's darkening of what is seen through it (seaDarkening.js) is not for the surface itself.
       // It is worked out per vertex from the depth below sea level, and where a tile's edge is pulled
       // onto a coarser neighbour's straight edge, its vertices sag up to tens of metres below the sea's
       // curve: the surface would darken along those edges, fading over one row of triangles.
       shader.uniforms.seaParams = { value: { x: 1, y: 0 } };
-      shader.uniforms.daylightSun = this.daylightSun;
       // Per-pixel normals: on a distant (coarse) tile the vertex normals, interpolated across big flat
       // triangles, are slightly off from cell to cell, and the sharp sun glint turns that into a grid.
       // The normal is instead computed for each pixel from the ellipsoid at its planet position (to
@@ -2055,59 +2071,82 @@ vSeaAxisY = normalMatrix * vec3(0.0, 1.0, 0.0);
 vSeaAxisZ = normalMatrix * vec3(0.0, 0.0, 1.0);`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
-uniform vec3 daylightSun;
 varying float vSeaDepth;
 varying vec3 vSeaLocal;
 varying vec3 vSeaPlanet;
 varying vec3 vSeaAxisX;
 varying vec3 vSeaAxisY;
 varying vec3 vSeaAxisZ;
-${fbmGlsl('seaRipple', SEA_SURFACE_FREQUENCIES)}
 ${fbmGlsl('seaIce', SEA_ICE_FREQUENCIES)}
-${seaSurfaceLookGlsl(WATER_OPACITY)}
 ${seaIceGlsl}
+${seaWavesGlsl}
 
 // Ellipsoid normal at this pixel, in planet axes.
 vec3 seaPlanetNormal() {
   return normalize(vSeaPlanet * vec3(${invA2}, ${invB2}, ${invA2}));
 }
 
-// Ellipsoid normal at this pixel, in view space.
-vec3 seaViewNormal() {
-  vec3 n = seaPlanetNormal();
+// A direction in planet axes, in view space.
+vec3 seaToView(vec3 n) {
   return normalize(n.x * vSeaAxisX + n.y * vSeaAxisY + n.z * vSeaAxisZ);
 }`)
+        .replace('#include <lights_phong_pars_fragment>', `#include <lights_phong_pars_fragment>
+${seaSkyReflectionGlsl}`)
         .replace('#include <alphatest_fragment>', `if (vSeaDepth <= 0.0) discard; // land
 // Where the imagery itself shows land, snow or ice (bright; the ocean in the imagery is very dark),
 // there is no water: the coastline follows the imagery, and coarse distant tiles, whose coastal
 // vertices can dip below sea level, do not dot the shore with blobs of water.
 float seaImageryLand = smoothstep(${WATER_LAND_LUMINANCE[0]}, ${WATER_LAND_LUMINANCE[1]}, dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722)));
 if (seaImageryLand >= 1.0) discard;
+float seaViewDistance = length(vViewPosition);
+// More opaque at grazing angles (judged from the level surface, not the waves), as the water's depth
+// along the line of sight grows; clearer in the shallows.
+float seaWaterAlpha = mix(${WATER_OPACITY.toFixed(3)}, ${WATER_GRAZING_OPACITY.toFixed(3)}, pow(1.0 - abs(dot(seaToView(seaPlanetNormal()), normalize(vViewPosition))), 4.0))
+  * mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed(1)}, 0.0, 1.0));
 float seaIce = 0.0;
 {
-  float viewDistance = length(vViewPosition);
-  float ripple = seaRippleFbm(vSeaLocal, viewDistance);
-  float shine;
-  vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, abs(dot(seaViewNormal(), normalize(vViewPosition))), shine);
-  // Clearer in the shallows, so the coastline is soft.
-  float alpha = shaded.a * mix(0.4, 1.0, clamp(vSeaDepth / ${WATER_SHALLOWS_DEPTH.toFixed(1)}, 0.0, 1.0));
   float concentration = seaIceConcentration(seaPlanetNormal());
   if (concentration > 0.0) {
-    vec4 ice = seaIceLook(concentration, seaIceFbm(vSeaLocal, viewDistance), viewDistance);
+    vec4 ice = seaIceLook(concentration, seaIceFbm(vSeaLocal, seaViewDistance), seaViewDistance);
     seaIce = ice.a;
-    shaded.rgb = mix(shaded.rgb, ice.rgb, seaIce);
-    alpha = mix(alpha, 1.0, seaIce);
-    shine *= 1.0 - seaIce;
+    diffuseColor.rgb = mix(diffuseColor.rgb, ice.rgb, seaIce);
+    seaWaterAlpha = mix(seaWaterAlpha, 1.0, seaIce);
   }
-  diffuseColor.rgb = shaded.rgb;
-  totalEmissiveRadiance += seaSurfaceHighlight * shine * 0.35 * ${daylightGlsl('vSeaPlanet', 'daylightSun')}; // reflected sky (by day)
-  diffuseColor.a = alpha * (1.0 - seaImageryLand);
 }
 #include <alphatest_fragment>`)
         .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
-normal = seaViewNormal();`)
+float seaUnresolved;
+float seaGustNow = seaGustFactor(vSeaLocal, seaViewDistance);
+vec3 seaUp = seaPlanetNormal();
+vec3 seaSlope = seaWaveSlope(vSeaLocal, seaUp, seaGustNow, seaUnresolved);
+normal = seaToView(normalize(seaUp - seaSlope * (1.0 - seaIce)));
+float seaFoamCover = seaWhitecaps(vSeaLocal, seaViewDistance, seaGustNow, length(fwidth(vSeaLocal))) * (1.0 - seaIce);`)
         .replace('#include <lights_phong_fragment>', `#include <lights_phong_fragment>
-material.specularStrength *= 1.0 - seaIce; // ice is matte: no sun glint`);
+material.specularStrength *= 1.0 - seaIce; // ice is matte: no sun glint
+// Blinn-Phong's exponent for the slopes too fine to draw (Beckmann roughness m^2 = their mean square
+// slope), no sharper than the sun's disc allows.
+material.specularShininess = clamp(2.0 / (seaUnresolved + 2e-4) - 2.0, 4.0, 8000.0);`)
+        .replace('#include <opaque_fragment>', `{
+  vec3 view = normalize(vViewPosition);
+  float fresnel = seaReflectance(dot(normal, view), seaViewDistance) * (1.0 - seaIce);
+  vec3 water = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
+  vec3 light = (1.0 - fresnel) * seaWaterAlpha * water + fresnel * seaSkyReflection(reflect(-view, normal)) + reflectedLight.directSpecular;
+  float alpha = (1.0 - fresnel) * seaWaterAlpha + fresnel;
+  if (seaFoamCover > 0.0) {
+    // White water: matte, lit by the sun and sky (sunAndSkyLight.js) and the night light.
+    vec3 irradiance = slSkyDown + ambientLightColor;
+    #if NUM_DIR_LIGHTS > 0
+      irradiance += slDirect * directionalLights[0].color * max(dot(normal, directionalLights[0].direction), 0.0);
+    #endif
+    light = mix(light, 0.75 * RECIPROCAL_PI * irradiance, seaFoamCover);
+    alpha = mix(alpha, 1.0, seaFoamCover);
+  }
+  light *= 1.0 - seaImageryLand;
+  alpha *= 1.0 - seaImageryLand;
+  diffuseColor.a = clamp(max(alpha, max(light.r, max(light.g, light.b))), 1e-4, 1.0);
+  outgoingLight = light / diffuseColor.a;
+}
+#include <opaque_fragment>`);
     };
     material.customProgramCacheKey = () => 'seaSurface';
     return material;
@@ -2184,11 +2223,6 @@ if (seafloorView < 1.0 && vSeafloorAltitude < ${SEA_ICE_SHORE_HEIGHT.toFixed(1)}
     material.customProgramCacheKey = () => (previousKey ? previousKey.call(material) : '') + '|seafloor';
   }
 
-  // Sets the direction to the sun, in world axes (see daylightGlsl).
-  setSunDirection(worldDirection) {
-    this.group.updateWorldMatrix(true, false);
-    this.daylightSun.value.copy(worldDirection).applyQuaternion(this.group.getWorldQuaternion(_daylightQuaternion).invert()).normalize();
-  }
 
   // 1 while the camera is under the sea surface (see _configureSeafloor), 0 otherwise.
   setSeafloorView(amount) {

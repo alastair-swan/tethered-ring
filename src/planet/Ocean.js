@@ -2,6 +2,8 @@ import * as THREE from 'three'
 import { ecefToGeodetic } from '../physics/geodesy.js'
 import { fbmGlsl, noiseOffsets, SEA_SURFACE_FREQUENCIES, seaSurfaceLookGlsl } from './seaNoise.js'
 import { SeaDarkening } from './seaDarkening.js'
+import { seaSkyReflectionGlsl } from './seaWaves.js'
+import '../scene/sunAndSkyLight.js' // registers <sun_and_sky_light>, which seaSkyReflectionGlsl uses
 import { WaterFog } from './waterFog.js'
 
 // The sea, as seen from in it: the underside of the water surface, and an underwater look (fog in the
@@ -59,8 +61,9 @@ export class Ocean {
 
     const geometry = discGeometry()
     // Seen from below (back faces), lit by the daylight coming through it rather than shaded: mostly
-    // clear, more opaque at grazing angles, with the same ripples as the surface seen from above.
-    this.material = new THREE.MeshBasicMaterial({
+    // clear, more opaque at grazing angles, with the same ripples as the surface seen from above. (A
+    // lit material only for the sky's uniforms, used from above: its colour is not shaded.)
+    this.material = new THREE.MeshLambertMaterial({
       color: UNDERSIDE_COLOR, transparent: true, depthWrite: false, side: THREE.BackSide,
     })
     this.rippleOffsets = noiseOffsets(new THREE.Vector3(), SEA_SURFACE_FREQUENCIES)
@@ -96,6 +99,17 @@ else {
   diffuseColor.a = shaded.a;
 }
 #include <alphatest_fragment>`)
+        .replace('#include <lights_lambert_pars_fragment>', `#include <lights_lambert_pars_fragment>
+${seaSkyReflectionGlsl}`)
+        // Unlit. From above, the backstop shows what the surface there would: deep water reflecting the
+        // sky, as the sea surface does (seaWaves.js), most of all near the horizon.
+        .replace('#include <opaque_fragment>', `outgoingLight = diffuseColor.rgb;
+if (seaUndersideOpaque > 0.5) {
+  vec3 view = normalize(vSeaView);
+  vec3 up = normalize(vSeaNormal);
+  outgoingLight = mix(outgoingLight, seaSkyReflection(reflect(-view, up)), seaReflectance(abs(dot(up, view)), length(vSeaView)));
+}
+#include <opaque_fragment>`)
     }
     this.material.customProgramCacheKey = () => 'seaUnderside'
     this.mesh = new THREE.Mesh(geometry, this.material)

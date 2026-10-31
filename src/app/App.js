@@ -21,7 +21,7 @@ import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
 import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
 import { Sailboats } from '../scene/Sailboats.js'
-import { setWeatherDate } from '../scene/seaPlacement.js'
+import { setWeatherDate, windAt } from '../scene/seaPlacement.js'
 import { ContainerShips } from '../scene/ContainerShips.js'
 
 // The Earth's global tile sets the A/B control switches between (folders under assets/; see docs/ASSETS.md).
@@ -58,6 +58,8 @@ const TUBE_DEPLOY_RATE = 0.0025 // fraction per second
 //   shots.tick() (the shot playhead moves the clock) -> step(dt): advance animations at clock.time -> render()
 // Recording and shot playback drive step()/render() themselves with a fixed time step.
 const _sunDirection = new THREE.Vector3()
+const _seaCamera = new THREE.Vector3()
+const _seaWind = new THREE.Vector3()
 const _sunPlanet = new THREE.Vector3()
 const _sunWorld = new THREE.Vector3()
 const _sunTarget = new THREE.Vector3()
@@ -693,6 +695,7 @@ export class App {
     this.camera.playbackActive = this.shots.drivesCamera || googleEarthDrives
     this.camera.update(t, dt)
     this.planet.update(this.camera3d)
+    this.updateSea(t)
     this.sailboats?.update(t, this.camera3d)
     this.containerShips?.update(t, this.camera3d)
     this.updateLauncherTraffic()
@@ -735,6 +738,25 @@ export class App {
     if (autoDay) this.store.set('sunDayOfYear', chosen.dayOfYear)
     if (autoTime) this.store.set('sunTimeOfDayUTC', Math.round(chosen.utcHours * 100) / 100)
     this.store.derive()
+  }
+
+  // The sea's waves (Planet.updateSea) in the wind at the camera's point on the sea, the same wind the
+  // boats sail in (seaPlacement.windAt).
+  updateSea(t) {
+    if (!this.planetSpec.hasOcean) return
+    const p = this.planetCoordSys.worldToLocal(this.camera3d.getWorldPosition(_seaCamera))
+    const g = tram.ecefToGeodetic(p.x, p.y, p.z, this.planetSpec.ellipsoid)
+    const wind = windAt(g.lat, g.lon)
+    // East and north there, from nearby points (planet axes).
+    const at = (lat, lon) => { const q = tram.geodeticToECEF(lat, lon, 0, this.planetSpec.ellipsoid); return new THREE.Vector3(q.x, q.y, q.z) }
+    const here = at(g.lat, g.lon)
+    const east = at(g.lat, g.lon + 1e-3).sub(here).normalize()
+    const north = at(g.lat + 1e-3, g.lon).sub(here).normalize()
+    _seaWind.copy(east).multiplyScalar(wind.east).addScaledVector(north, wind.north)
+    if (_seaWind.lengthSq() < 1e-12) _seaWind.copy(east)
+    this.planetCoordSys.updateWorldMatrix(true, false)
+    _seaWind.transformDirection(this.planetCoordSys.matrixWorld)
+    this.planet.updateSea(t, _seaWind, wind.speed)
   }
 
   // Ships around the launcher, where the scenes look (ContainerShips.setLauncherTraffic), whenever the
