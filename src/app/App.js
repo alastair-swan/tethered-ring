@@ -21,6 +21,7 @@ import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
 import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
 import { Sailboats } from '../scene/Sailboats.js'
+import { setWeatherDate } from '../scene/seaPlacement.js'
 import { ContainerShips } from '../scene/ContainerShips.js'
 
 // The Earth's global tile sets the A/B control switches between (folders under assets/; see docs/ASSETS.md).
@@ -749,8 +750,14 @@ export class App {
     this.containerShips.setLauncherTraffic(track)
   }
 
-  // Sun direction (and the season, for sea ice) for the start date plus the simulated time.
+  // Sun direction (and the season, for sea ice) for the start date plus the simulated time. The wind on
+  // the sea is the weather at the start date (seaPlacement.setWeatherDate).
   updateSun() {
+    const startDay = Math.max(1, this.store.get('sunDayOfYear')), startHours = Math.max(0, this.store.get('sunTimeOfDayUTC'))
+    if (setWeatherDate(startDay, startHours)) {
+      this.sailboats?.resetWeather()
+      this.containerShips?.resetWeather()
+    }
     const date = advanceDate(Math.max(1, this.store.get('sunDayOfYear')), Math.max(0, this.store.get('sunTimeOfDayUTC')), this.clock.time)
     this.planet.setDayOfYear(date.dayOfYear + date.utcHours / 24)
     if (!this.sunFollowsDate) return

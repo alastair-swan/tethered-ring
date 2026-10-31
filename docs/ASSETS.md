@@ -270,6 +270,30 @@ POSIX shells:
 
 Not done: ice on lakes, land snow (Blue Marble shows April's), and the ice as seen from under the water.
 
+### Surface wind climatology (`src/physics/windClimatology.data.js`)
+
+`tools/sources/build_wind.py` builds a monthly climatology of the 10 m wind from the NCEP/NCAR Reanalysis 1
+6-hourly winds (T62 Gaussian grid, ~1.9 degrees) for 2022-2023, downloaded once from NOAA PSL into
+`additional_earth_imagery/wind/ncep/` (about 200 MB, no login needed). For each calendar month and 5-degree
+grid node it keeps the mean wind, its daily cycle (first harmonic in UTC hours) and the RMS of the weather
+about them, as a 300 KB generated module committed to the repository (not an LFS asset: it is small, and
+the vessels need it as soon as they are placed). `src/physics/wind.js` interpolates it and adds
+procedural weather (see there). Needs `netCDF4` in `.venv`.
+
+PowerShell:
+
+```powershell
+uv pip install --python .venv\Scripts\python.exe netCDF4
+.venv\Scripts\python -m tools.sources.build_wind
+```
+
+POSIX shells:
+
+```sh
+uv pip install --python .venv/bin/python netCDF4
+.venv/bin/python -m tools.sources.build_wind
+```
+
 ### Credits and licences
 
 | Source | Credit | Licence |
@@ -278,6 +302,7 @@ Not done: ice on lakes, land snow (Blue Marble shows April's), and the ice as se
 | GMTED2010 | U.S. Geological Survey, Global Multi-resolution Terrain Elevation Data 2010 | Public domain (USGS) |
 | GEBCO 2026 | GEBCO Compilation Group (2026) GEBCO 2026 Grid (doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa) | UK Open Government Licence v3.0 (CEDA); GEBCO's own terms (`GEBCO_Grid_terms_of_use.pdf` in the zip) place the grid in the public domain. Either way: acknowledge the source with the citation, do not suggest GEBCO endorses the use, and not for navigation |
 | Sea ice | National Snow and Ice Data Center, Sea Ice Index, Version 4 (G02135) | NSIDC's data are free to use with citation of the data set (see its documentation at nsidc.org/data/g02135) |
+| Surface wind | NCEP/NCAR Reanalysis 1, NOAA PSL, Boulder, Colorado (Kalnay et al., 1996, Bull. Amer. Meteor. Soc. 77, 437-470) | NOAA data, free to use; PSL asks that it be acknowledged as "NCEP-NCAR Reanalysis 1 data provided by the NOAA PSL, Boulder, Colorado, USA, from their website at https://psl.noaa.gov" |
 | New Zealand imagery and DEM | Sourced from the LINZ Data Service: New Zealand 10m Satellite Imagery (2022-2023), NZ 8m Digital Elevation Model (2012) | CC BY 4.0 (attribution: "Toitū Te Whenua Land Information New Zealand") |
 | Hawaii imagery (XHR) | Esri World Imagery (Esri, Maxar, Earthstar Geographics and the GIS user community) | Esri's terms of use: it may be displayed with attribution, but not redistributed as data. Do not publish the raw images or COGs; check the terms before shipping tiles baked from them |
 | Hawaii terrain | Copernicus DEM GLO-30, © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA | Copernicus DEM licence (free, attribution required) |

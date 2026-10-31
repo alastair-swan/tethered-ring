@@ -228,7 +228,7 @@ export class ContainerShips {
     this.geometries = new Map()
     this.hullMaterials = new Map()
     this.lanes = shipping.lanes.map((lane, i) => this._lane(lane, i))
-    this.anchorages = shipping.anchorages.map((a) => ({ ...a, ships: null, building: false, count: a.ships }))
+    this.anchorages = shipping.anchorages.map((a) => ({ ...a, ships: null, building: null, count: a.ships }))
     this.lastOrigin = null
     new OBJLoader().loadAsync(url).then((object) => {
       const parts = {}
@@ -367,7 +367,7 @@ export class ContainerShips {
       const h = await this._height(lat1, lon1)
       if (this.localKey !== key) return
       if (h === null || h > -LOCAL_DEPTH) continue
-      this.anchorages.push({ name: 'launcher start', lat: lat1, lon: lon1, radiusKm: 0.3, count: 1, ships: null, building: false, local: true, seed: seed + 1 })
+      this.anchorages.push({ name: 'launcher start', lat: lat1, lon: lon1, radiusKm: 0.3, count: 1, ships: null, building: null, local: true, seed: seed + 1 })
       return
     }
   }
@@ -437,7 +437,7 @@ export class ContainerShips {
       }
     }
     if (!spot || this.localKey !== key) return
-    this.anchorages.push({ name: 'local', lat: spot[0], lon: spot[1], radiusKm: 3, count: 3, ships: null, building: false, local: true, seed })
+    this.anchorages.push({ name: 'local', lat: spot[0], lon: spot[1], radiusKm: 3, count: 3, ships: null, building: null, local: true, seed })
     for (const length of LOCAL_LANES) {
       for (let k = 0; k < 8; k++) {
         const bearing = turn + k * Math.PI / 8
@@ -482,7 +482,16 @@ export class ContainerShips {
 
   // --- Anchorages -----------------------------------------------------------------------------
 
+  /** Re-anchors the ships in the new weather (seaPlacement.setWeatherDate): they lie to the wind. */
+  resetWeather() {
+    for (const anchorage of this.anchorages) {
+      anchorage.ships = null
+      anchorage.building = null
+    }
+  }
+
   async _buildAnchorage(anchorage, index) {
+    const build = anchorage.building = {}
     const r = random(anchorage.seed ?? hash(index, 9))
     const wind = windAt(anchorage.lat, anchorage.lon)
     const ships = []
@@ -511,7 +520,10 @@ export class ContainerShips {
         ships.push({ id: `anchor${anchorage.seed ?? index}:cutter`, lat, lon, heading: wind.from + (r() - 0.5) * 0.6, kind: 'cutter', service: 'coastGuard' })
       }
     }
-    anchorage.ships = ships
+    if (anchorage.building === build) { // (not if resetWeather has been called since)
+      anchorage.ships = ships
+      anchorage.building = null
+    }
   }
 
   async _height(lat, lon) {
@@ -646,7 +658,6 @@ if (vShipModelY < -0.02) diffuseColor.rgb = vec3(${red.r.toFixed(4)}, ${red.g.to
         const within = unitVector(anchorage.lat, anchorage.lon, _q).dot(here) > Math.cos((radius + anchorage.radiusKm * 1000) / EARTH_RADIUS)
         if (!within) return
         if (!anchorage.ships && !anchorage.building) {
-          anchorage.building = true
           this._buildAnchorage(anchorage, index).catch((error) => console.warn('[ships]', error))
         }
         for (const ship of anchorage.ships ?? []) {

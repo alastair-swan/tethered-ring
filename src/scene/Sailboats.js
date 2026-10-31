@@ -18,7 +18,7 @@ import { hash, offsetLatLon, pickWeighted, random, vesselBasis, windAt } from '.
 //    classified from the terrain heights of a fixed tile (Planet.fixedHeightSampler: the deepest tile
 //    covering it, down to HEIGHT_LOD, not whatever is loaded for display): it needs MIN_DEPTH of water,
 //    and is near the shore if there is land within NEAR_SHORE, mid-distance within MID_SHORE.
-//  - The wind is uniform over 3-degree cells (seaPlacement.windAt).
+//  - The wind is the day's weather at the boat (seaPlacement.windAt).
 //  - A sailing boat sails a "racetrack": a straight leg on a reach, a turn, the reciprocal leg, and a
 //    turn back, at speeds from a simple polar for each leg's angle to the wind (capped at its hull
 //    speed). A boat with a spinnaker flies it when the wind is well aft of the beam (and furls its jib).
@@ -393,6 +393,11 @@ export class Sailboats {
     if (this.cells.size > 4 * keep.size + 1000) {
       for (const key of [...this.cells.keys()]) if (!keep.has(key)) this.cells.delete(key)
     }
+  }
+
+  /** Forgets the boats placed so far (they are placed again, in the new weather: seaPlacement.setWeatherDate). */
+  resetWeather() {
+    this.cells.clear()
   }
 
   /** Places the boats for simulated time t (s) as seen from `camera`. */
