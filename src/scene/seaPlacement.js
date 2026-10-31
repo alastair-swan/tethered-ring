@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { windAt as windAtDate } from '../physics/wind.js'
+import { seaWindAt } from '../physics/weather.js'
 
 // Shared by the things placed on the sea (Sailboats.js, ContainerShips.js): deterministic random numbers
 // (so recorded shots show the same things on every machine), the wind, and how a vessel sits at a place.
@@ -34,7 +34,7 @@ export function pickWeighted(list, r) {
   return list[list.length - 1][0]
 }
 
-// The wind on the sea (src/physics/wind.js), at the weather date: the simulation's starting date and
+// The wind on the sea (src/physics/weather.js: the wind, stronger in squalls), at the weather date: the simulation's starting date and
 // time (App sets it from the sun parameters). Vessels plan their courses from it when they are placed,
 // so it does not change with the simulated time; the sea's waves use the same wind. `from` is the
 // direction it blows from (radians clockwise from north).
@@ -48,7 +48,7 @@ export function setWeatherDate(dayOfYear, utcHours) {
 }
 
 export function windAt(lat, lon) {
-  return windAtDate(lat, lon, weatherDate.dayOfYear, weatherDate.utcHours)
+  return seaWindAt(lat, lon, weatherDate.dayOfYear, weatherDate.utcHours)
 }
 
 // The point `east` and `north` metres from (lat, lon) along the surface (small offsets).

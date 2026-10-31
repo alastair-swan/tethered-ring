@@ -43,36 +43,40 @@ FIELDS = ['u', 'v', 'uCos', 'uSin', 'vCos', 'vSin', 'sigma']
 SCALE = 0.125  # m/s per step (int8: +-15.9 m/s)
 
 
+def fetch_file(url: str, path: Path) -> Path:
+    """Downloads url to path once (resuming: the server drops long transfers now and then, sometimes
+    without an error, so the partial file is resumed with HTTP Range until it has the whole length)."""
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix('.part')
+    total = None
+    for attempt in range(20):
+        have = tmp.stat().st_size if tmp.exists() else 0
+        if total is not None and have >= total:
+            break
+        request = urllib.request.Request(url, headers={'Range': f'bytes={have}-'} if have else {})
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                if response.status == 206:
+                    total = int(response.headers['Content-Range'].rsplit('/', 1)[1])
+                else:
+                    have = 0
+                    total = int(response.headers['Content-Length'])
+                with tmp.open('ab' if have else 'wb') as out:
+                    while chunk := response.read(1 << 20):
+                        out.write(chunk)
+        except (OSError, http.client.HTTPException):
+            time.sleep(2 ** min(attempt + 1, 4))
+    if total is None or tmp.stat().st_size != total:
+        raise RuntimeError(f'could not download {url}')
+    tmp.replace(path)
+    return path
+
+
 def download(component: str, year: int) -> Path:
     name = f'{component}.10m.gauss.{year}.nc'
-    path = DOWNLOADS / name
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # The server drops long transfers now and then, sometimes without an error: resume the partial
-        # file (HTTP Range) until it has the whole length.
-        tmp = path.with_suffix('.part')
-        total = None
-        for attempt in range(20):
-            have = tmp.stat().st_size if tmp.exists() else 0
-            if total is not None and have >= total:
-                break
-            request = urllib.request.Request(f'{BASE_URL}/{name}', headers={'Range': f'bytes={have}-'} if have else {})
-            try:
-                with urllib.request.urlopen(request, timeout=300) as response:
-                    if response.status == 206:
-                        total = int(response.headers['Content-Range'].rsplit('/', 1)[1])
-                    else:
-                        have = 0
-                        total = int(response.headers['Content-Length'])
-                    with tmp.open('ab' if have else 'wb') as out:
-                        while chunk := response.read(1 << 20):
-                            out.write(chunk)
-            except (OSError, http.client.HTTPException):
-                time.sleep(2 ** min(attempt + 1, 4))
-        if total is None or tmp.stat().st_size != total:
-            raise RuntimeError(f'could not download {name}')
-        tmp.replace(path)
-    return path
+    return fetch_file(f'{BASE_URL}/{name}', DOWNLOADS / name)
 
 
 def load(component: str):

@@ -294,6 +294,30 @@ uv pip install --python .venv/bin/python netCDF4
 .venv/bin/python -m tools.sources.build_wind
 ```
 
+### Weather climatology (`src/physics/weatherClimatology.data.js`)
+
+`tools/sources/build_weather.py` builds the climatology the clouds, rain and haze are drawn from, from the same
+NCEP/NCAR Reanalysis 1 6-hourly fields (2022-2023, downloaded once from NOAA PSL into
+`additional_earth_imagery/weather/ncep/`, about 650 MB): total cloud cover, the low and high cloud layers'
+base and top pressures, precipitation and its convective part, and the humidity, temperature and pressure
+near the surface. For each calendar month and 5-degree grid node it keeps the cloud cover (mean, spread and
+daily cycle), the low cloud's base and top and the high cloud's frequency and base (heights by the standard
+atmosphere), how often and how hard it rains and the convective share, and the relative humidity (mean and
+spread), as a 550 KB generated module. `src/physics/weather.js` turns it into the weather at a place and date
+with the wind's lows and highs (`src/physics/weatherNoise.js`).
+
+PowerShell:
+
+```powershell
+.venv\Scripts\python -m tools.sources.build_weather
+```
+
+POSIX shells:
+
+```sh
+.venv/bin/python -m tools.sources.build_weather
+```
+
 ### Credits and licences
 
 | Source | Credit | Licence |
@@ -302,7 +326,7 @@ uv pip install --python .venv/bin/python netCDF4
 | GMTED2010 | U.S. Geological Survey, Global Multi-resolution Terrain Elevation Data 2010 | Public domain (USGS) |
 | GEBCO 2026 | GEBCO Compilation Group (2026) GEBCO 2026 Grid (doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa) | UK Open Government Licence v3.0 (CEDA); GEBCO's own terms (`GEBCO_Grid_terms_of_use.pdf` in the zip) place the grid in the public domain. Either way: acknowledge the source with the citation, do not suggest GEBCO endorses the use, and not for navigation |
 | Sea ice | National Snow and Ice Data Center, Sea Ice Index, Version 4 (G02135) | NSIDC's data are free to use with citation of the data set (see its documentation at nsidc.org/data/g02135) |
-| Surface wind | NCEP/NCAR Reanalysis 1, NOAA PSL, Boulder, Colorado (Kalnay et al., 1996, Bull. Amer. Meteor. Soc. 77, 437-470) | NOAA data, free to use; PSL asks that it be acknowledged as "NCEP-NCAR Reanalysis 1 data provided by the NOAA PSL, Boulder, Colorado, USA, from their website at https://psl.noaa.gov" |
+| Surface wind and weather | NCEP/NCAR Reanalysis 1, NOAA PSL, Boulder, Colorado (Kalnay et al., 1996, Bull. Amer. Meteor. Soc. 77, 437-470) | NOAA data, free to use; PSL asks that it be acknowledged as "NCEP-NCAR Reanalysis 1 data provided by the NOAA PSL, Boulder, Colorado, USA, from their website at https://psl.noaa.gov" |
 | New Zealand imagery and DEM | Sourced from the LINZ Data Service: New Zealand 10m Satellite Imagery (2022-2023), NZ 8m Digital Elevation Model (2012) | CC BY 4.0 (attribution: "Toitū Te Whenua Land Information New Zealand") |
 | Hawaii imagery (XHR) | Esri World Imagery (Esri, Maxar, Earthstar Geographics and the GIS user community) | Esri's terms of use: it may be displayed with attribution, but not redistributed as data. Do not publish the raw images or COGs; check the terms before shipping tiles baked from them |
 | Hawaii terrain | Copernicus DEM GLO-30, © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA | Copernicus DEM licence (free, attribution required) |
