@@ -234,6 +234,8 @@ The render queue (`src/shots/RenderQueue.js`: the data and its pure operations, 
   - From space it is the limb glow; from inside it is the sky. There is no switch-over between the two.
   - Like the sea fog, it is solved against the ellipsoid relative to the camera, with the large terms in float64 (`Planet.updateAtmosphere`).
 
+**View status.** A readout in the bottom-right corner (`src/ui/ViewStatus.js`, **Rendering → showViewStatus**) shows the camera's latitude, longitude, altitude, heading, pitch and field of view and the simulated time; its Copy view button copies a link (`?preset=…&view=…`) holding the preset, the simulated time, the camera in the planet's frame and every parameter changed from the preset's, which reopens exactly that view, paused at that moment. It is for reporting and reproducing what is seen; it is page HTML, so it is never recorded.
+
 ## Weather and clouds
 
 - **Weather.** `src/physics/weather.js` gives the weather at any place and date: cloud cover, the low and high cloud layers' heights, rain and its convective share, and humidity, from a reanalysis climatology (`tools/sources/build_weather.py`; see docs/ASSETS.md) moved by the procedural lows and highs that also turn the wind (`src/physics/weatherNoise.js`). It is a pure function of place and date, so shots repeat. Squalls under heavy showers strengthen the wind on the sea (`seaWindAt`), which the boats and waves use.

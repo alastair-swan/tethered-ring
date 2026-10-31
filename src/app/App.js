@@ -23,6 +23,7 @@ import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
 import { Sailboats } from '../scene/Sailboats.js'
 import { Clouds } from '../planet/clouds/Clouds.js'
+import { ViewStatus, applyViewState } from '../ui/ViewStatus.js'
 import { setWeatherDate, windAt } from '../scene/seaPlacement.js'
 import { ContainerShips } from '../scene/ContainerShips.js'
 import { OceanTerminal } from '../launcher/OceanTerminal.js'
@@ -70,7 +71,8 @@ const _sunWorld = new THREE.Vector3()
 const _sunTarget = new THREE.Vector3()
 
 export class App {
-  constructor(container, { presetId, enableVR = false, quality, antialias = true } = {}) {
+  constructor(container, { presetId, enableVR = false, quality, antialias = true, view = null } = {}) {
+    this.initialView = view
     this.container = container
     this.enableVR = enableVR
     this.antialias = antialias
@@ -108,6 +110,9 @@ export class App {
     this.installInput()
     this.quality.apply()
     window.addEventListener('resize', () => this.onResize())
+    this.viewStatus = new ViewStatus(this, this.presetParameters)
+    this.viewStatus.setVisible(this.d.showViewStatus.value)
+    if (this.initialView) applyViewState(this, this.initialView)
     await this.shots.resumePendingShot()
     return this
   }
@@ -117,6 +122,8 @@ export class App {
     this.store = new ParameterStore(createParameterDefinitions())
     this.preset = applyPreset(this.presetId, this.store.definitions, this.nonGUIParams)
     this.store.derive()
+    // The parameters as the preset left them, for the view status's list of changes (src/ui/ViewStatus.js).
+    this.presetParameters = this.store.snapshot()
     this.planetSpec = tram.getPlanetSpec(this.store.get('planetName'))
     this.planetRadius = tram.radiusAtLatitude(0, this.planetSpec.ellipsoid)
     this.isLunarSimulation = this.store.get('planetName') === 'Moon'
@@ -523,6 +530,7 @@ export class App {
       adjustSeaIce: visibility((p) => this.planet.setSeaIceVisible(p.showSeaIce.value)),
       adjustSailboats: visibility((p) => this.sailboats?.setVisible(p.showSailboats.value)),
       adjustClouds: visibility((p) => { if (this.clouds) this.clouds.enabled = p.showClouds.value }),
+      adjustViewStatus: visibility((p) => this.viewStatus?.setVisible(p.showViewStatus.value)),
       adjustContainerShips: visibility((p) => this.containerShips?.setVisible(p.showContainerShips.value)),
       adjustOceanTerminal: visibility((p) => this.oceanTerminal?.setVisible(p.showLauncherOceanTerminal.value)),
       adjustEarthAtmosphereVisibility: visibility((p) => this.planet.setAtmosphereVisible(p.showEarthsAtmosphere.value)),
@@ -852,6 +860,7 @@ export class App {
 
   render() {
     const renderer = this.renderer
+    this.viewStatus?.update(performance.now())
     this.shots.overlay.update(this.camera3d)
     PixelLOD.beginFrame(renderer.info.render.frame)
     InstancedProxyPool.syncAll(this.camera3d, PixelLOD.viewportHeight)

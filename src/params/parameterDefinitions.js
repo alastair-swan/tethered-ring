@@ -552,6 +552,8 @@ export function createParameterDefinitions() {
   showOcean: {value: true, units: '', autoMap: true, onChange: 'adjustOcean', folder: 'Rendering'},
   // Clouds and rain from the weather at the simulated date (see src/planet/clouds/Clouds.js).
   showClouds: {value: true, units: '', autoMap: true, onChange: 'adjustClouds', folder: 'Rendering'},
+  // The camera readout with a Copy view link, bottom right (see src/ui/ViewStatus.js; never recorded).
+  showViewStatus: {value: true, units: '', autoMap: true, onChange: 'adjustViewStatus', folder: 'Rendering'},
   // Seasonal sea ice on the sea surface, for the simulated date (see src/planet/seaIce.js).
   showSeaIce: {value: true, units: '', autoMap: true, onChange: 'adjustSeaIce', folder: 'Rendering'},
   // Sailboats near the camera, at anchor and sailing, for scale (see src/scene/Sailboats.js).
