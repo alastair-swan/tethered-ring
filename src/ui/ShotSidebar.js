@@ -6,6 +6,7 @@ import { SUPERSAMPLE_FACTORS } from '../capture/Supersampler.js'
 import { ANCHOR_KINDS } from '../shots/Anchors.js'
 import { isWorldAnchor, WORLD_ANCHOR, ANCHOR_ORIENTS } from '../shots/ShotFormat.js'
 import { PLAYBACK_SPEEDS } from '../shots/ShotController.js'
+import { formatDuration } from '../shots/RenderQueueRunner.js'
 import { Timeline } from './Timeline.js'
 
 const STORAGE_KEY = 'tetheredRing.shotSidebar'
@@ -95,12 +96,14 @@ export class ShotSidebar {
     this.syncs = []
     this.build()
     this.shots.subscribe((kind) => this.onChange(kind))
+    this.shots.queue.subscribe((kind) => this.onQueueChange(kind))
     app.renderer.domElement.addEventListener('pointerdown', () => {
       if (this.shots.drivesCamera && this.shots.mode === 'idle') this.shots.setStatus('This is the shot camera\'s view. Switch to the free view (B) to move the camera.')
     })
     this.onChange('shot')
     this.onChange('mode')
     this.onChange('status')
+    this.rebuildQueue()
     const loop = () => {
       this.updateLive()
       requestAnimationFrame(loop)
@@ -203,7 +206,8 @@ export class ShotSidebar {
       this.buildViewSection(),
       this.buildKeyframeSection(),
       this.buildShotSection(),
-      this.buildExportSection())
+      this.buildExportSection(),
+      this.buildQueueSection())
     this.statusLine = el('div', { class: 'ss-status' })
     this.root.append(header, this.body, this.statusLine)
     document.body.append(this.root, this.tab)
@@ -539,6 +543,141 @@ export class ShotSidebar {
       isRecordingSupported() ? null : el('div', { class: 'ss-hint', textContent: 'This browser has no WebCodecs video encoder, so videos cannot be rendered here. Shots can still be made, previewed and exported.' }),
       this.renderButton,
       el('div', { class: 'ss-line' }, this.liveButton, this.checkbox('Encode the live take', () => s.prefs.encodeLiveTake, (v) => { s.prefs.encodeLiveTake = v })))
+  }
+
+  // The render queue: shots (with their own output settings) rendered one after another, unattended.
+  buildQueueSection() {
+    const q = this.shots.queue
+    this.queueList = el('div', { class: 'ss-queue' })
+    this.queueSummary = el('div', { class: 'ss-sub' })
+    this.queueProgress = el('div', { class: 'ss-queue-progress' })
+    this.queueFolder = el('span', { class: 'ss-grow ss-queue-folder' })
+    this.queueStart = this.button('▶ Render the queue', () => (q.running ? q.stop() : q.start()), { cls: 'ss-wide ss-primary', title: 'Render every waiting shot, one after another, and save each video. The page reloads between shots (each shot\'s preset and scene are set up afresh).' })
+    this.queueContinue = this.button('Continue (allow folder access)', () => q.continueRun(), { cls: 'ss-wide ss-primary', title: 'The browser needs your permission again to save into the output folder' })
+    this.queueLog = el('pre', { class: 'ss-queue-log' })
+    const folderRow = q.supportsFolders
+      ? this.row('Save videos in', this.queueFolder,
+        this.button('Choose…', () => q.chooseFolder(), { title: 'Choose the folder the videos are saved in (no dialog per video)' }))
+      : el('div', { class: 'ss-hint', textContent: 'Each video is downloaded when it is finished (this browser cannot write into a folder; Chrome and Edge can). The browser may ask once whether the page can download several files.' })
+    return this.section('queue', 'Render queue', false,
+      el('div', { class: 'ss-line' },
+        this.button('+ This shot', () => q.addCurrentShot(), { title: 'Add a copy of the current shot (with its output settings and the scene as it is now) to the queue', cls: 'ss-grow' }),
+        this.button('+ Shot files…', () => q.chooseFiles(), { title: 'Add .shot.json files (or the shots of a .queue.json file)', cls: 'ss-grow' })),
+      this.queueList,
+      this.queueSummary,
+      folderRow,
+      this.checkbox('Fresh page for every shot', () => q.run.freshPage, (v) => { q.run.freshPage = v; q.save() }, { title: 'Reload the page before each shot, so each starts from a freshly built scene with fresh memory (otherwise the page only reloads to change preset)' }),
+      this.queueStart,
+      this.queueContinue,
+      this.queueProgress,
+      el('div', { class: 'ss-line' },
+        this.button('Clear finished', () => q.clearFinished(), { title: 'Remove the shots that are done or failed' }),
+        this.button('Export queue…', () => q.exportQueue(), { title: 'Save the queue as a .queue.json file, to render it from the command line (npm run render) or on another computer' })),
+      el('details', { class: 'ss-queue-details' }, el('summary', { textContent: 'Log' }), this.queueLog),
+      el('div', { class: 'ss-hint', textContent: 'Rendering runs best with this tab visible and the computer kept awake. For long unattended runs, npm run render renders an exported queue headless (see the README).' }))
+  }
+
+  onQueueChange(kind) {
+    if (kind === 'progress') { this.updateQueueProgress(); return }
+    if (this._queueFrame) return
+    this._queueFrame = requestAnimationFrame(() => {
+      this._queueFrame = null
+      this.rebuildQueue()
+    })
+  }
+
+  queueItemText(item) {
+    const o = item.shot.output
+    const ss = (o.supersample ?? 1) > 1 ? ` · ${o.supersample}×${o.supersample} SS` : ''
+    const blur = o.motionBlur !== 'off' ? ' · blur' : ''
+    return `${item.shot.preset} · ${o.width}×${o.height} @ ${o.fps} · ${(this.shots.queue.framesOf(item) / o.fps).toFixed(1)} s · ${CODEC_LABELS[o.codec]} ${CONTAINERS[o.container]?.label ?? ''}${ss}${blur}`
+  }
+
+  rebuildQueue() {
+    const q = this.shots.queue
+    const names = q.fileNames()
+    const statusLabels = { pending: 'waiting', rendering: 'rendering', done: 'done', failed: 'failed', skipped: 'skipped' }
+    const rows = q.items.map((item, i) => {
+      const open = this._queueOpen === item.id
+      const row = el('div', { class: `ss-queue-item ss-queue-${item.status}${open ? ' open' : ''}` })
+      const head = el('div', { class: 'ss-queue-head' },
+        el('span', { class: 'ss-key-index', textContent: String(i + 1) }),
+        el('span', { class: 'ss-queue-name', textContent: item.shot.name, title: names.get(item.id) }),
+        el('span', { class: 'ss-queue-status', textContent: statusLabels[item.status] }),
+        this.button('▲', () => q.move(item.id, -1), { cls: 'ss-icon', title: 'Move up' }),
+        this.button('▼', () => q.move(item.id, 1), { cls: 'ss-icon', title: 'Move down' }),
+        this.button('✎', () => { this._queueOpen = open ? null : item.id; this.rebuildQueue() }, { cls: 'ss-icon', title: 'Output settings' }),
+        this.button('✕', () => q.remove(item.id), { cls: 'ss-icon ss-danger', title: 'Remove from the queue' }))
+      row.append(head, el('div', { class: 'ss-hint', textContent: this.queueItemText(item) }))
+      if (item.error) row.append(el('div', { class: 'ss-hint ss-queue-error', textContent: item.error }))
+      if (item.status === 'done' && item.outputFile) row.append(el('div', { class: 'ss-hint', textContent: `Saved ${item.outputFile}` }))
+      if (open) row.append(this.buildQueueItemEditor(item, names.get(item.id)))
+      return row
+    })
+    if (!rows.length) rows.push(el('div', { class: 'ss-hint', textContent: 'The queue is empty. Set up a shot and press "+ This shot", or add shot files.' }))
+    this.queueList.replaceChildren(...rows)
+    const c = q.counts
+    this.queueSummary.textContent = q.items.length ? `${c.pending} waiting, ${c.done} done${c.failed ? `, ${c.failed} failed` : ''}${c.rendering ? ', 1 rendering' : ''}.` : ''
+    if (this.queueFolder) this.queueFolder.textContent = q.folder ? `📁 ${q.folder.name}` : 'Downloads (no folder chosen)'
+    this.queueStart.textContent = q.running ? '■ Stop the queue' : '▶ Render the queue'
+    this.queueStart.disabled = !q.running && !c.pending
+    this.queueContinue.hidden = !q.waitingForPermission
+    this.queueLog.textContent = q.log.slice(-40).join('\n')
+    this.updateQueueProgress()
+  }
+
+  // Output settings of one queued shot (they are the shot's own; the editor's shot is not changed).
+  buildQueueItemEditor(item, fileName) {
+    const q = this.shots.queue
+    const o = item.shot.output
+    const set = (patch) => q.setOutput(item.id, patch)
+    const resolutionValue = RESOLUTIONS.find(([w, h]) => w === o.width && h === o.height)
+    const plainSelect = (options, value, onChange) => {
+      const select = el('select', { class: 'ss-select ss-grow' })
+      for (const [v, label] of options) select.append(el('option', { value: String(v), textContent: label }))
+      select.value = String(value)
+      select.addEventListener('change', () => onChange(select.value))
+      return select
+    }
+    const numberInput = (value, onChange, props = {}) => {
+      const input = el('input', { type: 'number', class: 'ss-number', value: String(value), ...props })
+      input.addEventListener('change', () => { const v = Number(input.value); if (Number.isFinite(v)) onChange(v) })
+      return input
+    }
+    const name = el('input', { type: 'text', class: 'ss-text ss-grow', value: item.fileName, placeholder: fileName })
+    name.addEventListener('change', () => q.setFileName(item.id, name.value.trim()))
+    const terrain = el('input', { type: 'checkbox', checked: o.waitForTerrain })
+    terrain.addEventListener('change', () => set({ waitForTerrain: terrain.checked }))
+    return el('div', { class: 'ss-editor' },
+      this.row('File name', name),
+      this.row('Resolution', plainSelect([...RESOLUTIONS.map(([w, h]) => [`${w}x${h}`, `${w} × ${h}`]), ['custom', 'Custom']], resolutionValue ? `${resolutionValue[0]}x${resolutionValue[1]}` : 'custom', (v) => {
+        if (v === 'custom') return
+        const [width, height] = v.split('x').map(Number)
+        set({ width, height })
+      })),
+      this.row('Width × height',
+        numberInput(o.width, (v) => set({ width: Math.max(16, Math.round(v)) }), { min: 16, step: 2 }),
+        numberInput(o.height, (v) => set({ height: Math.max(16, Math.round(v)) }), { min: 16, step: 2 })),
+      this.row('Frame rate', plainSelect(FRAME_RATES.map(f => [f, `${f} fps`]), o.fps, (v) => set({ fps: Number(v) }))),
+      this.row('Codec (preferred)', plainSelect(Object.entries(CODEC_LABELS), o.codec, (v) => set({ codec: v }))),
+      this.row('Container', plainSelect(Object.entries(CONTAINERS).map(([k, v]) => [k, v.label]), o.container, (v) => set({ container: v }))),
+      this.row('Bitrate (Mbps, 0 = auto)', numberInput(o.bitrateMbps ?? 0, (v) => set({ bitrateMbps: v > 0 ? v : null }), { min: 0 })),
+      this.row('Supersampling', plainSelect(SUPERSAMPLE_OPTIONS, o.supersample ?? 1, (v) => set({ supersample: Number(v) }))),
+      this.row('Motion blur', plainSelect([['off', 'Off'], ['adaptive', 'Adaptive'], ['fixed', 'Fixed sub-frames']], o.motionBlur, (v) => set({ motionBlur: v }))),
+      el('label', { class: 'ss-check' }, terrain, 'Wait for terrain tiles'),
+      el('div', { class: 'ss-line' },
+        this.button('Open in the editor', () => q.edit(item.id), { title: 'Load this shot to change its camera or timing (add it again afterwards)' }),
+        item.status === 'pending' ? null : this.button('Render again', () => q.renderAgain(item.id), { title: 'Put this shot back in the queue' })))
+  }
+
+  updateQueueProgress() {
+    const q = this.shots.queue
+    const p = q.progress
+    if (!q.running) { this.queueProgress.textContent = ''; return }
+    if (!p) { this.queueProgress.textContent = q.waitingForPermission ? 'Paused: waiting for folder access.' : 'Preparing the next shot…'; return }
+    const item = q.items.find(i => i.id === p.id)
+    const left = q.secondsLeft
+    this.queueProgress.textContent = `${item?.shot.name ?? ''}: frame ${p.frame} / ${p.frames}${left === null ? '' : `, about ${formatDuration(left)} left`}`
   }
 
   // ---- Updates --------------------------------------------------------------------------------

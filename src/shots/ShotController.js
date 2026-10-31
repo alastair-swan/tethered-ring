@@ -15,6 +15,7 @@ import { MotionBlur, subFrameTimes, adaptiveSubFrames } from '../capture/MotionB
 import { Supersampler, OpaqueCanvas, clampSupersample, maxRenderSize } from '../capture/Supersampler.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 import { StructureLines } from '../scene/structureLines.js'
+import { RenderQueueRunner } from './RenderQueueRunner.js'
 
 const PENDING_SHOT_KEY = 'tetheredRing.pendingShot'
 const TERRAIN_WAIT_TIMEOUT_MS = 15000
@@ -22,7 +23,14 @@ const MAX_REAL_STEP = 0.1 // s of wall-clock time per displayed frame (a backgro
 const PICK_RADIUS_PX = 30
 export const PLAYBACK_SPEEDS = [0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 100, 300, 1000]
 
-const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()))
+// The next display frame; in a hidden tab (no frames) the next task instead, so an unattended render
+// carries on. (Timers are throttled in hidden tabs; messages are not.)
+const nextFrame = () => new Promise((resolve) => {
+  if (!document.hidden) { requestAnimationFrame(() => resolve()); return }
+  const channel = new MessageChannel()
+  channel.port1.onmessage = () => resolve()
+  channel.port2.postMessage(null)
+})
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const slug = (name) => (name.trim().replace(/[^\w.-]+/g, '_') || 'shot')
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -71,6 +79,7 @@ export class ShotController {
     this.overlay = new ShotPathOverlay(this)
     app.scene.add(this.overlay.group)
     this.shot = this.createShotNow()
+    this.queue = new RenderQueueRunner(app, this)
   }
 
   // ---- Change notification ---------------------------------------------------------------------
@@ -715,7 +724,7 @@ export class ShotController {
   }
 
   // `writable` (optional): a WritableStream to write the file to (no save dialog; see VideoRecorder).
-  async createRecorder(output, fileName, { canvas = this.frameCanvas(output), writable = null } = {}) {
+  async createRecorder(output, fileName, { canvas = this.frameCanvas(output), writable = null, saveToDisk = this.prefs.saveToDisk } = {}) {
     const settings = { width: output.width, height: output.height, fps: output.fps }
     const recorder = new VideoRecorder({
       canvas,
@@ -724,7 +733,7 @@ export class ShotController {
       container: output.container,
       bitrate: 0,
       fileName,
-      saveToDisk: this.prefs.saveToDisk,
+      saveToDisk,
       writable,
     })
     if (!(await recorder.prepareTarget())) return null
@@ -789,7 +798,7 @@ export class ShotController {
     // the first frame, so every render of the shot starts the same way.
     const settleEnd = performance.now() + settleSeconds * 1000
     while (performance.now() < settleEnd || (this.app.clouds?.enabled && !this.app.clouds.realClouds?.ready && performance.now() < settleEnd + 30000)) await sleep(100)
-    const recorder = await this.createRecorder(output, fileName, { writable })
+    const recorder = await this.createRecorder(output, fileName, { writable, saveToDisk: false })
     if (!recorder) throw new Error('Could not open the output file.')
     const frames = Math.max(1, Math.round(shotDuration(this.shot) * output.fps))
     const failed = await this.renderFrames(recorder, { afterFrame: (i) => onProgress?.({ frame: i + 1, frames }) })
@@ -847,6 +856,8 @@ export class ShotController {
     const blurred = (output.motionBlur ?? 'off') !== 'off'
     const ss = this.supersampleFactor(output)
     const ssLabel = ss > 1 ? `, ${ss}x${ss} supersampled` : ''
+    const waiting = this.queue.running ? this.queue.counts.pending : 0
+    const queueLabel = this.queue.running ? `Render queue (${waiting} more waiting) · ` : ''
     let n = 1
     let times = [0]
     let failed = null
@@ -867,7 +878,7 @@ export class ShotController {
           }
           return this.setPlayhead(times[s])
         },
-        progressLabel: (k) => `Rendering "${shot.name}": frame ${from + k + 1} / ${frames}${recorder ? ` (${CODEC_LABELS[recorder.options.codec]} ${output.width}x${output.height} @ ${output.fps} fps${ssLabel}${n > 1 ? `, ${n} sub-frames` : ''})` : ''}`,
+        progressLabel: (k) => `${queueLabel}Rendering "${shot.name}": frame ${from + k + 1} / ${frames}${recorder ? ` (${CODEC_LABELS[recorder.options.codec]} ${output.width}x${output.height} @ ${output.fps} fps${ssLabel}${n > 1 ? `, ${n} sub-frames` : ''})` : ''}`,
       })
     }
     catch (err) {
@@ -970,6 +981,8 @@ export class ShotController {
   stop() {
     if (this.mode === 'live') this.stopRequested = true
     else this.cancelRequested = true
+    // (Stop while the render queue runs stops the queue.)
+    if (this.queue.running) this.queue.stop()
   }
 
   // ---- Files ----------------------------------------------------------------------------------
@@ -1031,7 +1044,10 @@ export class ShotController {
     this.setStatus('Shot loaded. Play it with the shot camera, or render it.')
   }
 
+  // Called when the page has started: loads a shot imported across a preset switch, and carries on
+  // with a render queue run.
   async resumePendingShot() {
+    this.queue.resumeSoon()
     const text = sessionStorage.getItem(PENDING_SHOT_KEY)
     if (!text) return
     sessionStorage.removeItem(PENDING_SHOT_KEY)
