@@ -4,12 +4,12 @@ import { windAt } from '../scene/seaPlacement.js'
 import { terminalModel } from './terminalModel.js'
 import { siteSeed } from './terminalPort.js'
 import { TerminalTraffic } from './TerminalTraffic.js'
-import { AnchorChains } from './AnchorChains.js'
+import { AnchorCables } from './AnchorCables.js'
 import { CONE_OUTER, setLampCount, setLamps, withPortLamps } from './portLamps.js'
 
 // The ocean terminal at the breech of an underwater launcher (models/launcher_ocean_terminal.obj, read by
 // terminalModel.js): a terminal building floating at the surface with a pier, an elevator shaft down to
-// an underwater terminal at the launcher's breech, and mooring chains from the underwater terminal to
+// an underwater terminal at the launcher's breech, and mooring cables from the underwater terminal to
 // the sea floor.
 //
 // - The underwater terminal is placed so that its launcher marker is at the start of the tube, along the
@@ -18,8 +18,8 @@ import { CONE_OUTER, setLampCount, setLamps, withPortLamps } from './portLamps.j
 // - The surface terminal and pier turn about the elevator shaft so that the pier points downwind (the
 //   wind at the start date, as the ships and the sea's waves have it: seaPlacement.windAt); the
 //   underwater terminal does not turn.
-// - Two chains run from each anchor marker to the sea floor, splayed out diagonally from the terminal's
-//   ends (AnchorChains.js).
+// - Two cables run from each anchor marker to the sea floor, splayed out diagonally from the terminal's
+//   ends (AnchorCables.js).
 // - Feeder ships call at the pier, and their containers go into the terminal (terminalPort.js,
 //   TerminalTraffic.js).
 // - Between dusk and dawn (the sun below LIGHTS_ON) the pier's floodlights shine on the pier (in the
@@ -180,8 +180,8 @@ export class OceanTerminal {
     const { markers, shaft } = this.model
     const geo = ecefToGeodetic(breech.point.x, breech.point.y, breech.point.z, this.ellipsoid)
     this.active = geo.alt <= -MIN_DEPTH
-    this.chains?.dispose()
-    this.chains = null
+    this.cables?.dispose()
+    this.cables = null
     if (!this.active) {
       this.root.visible = false
       return false
@@ -216,7 +216,7 @@ export class OceanTerminal {
     this.shaft.geometry.computeBoundingSphere()   // (its walls are vertical, so their normals stay as they are)
     this.shaft.position.set(-shaft.x, 0, -shaft.z)
 
-    // The mooring chains: two from each anchor marker, splayed diagonally out from the ends.
+    // The mooring cables: two from each anchor marker, splayed diagonally out from the ends.
     this.root.updateMatrixWorld(true)
     const toPlanet = (local) => local.applyMatrix4(this.root.matrix)
     const toLocal = (planet, target) => target.copy(planet).applyMatrix4(_inverse.copy(this.root.matrix).invert())
@@ -230,7 +230,7 @@ export class OceanTerminal {
         legs.push({ top, east: direction.dot(east), north: direction.dot(north) })
       }
     }
-    this.chains = new AnchorChains({ parent: this.root, toLocal, legs, ellipsoid: this.ellipsoid, sampleHeight: this.sampleHeight })
+    this.cables = new AnchorCables({ parent: this.root, toLocal, legs, ellipsoid: this.ellipsoid, sampleHeight: this.sampleHeight })
     this.traffic.setSite(siteSeed(geo.lat, geo.lon))
     this.windKey = null
     return true
@@ -277,7 +277,7 @@ export class OceanTerminal {
     const near = distance < DETAIL_DISTANCE
     if (near) this._waveFlag(t, windAt(this.geo.lat, this.geo.lon).speed)
     this.traffic.update(t, near)
-    if (this.chains && ++this.frame % REFRESH_FRAMES === 0) this.chains.refresh()
+    if (this.cables && ++this.frame % REFRESH_FRAMES === 0) this.cables.refresh()
   }
 
   // The flag ripples, more in a stronger wind.
@@ -293,7 +293,7 @@ export class OceanTerminal {
   }
 
   dispose() {
-    this.chains?.dispose()
+    this.cables?.dispose()
     this.traffic?.dispose()
     this.root.removeFromParent()
   }
