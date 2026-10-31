@@ -36,8 +36,6 @@ from __future__ import annotations
 import datetime
 import io
 import json
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -79,18 +77,12 @@ def tile(layer: str, date: str, row: int, col: int) -> Path | None:
     missing = folder / (name + '.missing')
     if missing.exists():
         return None
-    url = URL.format(layer=layer, date=date, level=LEVEL, row=row, col=col)
     try:
-        return fetch_file(url, folder / name)
-    except RuntimeError:
-        try:
-            urllib.request.urlopen(url, timeout=60).close()
-        except urllib.error.HTTPError as error:
-            if error.code == 404:
-                missing.parent.mkdir(parents=True, exist_ok=True)
-                missing.touch()
-                return None
-        raise
+        return fetch_file(URL.format(layer=layer, date=date, level=LEVEL, row=row, col=col), folder / name)
+    except FileNotFoundError:
+        missing.parent.mkdir(parents=True, exist_ok=True)
+        missing.touch()
+        return None
 
 
 def day_image(date: str, layer: str = LAYER) -> np.ndarray:

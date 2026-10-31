@@ -27,6 +27,7 @@ import base64
 import http.client
 import json
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -45,7 +46,8 @@ SCALE = 0.125  # m/s per step (int8: +-15.9 m/s)
 
 def fetch_file(url: str, path: Path) -> Path:
     """Downloads url to path once (resuming: the server drops long transfers now and then, sometimes
-    without an error, so the partial file is resumed with HTTP Range until it has the whole length)."""
+    without an error, so the partial file is resumed with HTTP Range until it has the whole length).
+    Raises FileNotFoundError if the server has no such file."""
     if path.exists():
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,6 +68,10 @@ def fetch_file(url: str, path: Path) -> Path:
                 with tmp.open('ab' if have else 'wb') as out:
                     while chunk := response.read(1 << 20):
                         out.write(chunk)
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                raise FileNotFoundError(url) from error  # (not there: retrying will not help)
+            time.sleep(2 ** min(attempt + 1, 4))
         except (OSError, http.client.HTTPException):
             time.sleep(2 ** min(attempt + 1, 4))
     if total is None or tmp.stat().st_size != total:
