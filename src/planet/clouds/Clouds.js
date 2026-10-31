@@ -53,6 +53,12 @@ const SHELL_TOP = 13000 // m
 // LAYER_BOTTOM (m) up (below the lowest cloud bases).
 const CLOUD_STEP = 0.08
 const FINE_STEPS = 6
+// Where split, fine steps of FINE_SHARE of the distance, at least FINE_MIN (m); at most FINE_MAX_SPLIT per
+// coarse step, and the loop allows MAX_FINE_SAMPLES more samples for them.
+const FINE_SHARE = 0.005
+const FINE_MIN = 8
+const FINE_MAX_SPLIT = 12
+const MAX_FINE_SAMPLES = 96
 // The probes' margin (cloudProbe): PROBE_GROW[0] plus PROBE_GROW[1] per PROBE_GROW[2] m of step, at most
 // PROBE_GROW[3] (in the shape noise's units; its middle 80% spans about 0.15).
 const PROBE_GROW = [0.02, 0.05, 400, 0.25]
@@ -78,8 +84,8 @@ const MACRO_TILE = 400000
 // - High cloud (cirrus, cirrostratus) takes the thin part of the opacity, up to HIGH_SHARE, as much of
 //   it as the reanalysis has high cloud often (thin cirrus is what the faint brightening of the imagery
 //   over clear sea mostly is); it is thin (opacity HIGH_OPACITY where it is, an optical depth of about
-//   0.3), so it covers a good deal more of the sky than its opacity; HIGH_THICKNESS (m) deep from the high cloud base, drawn out into streaks HIGH_STREAK times
-//   longer along the wind (which is CIRRUS_WIND times the surface's aloft).
+//   0.3), so it covers a good deal more of the sky than its opacity; HIGH_THICKNESS (m) deep from the high
+//   cloud base, drawn out into streaks along the wind (which is CIRRUS_WIND times the surface's aloft).
 // - Low cloud for the rest of the imagery's opacity: a few fair-weather cumulus where there is little
 //   (FAIR_CUMULUS of the sky, more with convection, in fields a few hundred kilometres across covering
 //   about FAIR_FIELDS of the clear sky, the rest clear), turning into stratocumulus and then a stratus
@@ -90,12 +96,16 @@ const HIGH_BLUR = 60000 // m
 const SHOWER_OPACITY = [0.3, 0.7]
 const HIGH_OPACITY = 0.25
 const HIGH_THICKNESS = 1500
-const HIGH_STREAK = 5
 const HIGH_TILE = 30000
 const HIGH_DENSITY = 0.012
-// Its fibres: the detail noise drawn out FIBRE_STREAK times along the wind, on FIBRE_TILE (m).
-const FIBRE_STREAK = 15
+// Its fibres: the detail noise on FIBRE_TILE (m), smeared along the wind.
 const FIBRE_TILE = 2500
+const FIBRE_LENGTH = 1500 // m: the fibres' smear along the wind
+// The streaks: the shape noise averaged over STREAK_TAPS points along HIGH_STREAK_LENGTH (m) of the wind
+// (which narrows its spread; STREAK_SPREAD restores it).
+const STREAK_TAPS = 3
+const HIGH_STREAK_LENGTH = 20000
+const STREAK_SPREAD = 1.45
 const CIRRUS_WIND = 3
 const FAIR_CUMULUS = [0.012, 0.03]
 const FAIR_FIELDS = 0.35
@@ -160,6 +170,8 @@ uniform mat4 cameraWorld;
 uniform mat3 worldToPlanet;
 uniform vec3 shapeOffset[2];    // the camera's planet position modulo the shape tile (m), for each drift copy
 uniform vec3 detailOffset[2];
+uniform vec3 cameraPlanet;      // the camera's planet position (m; float32, for the high cloud's streaks)
+uniform vec3 driftShift[2];     // each drift copy's own shift (m)
 uniform vec3 macroOffset;        // the camera's planet position modulo the large-scale tile (m)
 uniform sampler2D realClouds;    // the real clouds' opacity (realClouds.js)
 uniform float realBlend;         // 1 where the real clouds' opacity sets the cover (it has loaded), else 0
@@ -363,18 +375,39 @@ float columnDensity(CloudColumn col, vec3 local, float h, bool full, float footp
     vec3 along = normalize(length(windAloft) > 0.1 ? windAloft : east);
     float d = 0.0;
     if (lod < 1.0) {
-      // Drawn out along the wind: the along-wind distance squeezed.
-      vec3 streaked = local - (1.0 - 1.0 / ${HIGH_STREAK.toFixed(1)}) * dot(local, along) * along;
-      float detail;
-      // (Offset from the low cloud's noise, so the two layers' shapes are unrelated.)
-      float shape = driftedShape(streaked + vec3(9137.0, 4211.0, 15731.0), windAloft / ${HIGH_STREAK.toFixed(1)}, ${HIGH_TILE.toFixed(1)}, shapeOffset, detail, full);
+      // Drawn out along the wind: the noise averaged over STREAK_TAPS points along it (a smear depends only on
+      // the point's own position, so the streaks stay put as the camera moves; squeezing the coordinates
+      // along the wind needs a point to squeeze about, and about the camera they slid and jumped). In the
+      // planet's frame: float32 is precise enough here, to about a metre, for features kilometres across.
+      vec3 planetPoint = cameraPlanet + local;
+      float shape = 0.0, fibre = 0.0;
+      for (int i = 0; i < 2; i++) {
+        float weight = i == 0 ? 1.0 - drift.z : drift.z;
+        if (weight < 0.002) continue;
+        float age = i == 0 ? drift.x : drift.y;
+        // (Offset from the low cloud's noise, so the two layers' shapes are unrelated.)
+        vec3 q = planetPoint - windAloft * age + driftShift[i] + vec3(9137.0, 4211.0, 15731.0);
+        float smear = 0.0;
+        for (int k = 0; k < ${STREAK_TAPS}; k++) {
+          vec4 sn = texture(shapeNoise, (q + along * ${HIGH_STREAK_LENGTH.toFixed(1)} * (float(k) / ${(STREAK_TAPS - 1).toFixed(1)} - 0.5)) / ${HIGH_TILE.toFixed(1)});
+          smear += remap(sn.r, sn.g * 0.625 + sn.b * 0.25 + sn.a * 0.125 - 1.0, 1.0, 0.0, 1.0);
+        }
+        // (Averaging narrows the noise's spread: restored, so the cover stays about the same.)
+        shape += weight * (SHAPE_MEAN + (smear / ${STREAK_TAPS.toFixed(1)} - SHAPE_MEAN) * ${STREAK_SPREAD.toFixed(2)});
+        if (full) {
+          vec3 qf = planetPoint - windAloft * age + driftShift[i];
+          float f = 0.0;
+          for (int k = 0; k < 2; k++) {
+            vec4 fn = texture(detailNoise, (qf + along * ${FIBRE_LENGTH.toFixed(1)} * (float(k) - 0.5)) / ${FIBRE_TILE.toFixed(1)});
+            f += fn.r * 0.6 + fn.g * 0.4;
+          }
+          fibre += weight * (0.5 + (f / 2.0 - 0.5) * 1.35);
+        }
+      }
+      shape = SHAPE_MEAN + (shape - SHAPE_MEAN) / length(vec2(1.0 - drift.z, drift.z));
       d = thresholdDensity(shape, highCover) * profile;
       // Fibres along the wind (ice crystals falling out of the streaks).
-      if (full && d > 0.0) {
-        vec3 fibred = local - (1.0 - 1.0 / ${FIBRE_STREAK.toFixed(1)}) * dot(local, along) * along;
-        vec4 f = texture(detailNoise, (fibred - windAloft * drift.x / ${FIBRE_STREAK.toFixed(1)} + detailOffset[0]) / ${FIBRE_TILE.toFixed(1)});
-        d *= smoothstep(0.25, 0.75, f.r * 0.6 + f.g * 0.4);
-      }
+      if (full && d > 0.0) d *= smoothstep(0.25, 0.75, fibre);
     }
     float far = -log(1.0 - highOpacity) / (EXTINCTION * ${HIGH_THICKNESS.toFixed(1)} * 0.5) * profile;
     density += mix(clamp(d, 0.0, 1.0) * ${HIGH_DENSITY.toFixed(3)}, far, lod);
@@ -542,6 +575,8 @@ void main() {
   slLightAt(dirWorld * (lightFar / stretch), directFar, skyFar, groundFar, upW);
   vec3 white = mix(vec3(1.0), SL_WHITE, slParams.y) * sunIntensity;
   vec3 sunNear = slSunTransmittance(c + d * lightNear) * white, sunFar = slSunTransmittance(c + d * lightFar) * white;
+  // Interleaved gradient noise (Jimenez): a hash of the pixel that is well spread at a pixel's scale.
+  float pixelJitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
   for (int stretchIndex = 0; stretchIndex < 3; stretchIndex++) {
     float ta = stretchIndex == 0 ? t0 : stretchIndex == 1 ? tLayer0 : tLayer1;
     float tb = stretchIndex == 0 ? tLayer0 : stretchIndex == 1 ? tLayer1 : t1;
@@ -563,9 +598,10 @@ void main() {
     // One sample per iteration (a loop inside the loop was several times slower on the GPU): a coarse
     // step, or one of the FINE_STEPS it is split into where there may be cloud.
     int fineLeft = 0;
+    bool split = false;
     float dt = 0.0;
 
-    for (int i = 0; i < ${MAX_STEPS * 2}; i++) {
+    for (int i = 0; i < ${MAX_STEPS * 2 + MAX_FINE_SAMPLES}; i++) {
       if (fineLeft == 0) {
         float coarse = inLayer ? g * (t / stretch + STEP_ORIGIN) * stretch : murkStep;
         if (t + coarse > tb) coarse = tb - t;
@@ -579,11 +615,20 @@ void main() {
           probeEnd = cloudProbe(col, c, d, dirWorld, stretch, t + coarse, coarseM);
           // (Only where the clouds' shapes are drawn: further away their expected density is smooth.)
           if (probeStart + probeEnd + cloudProbe(col, c, d, dirWorld, stretch, tm, coarseM) > 0.0
-              && t / stretch * pixelAngle < ${LOD_FOOTPRINT[1].toFixed(1)}) fineLeft = FINE_STEPS;
+              && t / stretch * pixelAngle < ${LOD_FOOTPRINT[1].toFixed(1)}) {
+            // Fine steps of FINE_SHARE of the distance (at least FINE_STEPS): coarser ones slice the clouds
+            // into terraces at fixed distances from the camera, which slide over them as it moves (moire).
+            float fineLength = max(tm / stretch * ${FINE_SHARE.toFixed(4)}, ${FINE_MIN.toFixed(1)}) * stretch;
+            fineLeft = clamp(int(ceil(coarse / fineLength)), FINE_STEPS, ${FINE_MAX_SPLIT});
+          }
         }
         dt = coarse / float(fineLeft);
+        split = fineLeft > 1;
       }
-      float ts = t + 0.5 * dt;
+      // (Fine samples are jittered within their step by a pixel's hash: the terraces that fixed samples cut
+      // at fixed distances from the camera would show as moire; the jitter is a fine step at most, tens of
+      // metres, which the composite's filter smooths away.)
+      float ts = t + (split ? pixelJitter : 0.5) * dt;
       t += dt;
       fineLeft--;
       // The light here, between its values at the ends of the clouds' part of the line of sight.
@@ -756,6 +801,8 @@ export class Clouds {
       worldToPlanet: { value: new THREE.Matrix3() },
       shapeOffset: { value: [new THREE.Vector3(), new THREE.Vector3()] },
       macroOffset: { value: new THREE.Vector3() },
+      cameraPlanet: { value: new THREE.Vector3() },
+      driftShift: { value: [new THREE.Vector3(), new THREE.Vector3()] },
       realClouds: { value: null },
       realBlend: { value: 0 },
       realTexel: { value: 4000 },
@@ -860,11 +907,15 @@ export class Clouds {
     ages.forEach((age, i) => {
       const cycle = Math.floor(phase + (i ? 0.5 : 0))
       const shift = cycle * 7919.37 + i * 3571.1
+      // (Wrapped at the high cloud's tile, a whole number of its fibres' tiles, so the noise is the same.)
+      const wrap = (v) => ((v % HIGH_TILE) + HIGH_TILE) % HIGH_TILE
+      u.driftShift.value[i].set(wrap(shift), wrap(shift * 0.61), wrap(shift * 1.37))
       for (const [target, tile] of [[u.shapeOffset.value[i], SHAPE_TILE], [u.detailOffset.value[i], DETAIL_TILE]]) {
         _offset.set(_cameraPlanet.x + shift, _cameraPlanet.y + shift * 0.61, _cameraPlanet.z + shift * 1.37)
         target.set(((_offset.x % tile) + tile) % tile, ((_offset.y % tile) + tile) % tile, ((_offset.z % tile) + tile) % tile)
       }
     })
+    u.cameraPlanet.value.copy(_cameraPlanet)
     const mt = MACRO_TILE
     u.macroOffset.value.set(((_cameraPlanet.x % mt) + mt) % mt, ((_cameraPlanet.y % mt) + mt) % mt, ((_cameraPlanet.z % mt) + mt) % mt)
     u.inverseProjection.value.copy(camera.projectionMatrixInverse)
