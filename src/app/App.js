@@ -24,6 +24,7 @@ import { Sailboats } from '../scene/Sailboats.js'
 import { Clouds } from '../planet/clouds/Clouds.js'
 import { setWeatherDate, windAt } from '../scene/seaPlacement.js'
 import { ContainerShips } from '../scene/ContainerShips.js'
+import { OceanTerminal } from '../launcher/OceanTerminal.js'
 
 // The Earth's global tile sets the A/B control switches between (folders under assets/; see docs/ASSETS.md).
 const EARTH_TILE_SETS = { 'Blue Marble, GMTED/GEBCO (earth_hires)': 'earth_hires', 'Original (earth)': 'earth' }
@@ -516,6 +517,7 @@ export class App {
       adjustSailboats: visibility((p) => this.sailboats?.setVisible(p.showSailboats.value)),
       adjustClouds: visibility((p) => { if (this.clouds) this.clouds.enabled = p.showClouds.value }),
       adjustContainerShips: visibility((p) => this.containerShips?.setVisible(p.showContainerShips.value)),
+      adjustOceanTerminal: visibility((p) => this.oceanTerminal?.setVisible(p.showLauncherOceanTerminal.value)),
       adjustEarthAtmosphereVisibility: visibility((p) => this.planet.setAtmosphereVisible(p.showEarthsAtmosphere.value)),
       adjustTerrainExaggeration: visibility((p) => this.planet.setDisplacementScale((this.nonGUIParams.planet2DisplacementScaleMultiplier ?? 1) * p.terrainExaggeration.value)),
       adjustBackgroundOpacity: visibility((p) => this.renderer.setClearAlpha(p.enableBackgroundAlpha.value ? 0 : 1)),
@@ -527,7 +529,7 @@ export class App {
     this.store.derive()
     const handlers = this.parameterHandlers()
     for (const name of ['adjustEarthSurfaceVisibility', 'adjustEarthAtmosphereVisibility', 'adjustEarthTextureOpacity', 'adjustEarthTextureSidedness',
-      'adjustTerrainExaggeration', 'adjustSeaIce', 'adjustSailboats', 'adjustContainerShips', 'adjustClouds', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
+      'adjustTerrainExaggeration', 'adjustSeaIce', 'adjustSailboats', 'adjustContainerShips', 'adjustClouds', 'adjustOceanTerminal', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
       'updateOrbitControlsRotateSpeed', 'adjustTetherOpacity', 'adjustStructureGlow', 'adjustBackgroundOpacity']) handlers[name]()
     this.rebuildRing()
     this.ring.adjustLatLon(0)
@@ -713,6 +715,7 @@ export class App {
     }
     MooringCables.refreshSome()
     this.updateSun()
+    this.updateOceanTerminal(t)
     this.lighting.followCameraTarget(this.camera.controls.target)
 
     if (this.trackPointLogger) {
@@ -774,6 +777,26 @@ export class App {
       return [g.lat, g.lon, g.alt]
     })
     this.containerShips.setLauncherTraffic(track)
+  }
+
+  // The ocean terminal at the launcher's breech, if the breech is under the sea (OceanTerminal.place).
+  updateOceanTerminal(t) {
+    const breech = this.planetSpec.hasOcean && this.d.showLauncherOceanTerminal.value ? this.launchSystem?.startFrame() : null
+    if (!breech) {
+      this.oceanTerminal?.setVisible(false)
+      return
+    }
+    this.oceanTerminal ??= new OceanTerminal({
+      parent: this.planetCoordSys,
+      ellipsoid: this.planetSpec.ellipsoid,
+      sampleHeight: (lat, lon) => this.planet.sampleTerrainHeight(lat, lon),
+      containerShips: this.containerShips ?? null,
+    })
+    this.oceanTerminal.setVisible(true)
+    this.oceanTerminal.place(breech)
+    const sun = this.lighting.sunLight
+    _sunDirection.copy(sun.getWorldPosition(_sunDirection)).sub(sun.target.getWorldPosition(_sunTarget))
+    this.oceanTerminal.update(t, this.camera3d, _sunDirection)
   }
 
   // Sun direction (and the season, for sea ice) for the start date plus the simulated time. The wind on

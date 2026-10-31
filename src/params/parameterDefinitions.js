@@ -555,6 +555,9 @@ export function createParameterDefinitions() {
   showSailboats: {value: true, units: '', autoMap: true, onChange: 'adjustSailboats', folder: 'Rendering'},
   // Container ships on the shipping lanes and at anchor off ports (see src/scene/ContainerShips.js).
   showContainerShips: {value: true, units: '', autoMap: true, onChange: 'adjustContainerShips', folder: 'Rendering'},
+  // The ocean terminal at an underwater launcher's breech, with its pier, cargo ships and mooring chains
+  // (see src/launcher/OceanTerminal.js).
+  showLauncherOceanTerminal: {value: true, units: '', autoMap: true, onChange: 'adjustOceanTerminal', folder: 'Rendering'},
   underwaterVisibility: {value: 20000, units: 'm', autoMap: true, min: 100, max: 200000, onChange: 'adjustOcean', folder: 'Rendering'},   // distance at which things underwater have almost faded into the water colour (a visual cue, not realism)
   earthTextureOpacity: {value: 1, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustEarthTextureOpacity', folder: 'Rendering'},
   earthTextureDoubleSided: {value: false, units: '', autoMap: true, onChange: 'adjustEarthTextureSidedness', folder: 'Rendering'},
