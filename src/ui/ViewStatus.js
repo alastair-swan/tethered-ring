@@ -1,9 +1,11 @@
 import * as THREE from 'three'
 import * as tram from '../utils/tram.js'
+import { advanceDate } from '../physics/solar.js'
 
 // The view status: a small readout in the bottom-right corner (the camera's latitude, longitude and
 // altitude, its heading and pitch, the simulated time) with a Copy button that copies a link to exactly
-// this view: the preset, the simulated time, the camera (position, target and up, in the planet's frame,
+// this view: the preset, the date (the start's day of year and UTC time of day, which set the sun, the
+// weather and the clouds, and the simulated time since), the camera (position, target and up, in the planet's frame,
 // so they do not depend on how the scene is placed) and its field of view, and every parameter that
 // differs from the preset's own. Opening the link (?view=, see main.js) restores it: for reporting what is
 // seen, and reproducing it while debugging; it opens paused at the view's moment. It is page HTML, never
@@ -32,6 +34,9 @@ export function getViewState(app, baseline) {
   return {
     preset: app.presetId,
     time: round(app.clock.time, 4),
+    // (Always, even where the preset's automatic choice made them: they set the sun and the weather.)
+    sunDayOfYear: app.store.get('sunDayOfYear'),
+    sunTimeOfDayUTC: app.store.get('sunTimeOfDayUTC'),
     camera: {
       position: toPlanetPoint(c.position),
       target: toPlanetPoint(c.target),
@@ -45,8 +50,11 @@ export function getViewState(app, baseline) {
 
 /** Restores a view from getViewState (the preset must already be the view's). */
 export function applyViewState(app, view) {
-  if (view.parameters && Object.keys(view.parameters).length) {
-    app.store.restore(view.parameters)
+  const parameters = { ...view.parameters }
+  if (typeof view.sunDayOfYear === 'number') parameters.sunDayOfYear = view.sunDayOfYear
+  if (typeof view.sunTimeOfDayUTC === 'number') parameters.sunTimeOfDayUTC = view.sunTimeOfDayUTC
+  if (Object.keys(parameters).length) {
+    app.store.restore(parameters)
     app.applyAllParameters()
   }
   // (Paused at the view's moment, through the shots' playhead, which drives the clock.)
@@ -116,7 +124,14 @@ export class ViewStatus {
     const heading = (THREE.MathUtils.radToDeg(Math.atan2(d.dot(east), d.dot(north))) + 360) % 360
     const pitch = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(d.dot(up), -1, 1)))
     const alt = Math.abs(g.alt) >= 10000 ? `${(g.alt / 1000).toFixed(1)} km` : `${g.alt.toFixed(1)} m`
-    this.text.textContent = `${g.lat.toFixed(4)}°, ${g.lon.toFixed(4)}°  ${alt}  hdg ${heading.toFixed(1)}° pitch ${pitch.toFixed(1)}°  fov ${camera.fov.toFixed(1)}°  t ${app.clock.time.toFixed(1)} s`
+    // The date now (the start's plus the simulated time), in UTC and the local solar time here.
+    const date = advanceDate(Math.max(1, app.store.get('sunDayOfYear')), Math.max(0, app.store.get('sunTimeOfDayUTC')), app.clock.time)
+    const clock = (h) => {
+      const m = Math.floor((((h % 24) + 24) % 24) * 60)
+      return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+    }
+    this.text.textContent = `${g.lat.toFixed(4)}°, ${g.lon.toFixed(4)}°  ${alt}  hdg ${heading.toFixed(1)}° pitch ${pitch.toFixed(1)}°  fov ${camera.fov.toFixed(1)}°`
+      + `  ·  day ${date.dayOfYear} ${clock(date.utcHours)} UTC (${clock(date.utcHours + g.lon / 15)} local)  t ${app.clock.time.toFixed(1)} s`
   }
 
   async copy(button) {
