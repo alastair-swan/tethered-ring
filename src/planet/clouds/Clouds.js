@@ -86,6 +86,7 @@ const MACRO_TILE = 400000
 //   sheet as it rises over STRATUS_ONSET; towers in showers (the weather's, where the imagery has cloud:
 //   SHOWER_OPACITY).
 const HIGH_SHARE = 0.3
+const HIGH_BLUR = 60000 // m
 const SHOWER_OPACITY = [0.3, 0.7]
 const HIGH_OPACITY = 0.25
 const HIGH_THICKNESS = 1500
@@ -262,13 +263,17 @@ CloudColumn cloudColumn(vec2 uv, vec3 p, vec3 local, float footprint) {
   // The sky's opacity seen from space: the real clouds' (less the imagery's floor of faint haze and noise
   // over clear sea, about 0.05; the mip level from the pixel's footprint, as automatic derivatives mean
   // nothing along a ray and jump at the date line), or the weather's.
-  float opacity;
+  float opacity, opacitySmooth;
   if (realBlend > 0.5) {
     float real = textureLod(realClouds, uv, log2(max(footprint, 1.0) / realTexel)).r;
     opacity = clamp((real - 0.05) / 0.95, 0.0, 1.0);
+    // (And blurred over about HIGH_BLUR, for the high cloud's share: see below.)
+    float smoothReal = textureLod(realClouds, uv, max(log2(max(footprint, 1.0) / realTexel), log2(${HIGH_BLUR.toFixed(1)} / realTexel))).r;
+    opacitySmooth = clamp((smoothReal - 0.05) / 0.95, 0.0, 1.0);
   }
   else {
     opacity = a.r * 0.9;
+    opacitySmooth = opacity;
     // (Large-scale structure in the weather's smooth cover, fading out as it shrinks below a pixel.)
     float macroDetail = 1.0 - smoothstep(2000.0, 8000.0, footprint);
     if (macroDetail > 0.0 && opacity > 0.01) {
@@ -278,7 +283,10 @@ CloudColumn cloudColumn(vec2 uv, vec3 p, vec3 local, float footprint) {
     }
   }
   // Shared between the layers: high cloud where the reanalysis has it, the rest low.
-  float highOpacity = min(opacity, ${HIGH_SHARE.toFixed(3)}) * a.a;
+  // (The high cloud's share follows the opacity blurred over HIGH_BLUR, so that only the low cloud carries
+  // the imagery's edges: with both layers following them, from orbit the same pattern showed at both
+  // heights, apart by parallax, as double vision.)
+  float highOpacity = min(opacitySmooth, ${HIGH_SHARE.toFixed(3)}) * a.a;
   float highCover = clamp(highOpacity / ${HIGH_OPACITY.toFixed(3)}, 0.0, 1.0);
   float lowOpacity = clamp(1.0 - (1.0 - opacity) / (1.0 - highOpacity), 0.0, 1.0);
   float convective = a.b;
@@ -358,7 +366,8 @@ float columnDensity(CloudColumn col, vec3 local, float h, bool full, float footp
       // Drawn out along the wind: the along-wind distance squeezed.
       vec3 streaked = local - (1.0 - 1.0 / ${HIGH_STREAK.toFixed(1)}) * dot(local, along) * along;
       float detail;
-      float shape = driftedShape(streaked, windAloft / ${HIGH_STREAK.toFixed(1)}, ${HIGH_TILE.toFixed(1)}, shapeOffset, detail, full);
+      // (Offset from the low cloud's noise, so the two layers' shapes are unrelated.)
+      float shape = driftedShape(streaked + vec3(9137.0, 4211.0, 15731.0), windAloft / ${HIGH_STREAK.toFixed(1)}, ${HIGH_TILE.toFixed(1)}, shapeOffset, detail, full);
       d = thresholdDensity(shape, highCover) * profile;
       // Fibres along the wind (ice crystals falling out of the streaks).
       if (full && d > 0.0) {
