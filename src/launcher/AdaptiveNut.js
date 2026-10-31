@@ -5,6 +5,7 @@ import * as tram from '../utils/tram.js'
 import { quaternionFromFrame } from '../curves/SuperCurves.js'
 import { MovingVirtualObject, curveFrameAtTime, parameterSignature } from './VirtualObject.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
+import { SubPixelFade, withSubPixelFade } from '../scene/SubPixelFade.js'
 import { GrapplerLatticePlan, effectivePhase } from './grapplerLattice.js'
 
 const MODEL_FORWARD = new THREE.Vector3(0, 1, 0) // The direction that the model considers "forward"
@@ -21,13 +22,15 @@ const INNER_MIDDLE_OUTER = [
   { sign1: 2, sign2: 2 },    // outer
 ]
 const HARDWARE_PARTS = ['pivot', 'post', 'strut', 'cylinder']
-// Pixel-size LOD thresholds, measured on the nut's width.
 // A grappler's angle (radians, from the middle of its travel, fixed to the nut, within [-pi, pi)) if
 // following the nearest flight, from its placement info.
 const followingAngle = (info) => ((info.offset.θ + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI
 
-const PADS_MIN_PIXELS = 6       // pads are ~1 px across here
-const HARDWARE_MIN_PIXELS = 60  // ball joints and pistons are a few cm: ~2 px across here
+// The pads and the hardware fade out by their own on-screen size (SubPixelFade.js), each part by its
+// thickness, and their levels of detail stop drawing them once the part that stays visible longest is
+// all but invisible (at this opacity), so the arms stay as long as they show, as the pads do.
+const FADED_OUT_OPACITY = 0.04       // compact parts (pads, ball joints): by area
+const FADED_OUT_LINE_OPACITY = 0.1   // rods and cylinders: by width
 
 // Returns a copy of `geometry` mirrored in x, with the triangle winding reversed so that front faces
 // stay front faces (instances cannot use negative scale for mirroring).
@@ -67,8 +70,9 @@ class InstancedParts extends THREE.Group {
     this.instances = []   // per instance id: { shape, index, visible }
   }
 
-  addGeometry(geometry) {
-    this.shapes.push({ geometry, mesh: null, count: 0 })
+  // (A shape may have its own material, e.g. one faded by that shape's size.)
+  addGeometry(geometry, material = this.material) {
+    this.shapes.push({ geometry, material, mesh: null, count: 0 })
     return this.shapes.length - 1
   }
 
@@ -81,7 +85,7 @@ class InstancedParts extends THREE.Group {
   // Makes the meshes, once every geometry and instance has been added.
   finish() {
     for (const shape of this.shapes) {
-      const mesh = new THREE.InstancedMesh(shape.geometry, this.material, Math.max(1, shape.count))
+      const mesh = new THREE.InstancedMesh(shape.geometry, shape.material, Math.max(1, shape.count))
       mesh.count = shape.count
       mesh.name = this.name
       mesh.castShadow = this.castShadow
@@ -176,6 +180,20 @@ export class adaptiveNutModel {
       cylinder: new THREE.CylinderGeometry(cylinderRadius, cylinderRadius, strutLength, 16, 1).translate(0, strutLength/2, 0),
     }
     for (const g of Object.values(hardwareGeometries)) g.userData.shared = true // used by every pooled nut
+    // Each part fades by its thickness: the ball joints like a dot, the rest like a line.
+    const hardwareFade = {
+      pivot: { size: 2 * ballJointRadius, exponent: 2 },
+      post: { size: ballJointRadius, exponent: 1 },
+      strut: { size: cylinderRadius, exponent: 1 },
+      cylinder: { size: 2 * cylinderRadius, exponent: 1 },
+    }
+    const hardwareMaterials = Object.fromEntries(HARDWARE_PARTS.map(part =>
+      [part, withSubPixelFade(hardwareMaterial.clone(), hardwareFade[part])]))
+    // The nut's on-screen width (px) at which a part of this size has faded out.
+    const fadedOutAt = ({ size, exponent }) => (size > 0)
+      ? width / size * SubPixelFade.minimumPixels(1.5, exponent === 1 ? FADED_OUT_LINE_OPACITY : FADED_OUT_OPACITY, exponent)
+      : Infinity
+    const hardwareMinPixels = Math.min(...HARDWARE_PARTS.map(part => fadedOutAt(hardwareFade[part])))
 
     // Pad geometry for each grappler where the thread begins (regenerated per speed while running), with
     // the screw's thread layout: the starts it has there (the starts parameter may be 0, for its default)
@@ -192,6 +210,15 @@ export class adaptiveNutModel {
         templatePads.push(makeGrapplerGeometry(dParamWithUnits, layout, templateDistance, grapplerLength, numGrapplers, info.threadStarts, distance, info.offset))
       }
     }
+    // A pad is a plate: it fades like a square of the same area as its two larger extents.
+    let padSize = 0
+    if (templatePads.length) {
+      templatePads[0].computeBoundingBox()
+      const extents = templatePads[0].boundingBox.getSize(new THREE.Vector3()).toArray().sort((a, b) => b - a)
+      padSize = Math.sqrt(extents[0] * extents[1])
+    }
+    const padFadedMaterial = withSubPixelFade(padMaterial, { size: padSize })
+    const padsMinPixels = fadedOutAt({ size: padSize, exponent: 2 })
 
     let loadedBody = null
     const buildModel = () => {
@@ -204,7 +231,7 @@ export class adaptiveNutModel {
       if (loadedBody) nut.add(loadedBody.clone())
 
       // Pads: geometry i is grappler i, geometry numGrapplers + i its mirror image.
-      const pads = new InstancedParts(padMaterial, { colors: true })
+      const pads = new InstancedParts(padFadedMaterial, { colors: true })
       pads.name = 'adaptiveNut_grappler'
       pads.castShadow = true
       pads.padGeometryIds = []
@@ -226,7 +253,7 @@ export class adaptiveNutModel {
       const hardware = new InstancedParts(hardwareMaterial)
       hardware.name = 'adaptiveNut_hardware'
       hardware.castShadow = true
-      const partIds = Object.fromEntries(HARDWARE_PARTS.map(part => [part, hardware.addGeometry(hardwareGeometries[part])]))
+      const partIds = Object.fromEntries(HARDWARE_PARTS.map(part => [part, hardware.addGeometry(hardwareGeometries[part], hardwareMaterials[part])]))
       hardware.instanceIds = []
       for (let k = 0; k < numGrapplers * GRAPPLER_ROWS.length * SIDES.length * INNER_MIDDLE_OUTER.length; k++) {
         for (const part of HARDWARE_PARTS) hardware.instanceIds.push(hardware.addInstance(partIds[part]))
@@ -236,10 +263,10 @@ export class adaptiveNutModel {
       // Pixel-size LODs measured on the nut's width; extent covers the nut's length.
       const padsLod = new PixelLOD(width, { extent: bodyLength })
       padsLod.name = 'adaptiveNut_padsLod'
-      padsLod.addLevel(PADS_MIN_PIXELS, pads)
+      padsLod.addLevel(padsMinPixels, pads)
       const hardwareLod = new PixelLOD(width, { extent: bodyLength })
       hardwareLod.name = 'adaptiveNut_hardwareLod'
-      hardwareLod.addLevel(HARDWARE_MIN_PIXELS, hardware)
+      hardwareLod.addLevel(hardwareMinPixels, hardware)
       nut.add(padsLod, hardwareLod)
       nut.grappler = { pads, hardware, padsLod, hardwareLod, numGrapplers, key: null }
 
@@ -488,8 +515,8 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
     // Skip the grappler work when the LODs (from last frame's on-screen size) would not draw it, with
     // a 2x margin so parts are already posed when they appear. While recording, always pose them.
     const recording = PixelLOD.buildBudget === Infinity
-    const padsWanted = recording || g.padsLod.onScreenPixels >= PADS_MIN_PIXELS / 2
-    const hardwareWanted = recording || g.hardwareLod.onScreenPixels >= HARDWARE_MIN_PIXELS / 2
+    const padsWanted = recording || g.padsLod.onScreenPixels >= g.padsLod.pixelLevels[0].minPixels / 2
+    const hardwareWanted = recording || g.hardwareLod.onScreenPixels >= g.hardwareLod.pixelLevels[0].minPixels / 2
     if (!padsWanted && !hardwareWanted) return
     const activeGrapplers = Math.min(numGrapplers, g.numGrapplers)
 

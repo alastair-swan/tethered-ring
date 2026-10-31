@@ -6,10 +6,17 @@ import { PixelLOD } from '../scene/PixelLOD.js'
 import { SubPixelFade, withSubPixelFade } from '../scene/SubPixelFade.js'
 import { MooringCables } from './MooringCables.js'
 import { ecefToGeodetic } from '../physics/geodesy.js'
+import { windAt } from '../scene/seaPlacement.js'
 import { addTubeCoordinates, withTubeWallLook } from './tubeWallLook.js'
 
 // Lift fans per instanced chunk (each chunk picks its own level of detail).
 const LIFT_FAN_CHUNK = 32
+
+// The lift fans lean into the wind (their thrust then has a component against it, holding the tube
+// against the wind's drag): their axes tilt upwind from vertical by this much per m/s of wind, at most
+// LIFT_FAN_MAX_TILT.
+const LIFT_FAN_TILT_PER_WIND_SPEED = 1 * Math.PI / 180   // radians per m/s
+const LIFT_FAN_MAX_TILT = 20 * Math.PI / 180
 
 // On-screen tube diameter (px) below which a tube segment is drawn as a line.
 const TUBE_LINE_BELOW_PIXELS = 1
@@ -244,8 +251,11 @@ export class massDriverTubeModel {
   // pylon). There are tens of thousands along the tube, so they are drawn as instanced meshes in chunks
   // of LIFT_FAN_CHUNK fans, each chunk with a pixel-size LOD: full geometry when a fan is large on
   // screen, low-poly geometry when it is a few pixels across, and nothing when it is sub-pixel.
+  // Each chunk's fans lean into the wind at its centre (seaPlacement.windAt: the wind at the weather
+  // date), worked out when the chunk is built; resetLiftFans() rebuilds them when the weather changes.
   createLiftFans(segmentGroup, curve, segmentIndex, liftFansPerSegment, refPoint, orientation) {
-    const parts = { hub: [], disk: [], pylon: [] }
+    const parts = { pylon: [] }
+    const fans = []      // per fan: { hubPos, fanPos (model coordinates), axis (planet coordinates) }
     const centres = []
     const dummy = new THREE.Object3D()
     const matrixOf = (position, lookTarget, scale) => {
@@ -275,12 +285,42 @@ export class massDriverTubeModel {
         const fanDirection = fanPos.clone().normalize()
         const pylonOrientation = fanDirection.clone().applyAxisAngle(tangent, -lr*Math.PI/32).applyQuaternion(orientation)
         fanDirection.applyAxisAngle(tangent, Math.PI/32) // Rotate the fan direction to be perpendicular to the tube
-        const fanOrientation = fanDirection.applyQuaternion(orientation)
-        parts.hub.push(matrixOf(relHubPos, relHubPos.clone().add(fanOrientation), unit))
-        parts.disk.push(matrixOf(relFanPos, relFanPos.clone().add(fanOrientation), new THREE.Vector3(1, 1, 0.05)))
+        fans.push({ hubPos: relHubPos, fanPos: relFanPos, axis: fanDirection })
         parts.pylon.push(matrixOf(relPylonPos, relPylonPos.clone().add(pylonOrientation), new THREE.Vector3(-lr, .25, 1)))
         centres.push(relFanPos)
       }
+    }
+    // Where model coordinates are on the planet (for the wind at a chunk).
+    const toPlanet = orientation.clone().invert()
+    const diskScale = new THREE.Vector3(1, 1, 0.05)
+    // The hubs and disks of fans start..end, leaning into the wind at `centre` (model coordinates).
+    const leanIntoWind = (start, end, centre) => {
+      const axes = fans.slice(start, end).map(fan => fan.axis.clone())
+      if (this.ellipsoid) {
+        const planetCentre = centre.clone().applyQuaternion(toPlanet).add(refPoint)
+        const { lat, lon } = ecefToGeodetic(planetCentre.x, planetCentre.y, planetCentre.z, this.ellipsoid)
+        const wind = windAt(lat, lon)
+        const tilt = Math.min(LIFT_FAN_MAX_TILT, wind.speed * LIFT_FAN_TILT_PER_WIND_SPEED)
+        if (tilt > 0) {
+          // Upwind, in planet coordinates (x east of Greenwich, y north, z the Greenwich meridian).
+          const phi = lat * Math.PI / 180, lambda = lon * Math.PI / 180
+          const sp = Math.sin(phi), cp = Math.cos(phi), sl = Math.sin(lambda), cl = Math.cos(lambda)
+          const up = new THREE.Vector3(cp * sl, sp, cp * cl)
+          const upwind = new THREE.Vector3(cl, 0, -sl).multiplyScalar(-wind.east)
+            .add(new THREE.Vector3(-sp * sl, cp, -sp * cl).multiplyScalar(-wind.north)).normalize()
+          // Turning about up x upwind takes the top of each axis upwind.
+          const turnAxis = new THREE.Vector3().crossVectors(up, upwind).normalize()
+          for (const axis of axes) axis.applyAxisAngle(turnAxis, tilt)
+        }
+      }
+      const hub = [], disk = []
+      axes.forEach((axis, k) => {
+        const { hubPos, fanPos } = fans[start + k]
+        axis.applyQuaternion(orientation)
+        hub.push(matrixOf(hubPos, hubPos.clone().add(axis), unit))
+        disk.push(matrixOf(fanPos, fanPos.clone().add(axis), diskScale))
+      })
+      return { hub, disk }
     }
 
     const fanDiameter = this.radius * 3
@@ -303,12 +343,14 @@ export class massDriverTubeModel {
       let extent = 0
       for (let i = start; i < end; i++) extent = Math.max(extent, centres[i].distanceTo(chunk))
       const toChunk = new THREE.Matrix4().makeTranslation(-chunk.x, -chunk.y, -chunk.z)
+      const chunkCentre = chunk.clone()
       const build = (geometries) => () => {
+        const matrices = { ...leanIntoWind(start, end, chunkCentre), pylon: parts.pylon.slice(start, end) }
         const group = new THREE.Group()
         for (const [part, geometry, material] of geometries) {
           const mesh = new THREE.InstancedMesh(geometry, material, end - start)
           mesh.name = part === 'hub' ? 'liftFanHub' : part === 'disk' ? 'liftFanDisk' : 'liftFanPylon'
-          for (let i = start; i < end; i++) mesh.setMatrixAt(i - start, toChunk.clone().multiply(parts[part][i]))
+          for (let i = start; i < end; i++) mesh.setMatrixAt(i - start, toChunk.clone().multiply(matrices[part][i - start]))
           mesh.computeBoundingSphere()
           group.add(mesh)
         }
@@ -320,6 +362,17 @@ export class massDriverTubeModel {
       lod.addLevel(24, build([['hub', this.liftFanHubGeometry, opaque], ['disk', this.liftFanDiskGeometry, disk], ['pylon', this.liftFanPylonGeometry, opaque]]))
       lod.addLevel(SubPixelFade.minimumPixels(), build([['hub', this.liftFanHubGeometryLow, opaque], ['disk', this.liftFanDiskGeometryLow, disk], ['pylon', this.liftFanPylonGeometryLow, opaque]]))
       segmentGroup.add(lod)
+    }
+  }
+
+  // Rebuilds the lift fans under `root` (as they come into view), leaning into the wind as it is now.
+  resetLiftFans(root) {
+    const lods = []
+    root.traverse((object) => { if (object.name === 'liftFans' && object.isLOD) lods.push(object) })
+    for (const lod of lods) {
+      // (The geometries are shared; the instance matrices are each level's own.)
+      for (const level of lod.pixelLevels) level.object?.traverse(o => { if (o.isInstancedMesh) o.dispose() })
+      lod.reset()
     }
   }
 

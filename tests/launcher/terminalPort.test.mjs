@@ -122,3 +122,40 @@ test('the model has its markers, lamps, windows and doors', () => {
   assert.equal(model.geometries.terminalDoors.attributes.position.count, 2 * 6)
   assert.ok(model.shaft.top > model.shaft.bottom)
 })
+
+test('the underwater terminal ends in a hemisphere, and it and the shaft are smooth-shaded with outward normals', () => {
+  const model = terminalModel(fs.readFileSync(new globalThis.URL('../../models/launcher_ocean_terminal.obj', import.meta.url), 'utf8'))
+  const outward = (geometry, centreOf) => {
+    const p = geometry.attributes.position, n = geometry.attributes.normal
+    let smoothCorners = 0
+    for (let t = 0; t < p.count; t += 3) {
+      const [a, b, c] = [0, 1, 2].map((k) => [p.getX(t + k), p.getY(t + k), p.getZ(t + k)])
+      const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]]
+      const face = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
+      const length = Math.hypot(...face)
+      if (length < 1e-9) continue
+      const centre = centreOf(a)
+      for (let k = 0; k < 3; k++) {
+        const normal = [n.getX(t + k), n.getY(t + k), n.getZ(t + k)]
+        const d = (face[0] * normal[0] + face[1] * normal[1] + face[2] * normal[2]) / length
+        assert.ok(d > 0.5, `normal against its face (${d})`)
+        if (d < 0.9999) smoothCorners++
+      }
+      const out = [a[0] - centre[0], a[1] - centre[1], a[2] - centre[2]]
+      assert.ok(face[0] * out[0] + face[1] * out[1] + face[2] * out[2] >= -1e-6 * length * Math.hypot(...out), 'face turned inwards')
+    }
+    return smoothCorners
+  }
+  const hull = model.geometries.Underwater_Terminal
+  hull.computeBoundingBox()
+  const { min, max } = hull.boundingBox
+  const radius = (max.y - min.y) / 2, cy = (max.y + min.y) / 2
+  const domeCentre = max.z - radius
+  // Every point of the dome is a radius from its centre.
+  const p = hull.attributes.position
+  for (let i = 0; i < p.count; i++) {
+    if (p.getZ(i) > domeCentre + 1e-3) assert.ok(Math.abs(Math.hypot(p.getX(i), p.getY(i) - cy, p.getZ(i) - domeCentre) - radius) < 1e-3)
+  }
+  assert.ok(outward(hull, ([, , z]) => [0, cy, Math.min(Math.max(z, min.z + 1), domeCentre)]) > 0)
+  assert.ok(outward(model.geometries.Elevator_Shaft, ([, y]) => [model.shaft.x, y, model.shaft.z]) > 0)
+})

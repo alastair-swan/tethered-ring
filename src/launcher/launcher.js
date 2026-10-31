@@ -362,6 +362,11 @@ export class launcher {
     if (this.tubeModelObject) this.tubeModelObject.sampleTerrainHeight = sampleTerrainHeight
   }
 
+  // The weather date changed (seaPlacement.setWeatherDate): the lift fans lean into the new wind.
+  resetWeather() {
+    this.tubeModelObject?.resetLiftFans(this.scene)
+  }
+
   // Where the launcher begins: the start of its tube (planet coordinates), or null before it is built.
   startPoint() {
     const curve = virtualMassDriverTube.refFrames?.[0]?.curve?.superCurves?.[0]
