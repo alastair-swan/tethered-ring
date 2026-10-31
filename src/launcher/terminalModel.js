@@ -11,12 +11,22 @@ import * as THREE from 'three'
 //    the anchor chains are made fast (_marker_anchor_rear, _marker_anchor_front).
 //  - Elevator_Shaft: a vertical cylinder from the terminal down into the underwater terminal; its axis
 //    is the pivot the terminal and pier turn about.
+//  - Underwater_Terminal: a cylinder along Z, flat at the launcher's end (-Z) and rounded at the other.
+//    It is redrawn from its extent as a cylinder with a true hemispherical end (underwaterHull), so its
+//    tip stays where the model has it.
+//
+// The file's normals are flat (one per face). The elevator shaft and the underwater terminal are curved
+// surfaces, so they are smooth-shaded: across edges sharper than CREASE_ANGLE (the shaft's rims, the
+// hull's flat end) they stay hard.
 //
 // Its walls are n-gons with holes for the windows (bridged into one outline), so they are triangulated by
 // ear clipping rather than as fans (three.js's OBJLoader would fan them, covering the windows).
 
 const WINDOW_AREA = [2.5, 3.5]
 const DOOR_AREA = [24, 26]
+const CREASE_ANGLE = 40 * Math.PI / 180
+const HULL_SEGMENTS = 80        // round the underwater terminal (as many as the model has)
+const HULL_DOME_RINGS = 20      // from the hemisphere's rim to its tip
 
 /** Parses OBJ text into { name: { polygons: [{ points, normals, uvs }], lines: [Vector3] } }. */
 export function parseObj(text) {
@@ -109,6 +119,95 @@ export function polygonsToGeometry(polygons) {
   return geometry
 }
 
+/**
+ * Gives each polygon smooth normals (in place): at each corner, the area-weighted average of the normals
+ * of the polygons sharing that point that are within creaseAngle of this polygon's own.
+ */
+export function smoothNormals(polygons, creaseAngle = CREASE_ANGLE) {
+  const key = (p) => `${p.x.toFixed(4)},${p.y.toFixed(4)},${p.z.toFixed(4)}`
+  const faces = polygons.map((polygon) => polygonNormal(polygon.points))
+  const atPoint = new Map()   // point -> indices of the polygons that have it
+  polygons.forEach((polygon, i) => {
+    for (const p of polygon.points) {
+      const k = key(p)
+      if (!atPoint.has(k)) atPoint.set(k, [])
+      atPoint.get(k).push(i)
+    }
+  })
+  const cosCrease = Math.cos(creaseAngle)
+  polygons.forEach((polygon, i) => {
+    const own = faces[i].normal
+    polygon.normals = polygon.points.map((p) => {
+      const n = new THREE.Vector3()
+      for (const j of atPoint.get(key(p))) {
+        if (faces[j].normal.dot(own) >= cosCrease) n.addScaledVector(faces[j].normal, faces[j].area)
+      }
+      return n.lengthSq() > 0 ? n.normalize() : own.clone()
+    })
+  })
+  return polygons
+}
+
+/**
+ * The underwater terminal's hull, from the model's: a cylinder along Z of the same radius and axis, a flat
+ * end where the model's is (min Z), and a hemisphere ending at the model's tip (max Z). Polygons with
+ * exact normals.
+ */
+export function underwaterHull(polygons) {
+  const box = new THREE.Box3()
+  for (const polygon of polygons) for (const p of polygon.points) box.expandByPoint(p)
+  const cx = (box.min.x + box.max.x) / 2, cy = (box.min.y + box.max.y) / 2
+  const radius = (box.max.y - box.min.y) / 2
+  const front = box.min.z, tip = box.max.z
+  const domeStart = Math.max(front, tip - radius)
+  // Ring k of the hull (0 = the flat end's rim, 1 = the cylinder's far end, 1 + j = the dome's ring j),
+  // point i round it, with its normal. Points are shared between neighbouring polygons by reference.
+  const rings = []
+  const ring = (z, r, normalAt) => {
+    const points = [], normals = []
+    for (let i = 0; i < HULL_SEGMENTS; i++) {
+      const a = 2 * Math.PI * i / HULL_SEGMENTS
+      const c = Math.cos(a), s = Math.sin(a)
+      points.push(new THREE.Vector3(cx + r * c, cy + r * s, z))
+      normals.push(normalAt(c, s))
+    }
+    rings.push({ points, normals })
+  }
+  ring(front, radius, (c, s) => new THREE.Vector3(c, s, 0))
+  ring(domeStart, radius, (c, s) => new THREE.Vector3(c, s, 0))
+  for (let j = 1; j < HULL_DOME_RINGS; j++) {
+    const phi = (Math.PI / 2) * j / HULL_DOME_RINGS   // from the rim towards the tip
+    const cosPhi = Math.cos(phi), sinPhi = Math.sin(phi)
+    ring(domeStart + radius * sinPhi, radius * cosPhi, (c, s) => new THREE.Vector3(c * cosPhi, s * cosPhi, sinPhi))
+  }
+  const out = []
+  // Quads between rings, wound so that their fronts face out (anticlockwise seen from outside).
+  for (let k = 0; k + 1 < rings.length; k++) {
+    const a = rings[k], b = rings[k + 1]
+    for (let i = 0; i < HULL_SEGMENTS; i++) {
+      const i1 = (i + 1) % HULL_SEGMENTS
+      out.push({
+        points: [a.points[i], a.points[i1], b.points[i1], b.points[i]],
+        normals: [a.normals[i], a.normals[i1], b.normals[i1], b.normals[i]],
+        uvs: [null, null, null, null],
+      })
+    }
+  }
+  // The tip: triangles to the point on the axis.
+  const last = rings[rings.length - 1]
+  const tipPoint = new THREE.Vector3(cx, cy, domeStart + radius)
+  const tipNormal = new THREE.Vector3(0, 0, 1)
+  for (let i = 0; i < HULL_SEGMENTS; i++) {
+    const i1 = (i + 1) % HULL_SEGMENTS
+    out.push({ points: [last.points[i], last.points[i1], tipPoint], normals: [last.normals[i], last.normals[i1], tipNormal], uvs: [null, null, null] })
+  }
+  // The flat end, facing -Z (wound clockwise seen from +Z).
+  const rim = rings[0].points
+  const frontNormal = new THREE.Vector3(0, 0, -1)
+  out.push({ points: [...rim].reverse(), normals: rim.map(() => frontNormal), uvs: rim.map(() => null) })
+  return out
+}
+
 const centroid = (points) => points.reduce((c, p) => c.add(p), new THREE.Vector3()).divideScalar(points.length)
 const within = (x, [lo, hi]) => x >= lo && x <= hi
 
@@ -123,9 +222,11 @@ const within = (x, [lo, hi]) => x >= lo && x <= hi
 export function terminalModel(text) {
   const objects = parseObj(text)
   const geometries = {}
-  for (const name of ['Pier', 'Lamppost', 'Flagpoll', 'Elevator_Shaft', 'Underwater_Terminal']) {
+  for (const name of ['Pier', 'Lamppost', 'Flagpoll']) {
     if (objects[name]) geometries[name] = polygonsToGeometry(objects[name].polygons)
   }
+  if (objects.Elevator_Shaft) geometries.Elevator_Shaft = polygonsToGeometry(smoothNormals(objects.Elevator_Shaft.polygons))
+  if (objects.Underwater_Terminal) geometries.Underwater_Terminal = polygonsToGeometry(underwaterHull(objects.Underwater_Terminal.polygons))
 
   // The terminal's windows and doors: recessed vertical panes of their sizes.
   const walls = [], windows = [], doors = []
