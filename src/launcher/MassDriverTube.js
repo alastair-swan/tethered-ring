@@ -406,6 +406,7 @@ export class virtualMassDriverTube extends VirtualObject {
   static unallocatedModels = []
   static className = 'virtualMassDriverTubes'
   static modelsAreRecyleable = false  // each tube segment is built for its own stretch of the curve
+  static highlightClass = 'massDriver'
   static isDynamic = false
 
   static isTeardownRequired(dParamWithUnits) {

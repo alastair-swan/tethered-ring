@@ -4,6 +4,7 @@ import { ecefToGeodetic, geodeticToECEF } from '../physics/geodesy.js'
 import { offsetLatLon } from '../scene/seaPlacement.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 import { StructureLines } from '../scene/structureLines.js'
+import { Highlights } from '../scene/Highlights.js'
 import { catenaryPoints } from './catenary.js'
 
 // The ocean terminal's mooring cables (OceanTerminal.js): each runs from a fairlead on the underwater
@@ -45,6 +46,7 @@ export class AnchorCables {
     this.signature = null
     this.group = new THREE.Group()
     this.group.name = 'anchorCables'
+    Highlights.tag(this.group, 'massDriverTethers')
     parent.add(this.group)
     lineMaterial ??= StructureLines.createMaterial(0x8a8580, { referenceDiameter: DIAMETER, fog: true })
     this.refresh()

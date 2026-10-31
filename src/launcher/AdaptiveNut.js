@@ -325,6 +325,7 @@ export class virtualAdaptiveNut extends MovingVirtualObject {
   static activeObjects = new Map()
   static className = 'virtualAdaptiveNuts'
   static modelsAreRecyleable = true
+  static highlightClass = 'massDriver'
   static isDynamic = true
   static minMaxArray = [0, 0]
 

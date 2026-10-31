@@ -12,6 +12,7 @@ import { massDriverRailModel, virtualMassDriverRail } from './MassDriverRail.js'
 import { massDriverBracketModel, virtualMassDriverBracket } from './MassDriverBracket.js'
 import { massDriverScrewModel, virtualMassDriverScrew, createScrewModelPair } from './MassDriverScrew.js'
 import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
+import { Highlights } from '../scene/Highlights.js'
 import { humanFigureModel, virtualHumanFigure } from './HumanFigure.js'
 //import { evacuatedTubeModel, virtualEvacuatedTube } from './EvacuatedTube.js'
 import * as LauncherAnimate from './launcherAnimate.js'
@@ -163,6 +164,8 @@ export class launcher {
 
     this.refFrames = []
     const numZones = this.numZones
+    Highlights.disposeStandIn(this.highlightStandIn)
+    this.highlightStandIn = null
 
     const makePath = (name, curves) => {
       const path = new SuperCurvePath()
@@ -200,6 +203,9 @@ export class launcher {
           [virtualMassDriverTube, 3], [virtualMassDriverRail, 2], [virtualMassDriverBracket, 0], [virtualMassDriverScrew, 0],
           [virtualAdaptiveNut, 1], [virtualLaunchSled, 2], [virtualLaunchVehicle, 4], [virtualHumanFigure, 0]])
         this.virtualMassDriverTube = virtualMassDriverTube
+        // The mass driver's highlight from afar, where its models are not drawn.
+        this.highlightStandIn = Highlights.curveStandIn(this.polyCurveForrf3, 'massDriver', { chunks: 128 })
+        planetCoordSys.add(this.highlightStandIn)
         break
       }
       case 1:
@@ -336,6 +342,7 @@ export class launcher {
         const cylinderGeometry = new THREE.CylinderGeometry(threadRadius * 0.9, threadRadius * 0.9, nominalLength, 12, 1, false)
         const cylinderPool = new InstancedProxyPool({
           name: 'massDriverScrew',
+          highlight: 'massDriver',
           parent: this.scene,
           size: 2 * threadRadius,
           levels: [{ geometry: cylinderGeometry, material: this.massDriverScrewMaterials[0], minPixels: 0 }],
@@ -356,6 +363,7 @@ export class launcher {
         const low = this.bracketModelObject.createModel(this.polyCurveForrf0, this.accelerationScrewLength, segments, 0, this.bracketModelObject.lowDetailShape)
         const pool = new InstancedProxyPool({
           name: 'massDriver2Bracket',
+          highlight: 'massDriver',
           parent: this.scene,
           size: 2 * dParamWithUnits['launcherMassDriverTubeInnerRadius'].value,
           castShadow: true,

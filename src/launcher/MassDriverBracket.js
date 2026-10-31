@@ -153,6 +153,7 @@ export class virtualMassDriverBracket extends VirtualObject {
   static unallocatedModels = []
   static className = 'virtualMassDriverBrackets'
   static modelsAreRecyleable = true
+  static highlightClass = 'massDriver'
   static isDynamic = false
 
   static signatureOf(dParamWithUnits) {

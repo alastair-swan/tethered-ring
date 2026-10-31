@@ -22,8 +22,10 @@ export class InstancedProxyPool {
 
   // levels: [{ geometry, material, minPixels }] (any order). size: object size in metres used for
   // the pixel-size test. parent: object the instanced meshes are added to (world-aligned).
-  constructor({ name, levels, size, parent, capacity = 256, castShadow = false }) {
+  // highlight: Highlights class of the instanced meshes (src/scene/Highlights.js).
+  constructor({ name, levels, size, parent, capacity = 256, castShadow = false, highlight }) {
     this.name = name
+    this.highlight = highlight
     this.size = size
     this.parent = parent
     this.castShadow = castShadow
@@ -41,6 +43,7 @@ export class InstancedProxyPool {
     this.meshes = this.levels.map((level) => {
       const mesh = new THREE.InstancedMesh(level.geometry, level.material, capacity)
       mesh.name = this.name
+      if (this.highlight) mesh.userData.highlight = this.highlight
       mesh.count = 0
       // The instances move every frame relative to this object, so its bounding sphere is never valid.
       mesh.frustumCulled = false

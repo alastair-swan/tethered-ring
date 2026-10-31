@@ -17,6 +17,7 @@ import { SubPixelFade } from '../scene/SubPixelFade.js'
 import { Ocean } from '../planet/Ocean.js'
 import { MooringCables } from '../launcher/MooringCables.js'
 import { StructureLines } from '../scene/structureLines.js'
+import { Highlights } from '../scene/Highlights.js'
 import { InstancedProxyPool } from '../scene/InstancedProxyPool.js'
 import { GraphicsQuality, QUALITY_PRESETS } from './GraphicsQuality.js'
 import { Planet, defaultPlanetAssets } from '../planet/Planet.js'
@@ -164,6 +165,8 @@ export class App {
     this.overlays.setLogoVisible(this.d.showLogo.value)
     this.overlays.setChartVisible(this.d.showXYChart.value)
     this.overlays.redrawChartFrame()
+    this.highlights = new Highlights()
+    this.highlights.configure(this.d)
 
     this.setImageryAttribution()
     for (const marker of n.debugGeodeticMarkers ?? []) {
@@ -501,6 +504,7 @@ export class App {
       earthEquatorObjectUpdate: () => this.ring.updateMarkers(),
       adjustTetherOpacity: () => this.ring.setTetherUniforms(),
       adjustStructureGlow: visibility((p) => StructureLines.setGlowDistance(p.structureGlowDistance.value)),
+      adjustHighlights: visibility((p) => this.highlights.configure(p)),
       updateXYChart: visibility((p) => this.overlays.setChartVisible(p.showXYChart.value)),
       updateLogoSprite: visibility((p) => this.overlays.setLogoVisible(p.showLogo.value)),
       updateCamerFieldOfView: visibility((p) => { this.camera3d.fov = p.cameraFieldOfView.value; this.camera3d.updateProjectionMatrix() }),
@@ -530,7 +534,7 @@ export class App {
     const handlers = this.parameterHandlers()
     for (const name of ['adjustEarthSurfaceVisibility', 'adjustEarthAtmosphereVisibility', 'adjustEarthTextureOpacity', 'adjustEarthTextureSidedness',
       'adjustTerrainExaggeration', 'adjustSeaIce', 'adjustSailboats', 'adjustContainerShips', 'adjustClouds', 'adjustOceanTerminal', 'adjustMoonsVisibility', 'updateXYChart', 'updateLogoSprite', 'updateCamerFieldOfView',
-      'updateOrbitControlsRotateSpeed', 'adjustTetherOpacity', 'adjustStructureGlow', 'adjustBackgroundOpacity']) handlers[name]()
+      'updateOrbitControlsRotateSpeed', 'adjustTetherOpacity', 'adjustStructureGlow', 'adjustHighlights', 'adjustBackgroundOpacity']) handlers[name]()
     this.rebuildRing()
     this.ring.adjustLatLon(0)
     this.gui.refresh()
@@ -893,6 +897,8 @@ export class App {
       renderer.setClearColor(this._clearColor, this._clearAlpha)
       this.planet.atmosphere.visible = atmosphereVisible
     }
+    // The highlighted classes, over everything (nothing to do while all are off).
+    this.highlights.render(renderer, this.scene, this.camera3d)
     renderer.clearDepth()
     this.overlays.render(renderer)
   }
