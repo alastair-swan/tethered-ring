@@ -18,7 +18,9 @@ corrections:
     the lower of theirs (plus GLINT_TOLERANCE, for the clouds' movement and the instruments' colours).
   - Snow and ice: over bright ground clouds can hardly be told from it (and hardly show from space), so
     the opacity fades out as the clear ground brightens, between BRIGHT_GROUND.
-Where the day has no data (polar night, the odd gap between passes), there is no cloud.
+Where the day has no data (polar night, the odd gap between passes), there is no cloud. Where Suomi NPP
+has none for the whole day (it has outages, e.g. 12-17 July 2024), NOAA-20's VIIRS is used instead, with
+the remaining layers for the glint.
 
 A day's composite has its passes taken around 13:30 local time, so either side of the date line was
 imaged almost 24 hours apart, and the clouds do not meet there. The western hemisphere is taken from the
@@ -121,12 +123,17 @@ def clear_ground(day: datetime.date) -> np.ndarray:
         other[other.sum(axis=2) == 0] = 255  # (no data: never the darkest)
         ground = other if ground is None else np.minimum(ground, other)
     observed = day_image(day.isoformat())
+    if observed.max() == 0:
+        observed = day_image(day.isoformat(), GLINT_LAYERS['noaa20'])
     return np.minimum(ground, observed.astype(np.int16) + (observed.sum(axis=2, keepdims=True) == 0) * 255)
 
 
 def day_opacity(date: str, ground: np.ndarray) -> np.ndarray:
     """A day's cloud opacity (0..1) over the clear ground."""
-    observed = day_image(date)
+    observed, layer = day_image(date), LAYER
+    if observed.max() == 0:
+        layer = GLINT_LAYERS['noaa20']
+        observed = day_image(date, layer)
     g = srgb_to_linear(ground.astype(np.float32))
 
     def opacity(image):
@@ -138,7 +145,8 @@ def day_opacity(date: str, ground: np.ndarray) -> np.ndarray:
         return a
 
     a = opacity(observed)
-    others = np.fmin.reduce([opacity(day_image(date, layer)) for layer in GLINT_LAYERS.values()])
+    others = np.fmin.reduce([opacity(day_image(date, other)) for other in GLINT_LAYERS.values() if other != layer]
+                            + [np.full(a.shape, np.nan, np.float32)])
     glinty = (a < GLINT_MAX) & ~np.isnan(others)
     a[glinty] = np.minimum(a[glinty], others[glinty] + GLINT_TOLERANCE)
     a = np.nan_to_num(a, nan=0.0)
@@ -153,8 +161,8 @@ def main():
         a = build(date)
         Image.fromarray(np.round(a * 255).astype(np.uint8), 'L').save(OUT / f'{date}.jpg', quality=90)
         print(f'{date}: mean opacity {a.mean():.3f}')
-        # The manifest lists every snapshot there is (written each time, so a failure keeps the rest).
-        built = [d for d in DATES if (OUT / f'{d}.jpg').exists()]
+        # The manifest lists every snapshot in the folder (written each time, so a failure keeps the rest).
+        built = sorted(path.stem for path in OUT.glob('????-??-??.jpg'))
         (OUT / 'manifest.json').write_text(json.dumps({'width': WIDTH, 'height': HEIGHT, 'dates': built}, indent=1) + '\n')
 
 
