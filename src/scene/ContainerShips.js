@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
 import { ecefToGeodetic, geodeticToECEF } from '../physics/geodesy.js'
 import { seaIceConcentrationAt } from '../planet/seaIce.js'
+import { SeaDarkening } from '../planet/seaDarkening.js'
 import { hash, pickWeighted, random, vesselBasis, windAt } from './seaPlacement.js'
 import shipping from '../data/shippingLanes.json' with { type: 'json' }
 
@@ -24,9 +25,17 @@ import shipping from '../data/shippingLanes.json' with { type: 'json' }
 //    at one end and come back in at the other (out of sight: hidden within PORT_HIDE of the ends).
 //  - Ships at anchor lie within their anchorage, in at least ANCHOR_DEPTH of water (from fixed terrain
 //    tiles: Planet.fixedHeightSampler) and apart from each other, heading into the wind.
+//  - The launcher, where the scenes look, gets ships of its own (setLauncherTraffic): one lying near its
+//    start, and, along its mass driver's underwater stretch, a dozen sailing to and fro within 10 km of it.
+//    A launcher on land gets a small anchorage at the nearest deep water and a short lane past it.
+//    All are checked against the terrain.
 // Ships are drawn within a radius of the camera's ground point that grows with its height, while it is
 // below MAX_ALTITUDE, relative to an origin near the camera (planet coordinates are too large for
 // float32).
+//
+// From above the sea, a hull fades into the deep-water colour below the waterline (over UNDERWATER_FADE),
+// as water this clear would hide it; the sea's own darkening of what is under it (seaDarkening.js) is
+// much gentler, to keep the submerged launcher tube in view.
 
 const SHIP_SCALE = 10                 // model units to metres
 const EARTH_RADIUS = 6371000          // the lanes are great circles on a sphere (as in tools/check_shipping_lanes.py)
@@ -39,6 +48,23 @@ const MAX_ALTITUDE = 150000
 const MAX_RADIUS = 250000
 const KNOT = 0.514444
 const BUILDS_PER_FRAME = 8           // new ships built per frame (the rest appear over the next frames)
+const UNDERWATER_FADE = 2.5          // m below the waterline for a hull to fade 63% into the water
+// Local traffic (setLauncherTraffic): deep water searched for out to LOCAL_SEARCH; for a launcher on land,
+// a lane LOCAL_LANES long (or shorter, if that does not fit) whose ships are hidden within LOCAL_HIDE of its
+// ends. Along an underwater launcher, CORRIDOR_SHIPS ships between CORRIDOR_OFFSET from it, on a corridor
+// from CORRIDOR_LEAD before its start to where the water within the outer offset gets shallower than
+// CORRIDOR_DEPTH.
+const LOCAL_SEARCH = [3000, 6000, 10000, 15000, 20000, 30000, 40000]
+const LOCAL_DEPTH = 15
+const LOCAL_LANES = [100000, 60000]
+const LOCAL_HIDE = 8000
+const START_SHIP = [2000, 4000]
+const CORRIDOR_SHIPS = 12
+const CORRIDOR_OFFSET = [2000, 10000]
+const CORRIDOR_LEAD = 40000
+const CORRIDOR_DEPTH = 30
+const CORRIDOR_MIN = 20000
+const CORRIDOR_HIDE = 3000
 
 // The model's deck: slot k (from the stern) is centred at z = FIRST_SLOT + k * SLOT. Slots 0-2 (where
 // the hull narrows aft) have 6, 4 and 2 fewer rows than the rest; the bow's two slots 2 fewer rows and
@@ -239,7 +265,8 @@ export class ContainerShips {
   _laneShipPose(lane, ship, t) {
     let s = (ship.phase + ship.direction * ship.speed * t) % lane.length
     if (s < 0) s += lane.length
-    if (s < PORT_HIDE || s > lane.length - PORT_HIDE) return null
+    const hide = lane.hide ?? PORT_HIDE
+    if (s < hide || s > lane.length - hide) return null
     const c = lane.cumulative
     let i = 0, j = c.length - 1
     while (j - i > 1) {
@@ -257,7 +284,7 @@ export class ContainerShips {
     if (ship.direction < 0) _t.negate()
     // Keep to starboard.
     _r.crossVectors(_t, _p).normalize()
-    const offset = lane.separation[i] / EARTH_RADIUS
+    const offset = (ship.offset ?? lane.separation[i]) / EARTH_RADIUS
     _p.multiplyScalar(Math.cos(offset)).addScaledVector(_r, Math.sin(offset)).normalize()
     const lat = Math.asin(_p.z) * 180 / Math.PI, lon = Math.atan2(_p.y, _p.x) * 180 / Math.PI
     const phi = lat * Math.PI / 180, lambda = lon * Math.PI / 180
@@ -266,10 +293,153 @@ export class ContainerShips {
     return { lat, lon, heading: Math.atan2(east, north) }
   }
 
+  // --- Local traffic --------------------------------------------------------------------------
+
+  /**
+   * Ships around a launcher, where the scenes look. `track`: [lat, lon, altitude] along its tube from the
+   * start (every km or so). One ship lies START_SHIP from the start; along the tube's underwater stretch
+   * (if it is at least CORRIDOR_MIN long), CORRIDOR_SHIPS sail to and fro; otherwise the nearest deep
+   * water gets a small anchorage and a lane past it. Replaces the previous launcher's traffic.
+   */
+  async setLauncherTraffic(track) {
+    if (!track.length) return
+    const [lat, lon] = track[0]
+    const key = `${lat.toFixed(4)},${lon.toFixed(4)},${track.length}`
+    if (this.localKey === key) return
+    this.localKey = key
+    this.lanes = this.lanes.filter((lane) => !lane.local)
+    this.anchorages = this.anchorages.filter((a) => !a.local)
+    const seed = hash(Math.round(lat * 1e4), Math.round(lon * 1e4), 11)
+    const r = random(seed)
+    const turn = r() * 2 * Math.PI
+    // The underwater stretch, from the start until the tube comes out of the sea.
+    let wet = 0
+    while (wet < track.length && track[wet][2] < 0) wet++
+    const underwater = track.slice(0, wet)
+    if (underwater.length * 1000 >= CORRIDOR_MIN) {
+      await this._startShip(lat, lon, r, seed, key)
+      await this._corridor(underwater, r, seed, key)
+      return
+    }
+    await this._localLane(lat, lon, turn, seed, key)
+  }
+
+  // One ship lying near the launcher's start.
+  async _startShip(lat, lon, r, seed, key) {
+    const distance = START_SHIP[0] + (START_SHIP[1] - START_SHIP[0]) * r()
+    const turn = r() * 2 * Math.PI
+    for (let k = 0; k < 16; k++) {
+      const [lat1, lon1] = this._along(lat, lon, turn + k * Math.PI / 8, distance)
+      const h = await this._height(lat1, lon1)
+      if (this.localKey !== key) return
+      if (h === null || h > -LOCAL_DEPTH) continue
+      this.anchorages.push({ name: 'launcher start', lat: lat1, lon: lon1, radiusKm: 0.3, count: 1, ships: null, building: false, local: true, seed: seed + 1 })
+      return
+    }
+  }
+
+  // Ships sailing to and fro along the launcher's underwater stretch.
+  async _corridor(track, r, seed, key) {
+    // Where the water either side of the track stays deep enough.
+    let end = track.length - 1
+    for (let i = 0; i < track.length; i += 2) {
+      const next = track[Math.min(track.length - 1, i + 1)], here = track[i]
+      const bearing = this._bearing(here, next)
+      let ok = true
+      for (const side of [-1, 0, 1]) {
+        const h = await this._height(...this._along(here[0], here[1], bearing + Math.PI / 2, side * CORRIDOR_OFFSET[1]))
+        if (h === null || h > -CORRIDOR_DEPTH) { ok = false; break }
+      }
+      if (this.localKey !== key) return
+      if (!ok) { end = i; break }
+    }
+    if (end * 1000 < CORRIDOR_MIN) return
+    // The corridor: a lead-in before the start, then the track every 5 km.
+    const back = this._bearing(track[1] ?? track[0], track[0])
+    const waypoints = [this._along(track[0][0], track[0][1], back, CORRIDOR_LEAD)]
+    for (let i = 0; i < end; i += 5) waypoints.push(track[i].slice(0, 2))
+    waypoints.push(track[end].slice(0, 2))
+    const lane = this._lane({ name: 'launcher', shipsPer100km: 0, waypoints }, seed)
+    lane.local = true
+    lane.hide = CORRIDOR_HIDE
+    // Spread along the stretch past the start, each at its own distance to starboard of the tube.
+    lane.ships = Array.from({ length: CORRIDOR_SHIPS }, (_, k) => {
+      const d = [r(), r(), r(), r()]
+      return {
+        id: `launcher${seed}:${k}`, direction: d[0] < 0.5 ? 1 : -1, seed: hash(seed, k, 12),
+        sizes: [['small', 0.4], ['medium', 0.45], ['large', 0.15]],
+        phase: CORRIDOR_LEAD + (k + d[1]) / CORRIDOR_SHIPS * (lane.length - CORRIDOR_LEAD),
+        speed: (14 + 6 * d[2]) * KNOT,
+        offset: CORRIDOR_OFFSET[0] + (CORRIDOR_OFFSET[1] - CORRIDOR_OFFSET[0]) * d[3],
+      }
+    })
+    this.lanes.push(lane)
+  }
+
+  _bearing([lat0, lon0], [lat1, lon1]) {
+    const phi0 = lat0 * Math.PI / 180, phi1 = lat1 * Math.PI / 180, dl = (lon1 - lon0) * Math.PI / 180
+    return Math.atan2(Math.sin(dl) * Math.cos(phi1), Math.cos(phi0) * Math.sin(phi1) - Math.sin(phi0) * Math.cos(phi1) * Math.cos(dl))
+  }
+
+  // A small anchorage at the nearest deep water to (lat, lon), and a lane past it.
+  async _localLane(lat, lon, turn, seed, key) {
+    let spot = null
+    search: for (const distance of LOCAL_SEARCH) {
+      for (let k = 0; k < 16; k++) {
+        const bearing = turn + k * Math.PI / 8
+        const [lat1, lon1] = this._along(lat, lon, bearing, distance)
+        const h = await this._height(lat1, lon1)
+        if (h !== null && h <= -LOCAL_DEPTH) { spot = [lat1, lon1]; break search }
+      }
+    }
+    if (!spot || this.localKey !== key) return
+    this.anchorages.push({ name: 'local', lat: spot[0], lon: spot[1], radiusKm: 3, count: 3, ships: null, building: false, local: true, seed })
+    for (const length of LOCAL_LANES) {
+      for (let k = 0; k < 8; k++) {
+        const bearing = turn + k * Math.PI / 8
+        const ends = [this._along(...spot, bearing, length / 2), this._along(...spot, bearing + Math.PI, length / 2)]
+        if (!(await this._laneInWater(ends))) continue
+        if (this.localKey !== key) return
+        const lane = this._lane({ name: 'local', shipsPer100km: 200000 / length, waypoints: ends }, seed)
+        lane.local = true
+        lane.hide = LOCAL_HIDE
+        this.lanes.push(lane)
+        return
+      }
+    }
+  }
+
+  // The point `distance` m from (lat, lon) along the great circle at `bearing` (clockwise from north).
+  _along(lat, lon, bearing, distance) {
+    const p = unitVector(lat, lon), d = distance / EARTH_RADIUS
+    const phi = lat * Math.PI / 180, lambda = lon * Math.PI / 180
+    const east = new THREE.Vector3(-Math.sin(lambda), Math.cos(lambda), 0)
+    const north = new THREE.Vector3(-Math.sin(phi) * Math.cos(lambda), -Math.sin(phi) * Math.sin(lambda), Math.cos(phi))
+    const t = north.multiplyScalar(Math.cos(bearing)).addScaledVector(east, Math.sin(bearing))
+    p.multiplyScalar(Math.cos(d)).addScaledVector(t, Math.sin(d))
+    return [Math.asin(p.z) * 180 / Math.PI, Math.atan2(p.y, p.x) * 180 / Math.PI]
+  }
+
+  // Whether a lane between two points, and the tracks either side of it, are all in deep enough water.
+  async _laneInWater([a, b]) {
+    const pa = unitVector(...a), pb = unitVector(...b)
+    const steps = Math.ceil(pa.angleTo(pb) * EARTH_RADIUS / 2000)
+    for (let i = 0; i <= steps; i++) {
+      const p = pa.clone().lerp(pb, i / steps).normalize()
+      const lat = Math.asin(p.z) * 180 / Math.PI, lon = Math.atan2(p.y, p.x) * 180 / Math.PI
+      const bearing = Math.atan2(b[1] - a[1], b[0] - a[0]) + Math.PI / 2
+      for (const side of [-1, 0, 1]) {
+        const h = await this._height(...this._along(lat, lon, bearing, side * LANE_OFFSET))
+        if (h === null || h > -LOCAL_DEPTH) return false
+      }
+    }
+    return true
+  }
+
   // --- Anchorages -----------------------------------------------------------------------------
 
   async _buildAnchorage(anchorage, index) {
-    const r = random(hash(index, 9))
+    const r = random(anchorage.seed ?? hash(index, 9))
     const wind = windAt(anchorage.lat, anchorage.lon)
     const ships = []
     for (let k = 0; k < anchorage.count * 3 && ships.length < anchorage.count; k++) {
@@ -282,8 +452,8 @@ export class ContainerShips {
       const h = await this._height(lat, lon)
       if (h === null || h > -ANCHOR_DEPTH) continue
       ships.push({
-        id: `anchor${index}:${k}`, lat, lon, east, north, heading: wind.from + (d[2] - 0.5) * 0.6,
-        seed: hash(index, k, 10), sizes: [['small', 0.3], ['medium', 0.4], ['large', 0.3]],
+        id: `anchor${anchorage.seed ?? index}:${k}`, lat, lon, east, north, heading: wind.from + (d[2] - 0.5) * 0.6,
+        seed: hash(anchorage.seed ?? index, k, 10), sizes: [['small', 0.3], ['medium', 0.4], ['large', 0.3]],
       })
     }
     anchorage.ships = ships
@@ -313,14 +483,20 @@ export class ContainerShips {
       material = new THREE.MeshStandardMaterial({ color, roughness: 0.55 })
       // Antifouling red below the waterline (model y < 0).
       material.onBeforeCompile = (shader) => {
+        shader.uniforms.shipSeaParams = SeaDarkening.uniforms().seaParams
+        shader.uniforms.shipSeaTint = SeaDarkening.uniforms().seaTint
         shader.vertexShader = shader.vertexShader
           .replace('#include <common>', '#include <common>\nvarying float vShipModelY;')
           .replace('#include <begin_vertex>', '#include <begin_vertex>\nvShipModelY = position.y;')
         const red = new THREE.Color(ANTIFOULING)
         shader.fragmentShader = shader.fragmentShader
-          .replace('#include <common>', '#include <common>\nvarying float vShipModelY;')
+          .replace('#include <common>', '#include <common>\nvarying float vShipModelY;\nuniform vec2 shipSeaParams;\nuniform vec3 shipSeaTint;')
           .replace('#include <color_fragment>', `#include <color_fragment>
 if (vShipModelY < -0.02) diffuseColor.rgb = vec3(${red.r.toFixed(4)}, ${red.g.toFixed(4)}, ${red.b.toFixed(4)});`)
+          // From above the sea (shipSeaParams.y), the hull below the waterline fades into the water.
+          .replace('#include <opaque_fragment>', `if (shipSeaParams.y > 0.5 && vShipModelY < 0.0)
+  outgoingLight = mix(outgoingLight, shipSeaTint, 1.0 - exp(vShipModelY * ${(SHIP_SCALE / UNDERWATER_FADE).toFixed(3)}));
+#include <opaque_fragment>`)
       }
       material.customProgramCacheKey = () => 'containerShipHull'
       this.hullMaterials.set(color, material)

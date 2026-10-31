@@ -694,6 +694,7 @@ export class App {
     this.planet.update(this.camera3d)
     this.sailboats?.update(t, this.camera3d)
     this.containerShips?.update(t, this.camera3d)
+    this.updateLauncherTraffic()
     if (this.sailboats?.shadowFocus) this.lighting.setLocalShadowFocus(this.sailboats.shadowFocus)
     // The water surface follows the camera; under it the view switches to the underwater look (see
     // render()), with the evacuated tube kept dry.
@@ -733,6 +734,19 @@ export class App {
     if (autoDay) this.store.set('sunDayOfYear', chosen.dayOfYear)
     if (autoTime) this.store.set('sunTimeOfDayUTC', Math.round(chosen.utcHours * 100) / 100)
     this.store.derive()
+  }
+
+  // Ships around the launcher, where the scenes look (ContainerShips.setLauncherTraffic), whenever the
+  // launcher's start moves.
+  updateLauncherTraffic() {
+    const start = this.containerShips && this.launchSystem?.startPoint()
+    if (!start || this._launcherTrafficStart?.equals(start)) return
+    this._launcherTrafficStart = start
+    const track = this.launchSystem.pathPoints(1000).map((p) => {
+      const g = tram.ecefToGeodetic(p.x, p.y, p.z, this.planetSpec.ellipsoid)
+      return [g.lat, g.lon, g.alt]
+    })
+    this.containerShips.setLauncherTraffic(track)
   }
 
   // Sun direction (and the season, for sea ice) for the start date plus the simulated time.

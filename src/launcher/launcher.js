@@ -362,6 +362,23 @@ export class launcher {
     if (this.tubeModelObject) this.tubeModelObject.sampleTerrainHeight = sampleTerrainHeight
   }
 
+  // Where the launcher begins: the start of its tube (planet coordinates), or null before it is built.
+  startPoint() {
+    const curve = virtualMassDriverTube.refFrames?.[0]?.curve?.superCurves?.[0]
+    return curve ? curve.getPointAt(0, new THREE.Vector3()) : null
+  }
+
+  // Points along the launcher's tube from its start, every `step` metres (planet coordinates); empty
+  // before it is built.
+  pathPoints(step = 1000) {
+    const points = []
+    for (const curve of virtualMassDriverTube.refFrames?.[0]?.curve?.superCurves ?? []) {
+      const n = Math.max(1, Math.ceil(curve.getLength() / step))
+      for (let i = points.length ? 1 : 0; i <= n; i++) points.push(curve.getPointAt(i / n, new THREE.Vector3()))
+    }
+    return points
+  }
+
   // The evacuated tube near `localPoint` (planet coordinates), within maxDistance of its axis: { point,
   // tangent (its axis's nearest point and direction there, planet coordinates), radius (inside) }, or null.
   // (Inside it there is vacuum rather than water: used for the underwater view.)
