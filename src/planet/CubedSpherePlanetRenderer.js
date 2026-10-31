@@ -100,6 +100,11 @@ const DEG2RAD = Math.PI / 180;
 // coastline, and its colour before a tile's imagery has loaded.
 const WATER_OPACITY = 0.12; // looking straight into it (the surface's reflection comes on top: see _createWaterMaterial)
 const WATER_GRAZING_OPACITY = 0.35;
+// Light scattered back out of deep, clear water (linear reflectance; open ocean sends back mostly blue),
+// reached over the first WATER_BODY_DEPTH metres. The imagery's ocean, and the darkened sea floor seen
+// through the water, are near black.
+const WATER_BODY = [0.002, 0.008, 0.025];
+const WATER_BODY_DEPTH = 30;
 const WATER_SHALLOWS_DEPTH = 30;
 // Sea ice on the ground fades out over this height above sea level (m; see _configureSeafloor).
 const SEA_ICE_SHORE_HEIGHT = 40;
@@ -2133,6 +2138,13 @@ material.specularShininess = clamp(2.0 / (seaUnresolved + 2e-4) - 2.0, 4.0, 8000
   vec3 water = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
   vec3 light = (1.0 - fresnel) * seaWaterAlpha * water + fresnel * seaSkyReflection(reflect(-view, normal), sqrt(seaUnresolved)) + reflectedLight.directSpecular;
   float alpha = (1.0 - fresnel) * seaWaterAlpha + fresnel;
+  // The light the water itself sends back (water-leaving light), in the sun and sky light (sunAndSkyLight.js).
+  vec3 seaIrradiance = slSkyDown + ambientLightColor;
+  #if NUM_DIR_LIGHTS > 0
+    seaIrradiance += slDirect * directionalLights[0].color * max(dot(seaToView(seaUp), directionalLights[0].direction), 0.0);
+  #endif
+  light += (1.0 - fresnel) * (1.0 - seaIce) * vec3(${WATER_BODY.map(c => c.toFixed(4)).join(', ')}) * RECIPROCAL_PI * seaIrradiance
+    * smoothstep(0.0, ${WATER_BODY_DEPTH.toFixed(1)}, vSeaDepth);
   if (seaFoamCover > 0.0) {
     // White water: matte, lit by the sun and sky (sunAndSkyLight.js) and the night light.
     vec3 irradiance = slSkyDown + ambientLightColor;

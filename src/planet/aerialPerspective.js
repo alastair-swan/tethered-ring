@@ -74,7 +74,7 @@ THREE.ShaderChunk.fog_fragment += `
       if (apT1 > apT0) {
         vec3 apLight, apTransmittance;
         atmoScatter(apCamera.xyz, apDirStretched, apDir, apT0, apT1, apSun, apParams.z, ${SAMPLES}, apLight, apTransmittance);
-        apLight *= apParams.x * atmoHazeScale(apTransmittance);
+        apLight *= atmoHazeScale(apTransmittance, apParams.x);
         vec3 apColor = sRGBTransferEOTF(vec4(gl_FragColor.rgb, 1.0)).rgb * apTransmittance + (1.0 - exp(-apLight));
         gl_FragColor.rgb = sRGBTransferOETF(vec4(apColor, 1.0)).rgb;
       }

@@ -318,6 +318,32 @@ POSIX shells:
 .venv/bin/python -m tools.sources.build_weather
 ```
 
+### Real clouds (`assets/clouds`)
+
+`tools/sources/build_clouds.py` builds the clouds seen from space: for the 15th of each month of 2024, the
+cloud opacity over the whole planet (10240 x 5120, about 3.9 km a pixel, greyscale JPEG, about 15 MB each)
+from NASA GIBS's daily VIIRS (Suomi NPP) true-colour composites, downloaded once into
+`additional_earth_imagery/clouds/` (about 1.5 GB, no login needed). The clouds are separated from the ground
+by comparing the day with the clear ground (the darkest of each pixel over the days around it, so it has the
+season's snow); sun glint is removed with NOAA-20's and Terra's imagery of the same day, whose glint is
+elsewhere; clouds fade out over snow and ice; and the western hemisphere is taken from the day before, which
+moves the composite's day boundary from the date line to a cross-fade in the mid-Atlantic. At run time
+`src/planet/clouds/realClouds.js` shows the snapshot nearest the simulated date, blending in from 60 km up
+(see Weather and clouds in docs/ARCHITECTURE.md). Without the data there are none, and the clouds come from
+the weather everywhere.
+
+PowerShell:
+
+```powershell
+.venv\Scripts\python -m tools.sources.build_clouds
+```
+
+POSIX shells:
+
+```sh
+.venv/bin/python -m tools.sources.build_clouds
+```
+
 ### Credits and licences
 
 | Source | Credit | Licence |
@@ -327,6 +353,7 @@ POSIX shells:
 | GEBCO 2026 | GEBCO Compilation Group (2026) GEBCO 2026 Grid (doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa) | UK Open Government Licence v3.0 (CEDA); GEBCO's own terms (`GEBCO_Grid_terms_of_use.pdf` in the zip) place the grid in the public domain. Either way: acknowledge the source with the citation, do not suggest GEBCO endorses the use, and not for navigation |
 | Sea ice | National Snow and Ice Data Center, Sea Ice Index, Version 4 (G02135) | NSIDC's data are free to use with citation of the data set (see its documentation at nsidc.org/data/g02135) |
 | Surface wind and weather | NCEP/NCAR Reanalysis 1, NOAA PSL, Boulder, Colorado (Kalnay et al., 1996, Bull. Amer. Meteor. Soc. 77, 437-470) | NOAA data, free to use; PSL asks that it be acknowledged as "NCEP-NCAR Reanalysis 1 data provided by the NOAA PSL, Boulder, Colorado, USA, from their website at https://psl.noaa.gov" |
+| Real clouds | NASA Global Imagery Browse Services (GIBS), part of NASA's Earth Science Data and Information System (ESDIS); VIIRS (Suomi NPP, NOAA-20) and MODIS (Terra) Corrected Reflectance | NASA imagery, free to use with acknowledgement of GIBS |
 | New Zealand imagery and DEM | Sourced from the LINZ Data Service: New Zealand 10m Satellite Imagery (2022-2023), NZ 8m Digital Elevation Model (2012) | CC BY 4.0 (attribution: "Toitū Te Whenua Land Information New Zealand") |
 | Hawaii imagery (XHR) | Esri World Imagery (Esri, Maxar, Earthstar Geographics and the GIS user community) | Esri's terms of use: it may be displayed with attribution, but not redistributed as data. Do not publish the raw images or COGs; check the terms before shipping tiles baked from them |
 | Hawaii terrain | Copernicus DEM GLO-30, © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA | Copernicus DEM licence (free, attribution required) |

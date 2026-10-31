@@ -3,7 +3,9 @@ import '../../scene/sunAndSkyLight.js' // registers <sun_and_sky_light> (and <at
 import { SunAndSkyLight } from '../../scene/sunAndSkyLight.js'
 import { cloudNoiseTextures } from './cloudNoise.js'
 import { WeatherMap } from './weatherMap.js'
+import { RealClouds } from './realClouds.js'
 import { RAIN_AREA } from '../../physics/weather.js'
+import { MULTIPLE_SCATTERING } from '../../scene/skyIrradiance.js'
 
 // Volumetric clouds over the whole planet, from the weather (weatherMap.js) and tiling noise
 // (cloudNoise.js), drawn over the rendered scene in three passes at RESOLUTION of the screen:
@@ -37,7 +39,10 @@ import { RAIN_AREA } from '../../physics/weather.js'
 // 3. Composite: the scene dimmed by the clouds' shadow, the clouds over it (premultiplied; their
 //    transmittance dims what is behind), and rain streaks when the camera is in the rain.
 
+// The cloud target's resolution (of the screen's): half near the clouds (they are soft, and marching them
+// is costly), full from high up, where the march is cheap and their edges are sharp.
 const RESOLUTION = 0.5
+const HIGH_RESOLUTION = [100000, 300000] // m: the camera altitudes over which it rises to full
 const SHELL_TOP = 13000 // m
 const MARCH_STEPS = 64
 const LIGHT_STEPS = 5
@@ -48,6 +53,9 @@ const DETAIL_TILE = 3000
 // (m), moving the cover through a probit transform, so it shows where the clouds themselves are too
 // small to see (from orbit).
 const MACRO_TILE = 400000
+// Seen from space the clouds are real ones (realClouds.js): the cover blends from the weather's to the
+// imagery's as the camera climbs between these altitudes (m), the same for every pixel.
+const REAL_CLOUD_ALTITUDES = [60000, 600000]
 const DRIFT_PERIOD = 2400 // s
 // Extinction (1/m) of a cloud at full density.
 const EXTINCTION = 0.03
@@ -109,6 +117,9 @@ uniform mat3 worldToPlanet;
 uniform vec3 shapeOffset[2];    // the camera's planet position modulo the shape tile (m), for each drift copy
 uniform vec3 detailOffset[2];
 uniform vec3 macroOffset;        // the camera's planet position modulo the large-scale tile (m)
+uniform sampler2D realClouds;    // the real clouds' opacity (realClouds.js)
+uniform float realBlend;         // how much of the cover is theirs (0..1)
+uniform float realTexel;         // the real clouds' texel size (m)
 uniform vec3 drift;             // x, y: the two copies' drift times (s); z: the second copy's weight
 uniform vec2 exposure;          // x: the sky's exposure (Planet.js); y: the sun's intensity
 uniform float pixelAngle;       // radians per pixel of the cloud target
@@ -165,9 +176,18 @@ float cloudDensity(vec2 uv, vec3 p, vec3 local, float h, bool full, float footpr
   // (The reanalysis's total cover counts thin high cloud too, and a threshold on 3D noise covers more
   // of a column than of a level: a little less for the layer.)
   float cover = a.r * 0.8;
+  // (The mip level from the pixel's footprint: automatic derivatives mean nothing along a ray, and jump
+  // at the date line.)
+  // (Less the imagery's floor of faint residual haze and noise over clear sea, about 0.05, which would
+  // veil the whole ocean.)
+  if (realBlend > 0.0) {
+    float real = textureLod(realClouds, uv, log2(max(footprint, 1.0) / realTexel)).r;
+    cover = mix(cover, clamp((real - 0.05) / 0.95, 0.0, 1.0), realBlend);
+  }
   if (cover < 0.01) return 0.0;
-  // (Its features, from about 12 km up, fade to their mean as they shrink below a pixel.)
-  float macroDetail = 1.0 - smoothstep(2000.0, 8000.0, footprint);
+  // (Its features, from about 12 km up, fade to their mean as they shrink below a pixel; the real
+  // clouds have their own.)
+  float macroDetail = (1.0 - smoothstep(2000.0, 8000.0, footprint)) * (1.0 - realBlend);
   if (macroDetail > 0.0) {
     vec4 m = texture(shapeNoise, (local + macroOffset) / ${MACRO_TILE.toFixed(1)});
     float macro = remap(m.r, m.g * 0.625 + m.b * 0.25 + m.a * 0.125 - 1.0, 1.0, 0.0, 1.0) - SHAPE_MEAN;
@@ -213,7 +233,7 @@ float cloudDensity(vec2 uv, vec3 p, vec3 local, float h, bool full, float footpr
   // Too far for the clouds to be told apart: a density giving the column the transmittance of a cover
   // of opaque clouds, 1 - 0.9 cover (spreading the clouds' own density out evenly would make any cover
   // of them opaque).
-  float far = -log(1.0 - 0.9 * cover) / (EXTINCTION * (top - base) * 0.5) * profile;
+  float far = -log(1.0 - mix(0.9, 0.97, realBlend) * cover) / (EXTINCTION * (top - base) * 0.5) * profile;
   d = mix(clamp(d, 0.0, 1.0), far, lod);
   return d * mix(1.0, 1.6, convective);
 }
@@ -406,17 +426,24 @@ void main() {
     transmittance *= stepT;
     if (transmittance < 0.01) break;
   }
-  // Haze between the camera and the cloud (by its opacity-weighted distance): the air's full in-scatter
-  // (the ground's haze is scaled down over directly lit ground, which would leave bright clouds only
-  // reddened by the air, yellow, rather than also hazed blue).
+  // Haze between the camera and the cloud (by its opacity-weighted distance). The air's light in front of
+  // a cloud is the brighter of the sky's (as the sky beside it is drawn, with its exposure: clouds seen
+  // against the sky) and the light on the clouds' own scale (ATMO_HAZE_THIN, uncapped: from space, where
+  // the sky's exposure falls, clouds seen against the ground). Single scattering alone leaves far clouds
+  // tan from space (along a grazing line of sight the air reddens them strongly and adds too little light
+  // of its own), so the latter is scaled up for the light scattered more than once (MULTIPLE_SCATTERING,
+  // as the sky's light); and for an extended bright surface such as a cloud deck the light scattered out
+  // of the line of sight is largely made up by light scattered into it from beside it, so its reddening
+  // is half desaturated.
   if (depthWeight > 0.0 && slParams.y > 0.5) {
     float tc = depthSum / depthWeight;
     float at0, at1;
     if (atmoRoots(dot(ds / stretch, ds / stretch), dot(c, d), dot(c, c) - (a + 100000.0) * (a + 100000.0), at0, at1)) {
       vec3 airLight, airTransmittance;
       atmoScatter(c, d, dirWorld, max(at0, 0.0), min(at1, tc), slSun, a, 8, airLight, airTransmittance);
-      airLight *= exposure.x;
-      light = light * airTransmittance + (1.0 - exp(-airLight)) * (1.0 - transmittance);
+      vec3 cloudTransmittance = mix(airTransmittance, vec3(dot(airTransmittance, vec3(0.2126, 0.7152, 0.0722))), 0.5);
+      vec3 inScatter = max((1.0 - exp(-airLight)) * exposure.x, airLight * ATMO_HAZE_THIN * ${MULTIPLE_SCATTERING.toFixed(2)});
+      light = light * cloudTransmittance + inScatter * (1.0 - transmittance);
     }
   }
   outClouds = vec4(light, transmittance);
@@ -484,6 +511,7 @@ export class Clouds {
     this.planet = planet
     this.planetCoordSys = planetCoordSys
     this.weatherMap = new WeatherMap()
+    this.realClouds = new RealClouds()
     this.enabled = true
     const noise = cloudNoiseTextures()
     const targetOptions = { type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: true, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter }
@@ -502,6 +530,9 @@ export class Clouds {
       worldToPlanet: { value: new THREE.Matrix3() },
       shapeOffset: { value: [new THREE.Vector3(), new THREE.Vector3()] },
       macroOffset: { value: new THREE.Vector3() },
+      realClouds: { value: null },
+      realBlend: { value: 0 },
+      realTexel: { value: 4000 },
       detailOffset: { value: [new THREE.Vector3(), new THREE.Vector3()] },
       drift: { value: new THREE.Vector3() },
       exposure: { value: new THREE.Vector2(1, Math.PI) },
@@ -536,6 +567,7 @@ export class Clouds {
   update(renderer, dayOfYear, utcHours, t) {
     if (!this.enabled) return
     this.weatherMap.update(renderer, dayOfYear, utcHours)
+    this.realClouds.setDayOfYear(dayOfYear + utcHours / 24)
     this.time = t
   }
 
@@ -543,19 +575,22 @@ export class Clouds {
   render(renderer, scene, camera, sunIntensity, skyExposure) {
     if (!this.enabled) return
     const size = renderer.getDrawingBufferSize(new THREE.Vector2())
-    const w = Math.max(1, Math.round(size.x * RESOLUTION)), h = Math.max(1, Math.round(size.y * RESOLUTION))
+    this.planetCoordSys.updateWorldMatrix(true, false)
+    camera.getWorldPosition(_cameraPlanet)
+    this.planetCoordSys.worldToLocal(_cameraPlanet)
+    const altitude = _cameraPlanet.length() - this.planet.atmosphereUniforms.atmoParams.value.z // (about: the equatorial radius)
+    const resolution = THREE.MathUtils.smoothstep(altitude, HIGH_RESOLUTION[0], HIGH_RESOLUTION[1]) > 0.5 ? 1 : RESOLUTION
+    const w = Math.max(1, Math.round(size.x * resolution)), h = Math.max(1, Math.round(size.y * resolution))
     if (this.distanceTarget.width !== w || this.distanceTarget.height !== h) {
       this.distanceTarget.setSize(w, h)
       this.cloudTarget.setSize(w, h)
-      this.compositeScene.children[0].material.uniforms.texel.value.set(1 / w, 1 / h)
+      // (No smoothing at full resolution.)
+      this.compositeScene.children[0].material.uniforms.texel.value.set(resolution < 1 ? 1 / w : 0, resolution < 1 ? 1 / h : 0)
       this.compositeScene.children[0].material.uniforms.aspect.value = w / h
     }
     const u = this.uniforms
-    // Planet axes, and the camera's planet position (float64) for the noise offsets.
-    this.planetCoordSys.updateWorldMatrix(true, false)
+    // Planet axes (the camera's planet position, float64, is above: for the noise offsets).
     u.worldToPlanet.value.setFromMatrix4(_m4.copy(this.planetCoordSys.matrixWorld).invert())
-    camera.getWorldPosition(_cameraPlanet)
-    this.planetCoordSys.worldToLocal(_cameraPlanet)
     const t = this.time ?? 0
     const phase = t / DRIFT_PERIOD
     const ages = [((phase % 1) + 1) % 1, (((phase + 0.5) % 1) + 1) % 1]
@@ -576,6 +611,9 @@ export class Clouds {
     u.exposure.value.set(skyExposure, sunIntensity)
     this.compositeScene.children[0].material.uniforms.rainTime.value = t % 1000
     u.pixelAngle.value = 2 / (camera.projectionMatrix.elements[5] * h)
+    u.realClouds.value = this.realClouds.texture
+    u.realTexel.value = 2 * Math.PI * 6378137 / (this.realClouds.texture.image?.width ?? 10240)
+    u.realBlend.value = this.realClouds.ready ? THREE.MathUtils.smoothstep(altitude, REAL_CLOUD_ALTITUDES[0], REAL_CLOUD_ALTITUDES[1]) : 0
 
     const previousTarget = renderer.getRenderTarget()
     const previousClear = renderer.getClearColor(new THREE.Color()), previousAlpha = renderer.getClearAlpha()

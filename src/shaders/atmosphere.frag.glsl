@@ -54,7 +54,7 @@ void main() {
     atmoRoots(A, B, atmoParams.x, g0, g1);
     vec3 groundLight, groundTransmittance;
     atmoScatter(atmoCamera.xyz, ds, d, t0, max(g0, t0), atmoSun, a, VIEW_SAMPLES, groundLight, groundTransmittance);
-    groundLight *= atmoParams.y * atmoHazeScale(groundTransmittance);
+    groundLight *= atmoHazeScale(groundTransmittance, atmoParams.y);
     vec3 hit = atmoCamera.xyz + ds * g0;
     vec3 up = normalize(hit);
     float lit = smoothstep(-0.1, 0.1, dot(up, atmoSun));
