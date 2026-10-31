@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
 import { ecefToGeodetic, geodeticToECEF } from '../physics/geodesy.js'
 import { seaIceConcentrationAt } from '../planet/seaIce.js'
+import { hash, offsetLatLon, pickWeighted, random, vesselBasis, windAt } from './seaPlacement.js'
 
 // Sailboats on the sea near the camera, as references for scale: some at anchor close to the shore (no
 // sails, pointing into the wind, still), the rest sailing, more of them near the shore than offshore.
@@ -17,7 +18,7 @@ import { seaIceConcentrationAt } from '../planet/seaIce.js'
 //    classified from the terrain heights of a fixed tile (Planet.fixedHeightSampler: the deepest tile
 //    covering it, down to HEIGHT_LOD, not whatever is loaded for display): it needs MIN_DEPTH of water,
 //    and is near the shore if there is land within NEAR_SHORE, mid-distance within MID_SHORE.
-//  - The wind is uniform over WIND_CELL_DEG cells (its direction and strength from that cell's seed).
+//  - The wind is uniform over 3-degree cells (seaPlacement.windAt).
 //  - A sailing boat sails a "racetrack": a straight leg on a reach, a turn, the reciprocal leg, and a
 //    turn back, at speeds from a simple polar for each leg's angle to the wind (capped at its hull
 //    speed). A boat with a spinnaker flies it when the wind is well aft of the beam (and furls its jib).
@@ -39,7 +40,6 @@ const HEIGHT_LOD = 10
 const MIN_DEPTH = 3
 const NEAR_SHORE = 1000
 const MID_SHORE = 4000
-const WIND_CELL_DEG = 3
 const SPAWN_RADIUS = 20000
 const MAX_ALTITUDE = 30000
 const MAX_BOATS = 2000
@@ -67,34 +67,6 @@ const SPINNAKERS = [
   [[0.25, 1, '#f2f2f2'], [0.5, 0.56, '#1f4fa8'], [0.66, 0.72, '#1f4fa8']],
   [[0.25, 0.44, '#2a7d3c'], [0.44, 0.62, '#f2f2f2'], [0.62, 0.81, '#2a7d3c'], [0.81, 1, '#f2f2f2']],
 ]
-
-// Deterministic random numbers in [0, 1) from integer seeds.
-function hash(...values) {
-  let h = 2166136261
-  for (const v of values) {
-    h ^= v | 0
-    h = Math.imul(h, 16777619)
-    h ^= h >>> 13
-  }
-  return h >>> 0
-}
-
-function random(seed) {
-  let s = seed >>> 0
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0
-    let t = Math.imul(s ^ (s >>> 15), 1 | s)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-function pickWeighted(list, r) {
-  const total = list.reduce((sum, [, w]) => sum + w, 0)
-  let x = r * total
-  for (const [value, w] of list) if ((x -= w) < 0) return value
-  return list[list.length - 1][0]
-}
 
 // Angle in (-pi, pi].
 function wrap(angle) {
@@ -262,11 +234,7 @@ export class Sailboats {
 
   // The point `east` and `north` metres from (lat, lon) along the surface (small offsets).
   _offset(lat, lon, east, north) {
-    const a = this.ellipsoid.a, f = this.ellipsoid.f || 0, e2 = 2 * f - f * f
-    const phi = lat * Math.PI / 180, s = Math.sin(phi)
-    const w = Math.sqrt(1 - e2 * s * s)
-    const meridian = a * (1 - e2) / (w * w * w), normal = a / w
-    return [lat + north / meridian * 180 / Math.PI, lon + east / (normal * Math.cos(phi)) * 180 / Math.PI]
+    return offsetLatLon(this.ellipsoid, lat, lon, east, north)
   }
 
   async _height(lat, lon) {
@@ -291,11 +259,6 @@ export class Sailboats {
 
   // --- Placement ------------------------------------------------------------------------------
 
-  _wind(lat, lon) {
-    const r = random(hash(Math.floor((lat + 90) / WIND_CELL_DEG), Math.floor((lon + 180) / WIND_CELL_DEG), 77))
-    return { from: r() * 2 * Math.PI, knots: 6 + 12 * r() }
-  }
-
   _cellCount(i) {
     const lat = -90 + (i + 0.5) * CELL_DEG
     return Math.max(1, Math.floor(360 * Math.cos(lat * Math.PI / 180) / CELL_DEG))
@@ -316,7 +279,7 @@ export class Sailboats {
         : (await this._landWithin(lat, lon, MID_SHORE)) ? 'mid' : 'off'
       const anchored = d[2] < ANCHORED[zone]
       if (!anchored && d[2] >= ANCHORED[zone] + SAILING[zone]) continue
-      const wind = this._wind(lat, lon)
+      const wind = windAt(lat, lon)
       const length = 6.5 + 7 * Math.pow(d[3], 1.8)
       const boat = {
         lat, lon, anchored, wind,
@@ -526,14 +489,7 @@ export class Sailboats {
   // The model's matrix for a boat at (lat, lon) with `heading` (radians clockwise from north), heeled by
   // `heel` (radians about the bow axis; positive lowers the starboard side), relative to the group.
   _boatMatrix(lat, lon, heading, heel, scale, out) {
-    const phi = lat * Math.PI / 180, lambda = lon * Math.PI / 180
-    const sp = Math.sin(phi), cp = Math.cos(phi), sl = Math.sin(lambda), cl = Math.cos(lambda)
-    _up.set(cp * sl, sp, cp * cl)
-    _east.set(cl, 0, -sl)
-    _north.set(-sp * sl, cp, -sp * cl)
-    _bow.copy(_north).multiplyScalar(Math.cos(heading)).addScaledVector(_east, Math.sin(heading))
-    _port.crossVectors(_up, _bow)
-    out.makeBasis(_port, _up, _bow)
+    vesselBasis(lat, lon, heading, out)
     out.multiply(_heel.makeRotationZ(heel))
     out.scale(_scale.setScalar(scale))
     this._point(lat, lon, _v2).sub(this.group.position)
@@ -544,11 +500,6 @@ export class Sailboats {
 
 const _v1 = new THREE.Vector3()
 const _v2 = new THREE.Vector3()
-const _up = new THREE.Vector3()
-const _east = new THREE.Vector3()
-const _north = new THREE.Vector3()
-const _bow = new THREE.Vector3()
-const _port = new THREE.Vector3()
 const _scale = new THREE.Vector3()
 const _matrix = new THREE.Matrix4()
 const _heel = new THREE.Matrix4()
