@@ -3,6 +3,7 @@ import '../../scene/sunAndSkyLight.js' // registers <sun_and_sky_light> (and <at
 import { SunAndSkyLight } from '../../scene/sunAndSkyLight.js'
 import { cloudNoiseTextures } from './cloudNoise.js'
 import { WeatherMap } from './weatherMap.js'
+import { RAIN_AREA } from '../../physics/weather.js'
 
 // Volumetric clouds over the whole planet, from the weather (weatherMap.js) and tiling noise
 // (cloudNoise.js), drawn over the rendered scene in three passes at RESOLUTION of the screen:
@@ -26,7 +27,15 @@ import { WeatherMap } from './weatherMap.js'
 //      cloud towards the sun (a short march), with a two-lobed phase function and approximate
 //      multiple scattering; the sky's and the ground's from below and above; and the haze between
 //      the camera and the cloud.
-// 3. Composite: the clouds over the scene (premultiplied; their transmittance dims what is behind).
+//    Below the clouds the march also crosses the air's own murk: rain shafts under raining clouds
+//    (rainShaft), and haze, mist or sea fog from the humidity near the surface (airMurk), which cut how
+//    far one can see. They are lit by the sun as it reaches the end of the line of sight (one shadow
+//    march per pixel rather than per step, so there are no shafts of light through them).
+//    And for each pixel showing the scene, how much its light is dimmed by the clouds: the sun's share
+//    of the light there (sunAndSkyLight.js's model) times the cloud's transmittance towards the sun
+//    (cloudShadow), and the sky's share less under overcast.
+// 3. Composite: the scene dimmed by the clouds' shadow, the clouds over it (premultiplied; their
+//    transmittance dims what is behind), and rain streaks when the camera is in the rain.
 
 const RESOLUTION = 0.5
 const SHELL_TOP = 13000 // m
@@ -42,6 +51,14 @@ const MACRO_TILE = 400000
 const DRIFT_PERIOD = 2400 // s
 // Extinction (1/m) of a cloud at full density.
 const EXTINCTION = 0.03
+// The air's murk (airMurk): the visibility (m) for the surface humidity, clear up to 88% (typical over
+// the sea) and falling to fog near saturation: about 40 km at 90%, 10 km at 95%, 400 m at 99%.
+const CLEAR_VISIBILITY = 60000
+const FOG_VISIBILITY = 300
+// Rain: visibility (m) for a rain rate R (mm/h), RAIN_VISIBILITY * R^-0.63.
+const RAIN_VISIBILITY = 12000
+// How far (m) the clouds' shadow on the scene fades out (into the haze already over it).
+const SHADOW_FADE = 40000
 
 const fullscreenVertex = `
 varying vec2 vUv;
@@ -83,6 +100,7 @@ precision highp sampler3D;
 uniform sampler2D distanceMap;
 uniform sampler2D weatherA;
 uniform sampler2D weatherB;
+uniform sampler2D weatherC;
 uniform sampler3D shapeNoise;
 uniform sampler3D detailNoise;
 uniform mat4 inverseProjection;
@@ -95,11 +113,18 @@ uniform vec3 drift;             // x, y: the two copies' drift times (s); z: the
 uniform vec2 exposure;          // x: the sky's exposure (Planet.js); y: the sun's intensity
 uniform float pixelAngle;       // radians per pixel of the cloud target
 varying vec2 vUv;
+layout(location = 0) out vec4 outClouds;
+layout(location = 1) out vec4 outShade;  // r: the scene's dimming by the clouds; g: rain at the camera (mm/h)
 
 const float SHELL_TOP = ${SHELL_TOP.toFixed(1)};
 const float EXTINCTION = ${EXTINCTION.toFixed(4)};
 
 float remap(float v, float a, float b, float c, float d) { return c + (v - a) / (b - a) * (d - c); }
+
+// The rain under the clouds that are raining (mm/h; weather.js showerRain), from the weather map.
+float showerRain(vec4 weather) {
+  return weather.g / mix(${RAIN_AREA[0].toFixed(3)}, ${RAIN_AREA[1].toFixed(3)}, weather.b);
+}
 
 // The shape value's quantiles (cloudNoise.js): the threshold that leaves a fraction cover above it.
 const float SHAPE_QUANTILE[${stats.quantiles.length}] = float[](${stats.quantiles.map(q => q.toFixed(5)).join(', ')});
@@ -133,9 +158,8 @@ vec2 mapUv(vec2 ll) { return vec2(ll.y / 360.0 + 0.5, (ll.x + 90.0) / 180.0); }
 
 // Cloud density (0..1) at stretched point p (planet centre at the origin) and planet-frame offset from
 // the camera local, altitude h (m); full adds the detail erosion.
-float cloudDensity(vec3 p, vec3 local, float h, bool full, float footprint, out float layer) {
+float cloudDensity(vec2 uv, vec3 p, vec3 local, float h, bool full, float footprint, out float layer) {
   layer = 0.0;
-  vec2 uv = mapUv(latLon(p));
   vec4 a = texture2D(weatherA, uv);
   vec4 b = texture2D(weatherB, uv);
   // (The reanalysis's total cover counts thin high cloud too, and a threshold on 3D noise covers more
@@ -151,8 +175,8 @@ float cloudDensity(vec3 p, vec3 local, float h, bool full, float footprint, out 
   }
   float convective = a.b;
   float base = b.x * 1000.0;
-  // Cumulus towers in showers: the top rises with the convective rain.
-  float top = max(b.y * 1000.0, base + 300.0) + 9000.0 * convective * clamp(a.g / 3.0, 0.0, 1.0);
+  // Cumulus towers in showers: the top rises with the rain in the shower.
+  float top = max(b.y * 1000.0, base + 300.0) + 9000.0 * convective * clamp(showerRain(a) / 8.0, 0.0, 1.0);
   float hf = (h - base) / (top - base);
   if (hf <= 0.0 || hf >= 1.0) return 0.0;
   layer = hf;
@@ -214,6 +238,61 @@ vec2 sphere(vec3 o, vec3 d, float r) {
   return vec2(-b - s, -b + s);
 }
 
+// The cloud's transmittance towards the sun from stretched point p (planet-frame offset from the camera
+// local): a march across the cloud layer, without the detail noise.
+float cloudShadow(vec3 p, vec3 local, vec3 sunS, float footprint) {
+  float a = slParams.z;
+  vec2 exit = sphere(p, sunS, a + SHELL_TOP);
+  if (exit.y <= 0.0) return 1.0;
+  vec2 floorHit = sphere(p, sunS, a);
+  if (floorHit.x > 0.0) return 0.0;  // (the planet's own shadow is the light model's)
+  float len = exit.y, od = 0.0;
+  for (int j = 0; j < 8; j++) {
+    float t = len * (float(j) + 0.5) / 8.0;
+    vec3 q = p + sunS * t;
+    float h = length(q) - a;
+    if (h < 100.0) continue;
+    float unused;
+    od += cloudDensity(mapUv(latLon(q)), q, local + worldToPlanet * (slSun * t), h, false, max(footprint, 400.0), unused) * len / 8.0;
+  }
+  return exp(-EXTINCTION * od);
+}
+
+// The air's murk at a point (extinction, 1/m), beyond the clear air the atmosphere model already has:
+// haze from the surface humidity, thickening into mist and, near saturation, a shallow fog.
+float airMurk(vec2 uv, float h) {
+  float rh = texture2D(weatherC, uv).r;
+  float visibility = ${CLEAR_VISIBILITY.toFixed(1)} * pow(clamp((1.0 - rh) / 0.12, 0.0, 1.0), 2.0);
+  visibility = max(visibility, ${FOG_VISIBILITY.toFixed(1)});
+  float extinction = max(3.912 / visibility - 3.912 / ${CLEAR_VISIBILITY.toFixed(1)}, 0.0);
+  float height = mix(1200.0, 200.0, smoothstep(0.93, 0.99, rh));
+  return extinction * exp(-max(h, 0.0) / height);
+}
+
+// Rain below the clouds (extinction, 1/m): under the cloud bases that are raining, a shaft as wide as
+// the cloud above it.
+float rainShaft(vec2 uv, vec3 p, vec3 local, float h) {
+  vec4 wa = texture2D(weatherA, uv);
+  float rate = showerRain(wa);
+  if (rate < 0.1) return 0.0;
+  vec4 wb = texture2D(weatherB, uv);
+  float base = wb.x * 1000.0;
+  if (h > base) return 0.0;
+  // The cloud a little above its base, straight up from here.
+  vec3 up = normalize(p);
+  float lift = base + 0.25 * (max(wb.y * 1000.0, base + 300.0) - base) - h;
+  vec3 q = p + up * lift;
+  float unused;
+  float cloud = cloudDensity(uv, q, local + worldToPlanet * (up * lift), h + lift, false, 400.0, unused);
+  return smoothstep(0.02, 0.25, cloud) * 3.912 / (${RAIN_VISIBILITY.toFixed(1)} * pow(rate, -0.63));
+}
+
+// The rain at the camera (mm/h), with the same shaft as rainShaft (0 above the cloud base).
+float cameraRain(vec3 c, vec3 cameraLocal) {
+  float shaft = rainShaft(mapUv(latLon(c)), c, cameraLocal, length(c) - slParams.z);
+  return shaft > 0.0 ? pow(shaft * ${RAIN_VISIBILITY.toFixed(1)} / 3.912, 1.0 / 0.63) : 0.0;
+}
+
 void main() {
   vec4 view = inverseProjection * vec4(vUv * 2.0 - 1.0, -1.0, 1.0); // (the near plane: the far one is too far for float32)
   vec3 dirWorld = normalize((cameraWorld * vec4(normalize(view.xyz / view.w), 0.0)).xyz);
@@ -230,7 +309,30 @@ void main() {
   float t1 = outer.y;
   if (ground.x > 0.0) t1 = min(t1, ground.x);
   t1 = min(t1, sceneDistance * stretch);
-  if (outer.y <= 0.0 || t1 <= t0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  vec3 sunDirS = normalize(slSun + slPole.w * dot(slSun, slPole.xyz) * slPole.xyz);
+  // The scene's dimming by the clouds, at the end of the line of sight (the ground or the scene).
+  float tScene = min(ground.x > 0.0 ? ground.x : 1e30, sceneDistance * stretch);
+  float sceneSun = 1.0, shade = 1.0;
+  if (tScene < 1e20 && slParams.x > 0.5) {
+    vec3 ps = c + d * tScene;
+    vec3 localS = worldToPlanet * (dirWorld * (tScene / stretch));
+    sceneSun = cloudShadow(ps, localS, sunDirS, tScene / stretch * pixelAngle);
+    vec3 up = normalize(ps);
+    float mu = dot(up, slSun);
+    vec3 sun = slSunTransmittance(ps) * max(mu, 0.0);
+    vec3 sky = slSkyIrradiance(mu) * slParams.y;
+    float directShare = dot(sun, vec3(0.2126, 0.7152, 0.0722)) / max(dot(sun + sky, vec3(0.2126, 0.7152, 0.0722)), 1e-6);
+    float cover = texture2D(weatherA, mapUv(latLon(ps))).r;
+    float lit = directShare * sceneSun + (1.0 - directShare) * (1.0 - 0.5 * cover * cover);
+    shade = mix(1.0, lit, exp(-tScene / stretch / ${SHADOW_FADE.toFixed(1)}));
+  }
+  else if (slParams.x > 0.5) {
+    // (Sky: the murk's sunlight as at the camera.)
+    sceneSun = cloudShadow(c, vec3(0.0), sunDirS, 400.0);
+  }
+  float rainHere = cameraRain(c, vec3(0.0));
+  outShade = vec4(shade, rainHere, 0.0, 1.0);
+  if (outer.y <= 0.0 || t1 <= t0) { outClouds = vec4(0.0, 0.0, 0.0, 1.0); return; }
   // Steps spaced as the square of their index (finer near the start), with a fixed per-pixel jitter.
   float jitter = hash12(gl_FragCoord.xy);
   float transmittance = 1.0;
@@ -238,8 +340,8 @@ void main() {
   float depthSum = 0.0, depthWeight = 0.0;
   float sunCos = dot(d, normalize(slSun + slPole.w * dot(slSun, slPole.xyz) * slPole.xyz));
   float phase = mix(phaseHG(sunCos, 0.65), phaseHG(sunCos, -0.2), 0.3);
-  vec3 sunDirS = normalize(slSun + slPole.w * dot(slSun, slPole.xyz) * slPole.xyz);
   float sunIntensity = exposure.y;
+  float murkPhase = mix(phaseHG(sunCos, 0.5), 1.0 / (4.0 * PI), 0.5);
   float prev = t0;
   for (int i = 0; i < ${MARCH_STEPS}; i++) {
     float f = (float(i) + jitter) / float(${MARCH_STEPS});
@@ -251,8 +353,20 @@ void main() {
     if (h < 0.0 || h > SHELL_TOP) continue;
     vec3 local = worldToPlanet * (dirWorld * (t / stretch));
     float footprint = t / stretch * pixelAngle;
+    vec2 uv = mapUv(latLon(p));
+    // The murk (haze, fog and rain), lit by the sun reaching the line of sight's end, and the sky.
+    float murk = airMurk(uv, h) + rainShaft(uv, p, local, h);
+    if (murk > 1e-7) {
+      vec3 skyDown, groundUp, direct, upW;
+      slLightAt(dirWorld * (t / stretch), direct, skyDown, groundUp, upW);
+      vec3 murkLight = (direct * sceneSun * murkPhase * 4.0 * PI * 0.25 + (skyDown + groundUp) * RECIPROCAL_PI * 0.5)
+        * mix(vec3(1.0), SL_WHITE, slParams.y) * sunIntensity;
+      float murkT = exp(-murk * dt);
+      light += transmittance * murkLight * (1.0 - murkT);
+      transmittance *= murkT;
+    }
     float layer;
-    float density = cloudDensity(p, local, h, true, footprint, layer);
+    float density = cloudDensity(uv, p, local, h, true, footprint, layer);
     if (density <= 0.001) continue;
     float sigma = EXTINCTION * density;
     // Light towards the sun through the cloud.
@@ -262,7 +376,7 @@ void main() {
       vec3 q = p + sunDirS * step * (float(j) + 0.5);
       vec3 ql = local + worldToPlanet * (slSun * step * (float(j) + 0.5));
       float unused;
-      od += cloudDensity(q, ql, length(q) - a, false, footprint, unused) * step;
+      od += cloudDensity(mapUv(latLon(q)), q, ql, length(q) - a, false, footprint, unused) * step;
       step *= 2.0;
     }
     od *= EXTINCTION;
@@ -305,14 +419,43 @@ void main() {
       light = light * airTransmittance + (1.0 - exp(-airLight)) * (1.0 - transmittance);
     }
   }
-  gl_FragColor = vec4(light, transmittance);
+  outClouds = vec4(light, transmittance);
 }
 `
 
 const compositeFragment = `
 uniform sampler2D clouds;
+uniform sampler2D shade;
 uniform vec2 texel;
+uniform float rainTime;        // simulated time (s), for the streaks
+uniform float aspect;
 varying vec2 vUv;
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+// Rain streaks across the view: short, faint, slightly slanted lines falling through the frame, in two
+// layers (near, faster and longer; far, slower), more of them the harder it rains.
+float streaks(vec2 uv, float rain) {
+  float sum = 0.0;
+  for (int layer = 0; layer < 2; layer++) {
+    float scale = layer == 0 ? 40.0 : 90.0;
+    float speed = layer == 0 ? 2.6 : 1.4;
+    vec2 p = vec2(uv.x * aspect + uv.y * 0.08, uv.y + rainTime * speed) * vec2(scale, scale * 0.25);
+    vec2 cell = floor(p);
+    vec2 f = fract(p);
+    float h = hash12(cell + float(layer) * 37.0);
+    float present = step(h, clamp(rain / 50.0, 0.02, 0.3));
+    float x = fract(h * 13.7);
+    float line = smoothstep(0.06, 0.0, abs(f.x - x)) * smoothstep(0.0, 0.3, f.y) * smoothstep(1.0, 0.6, f.y);
+    sum += present * line * (layer == 0 ? 0.25 : 0.12);
+  }
+  return sum;
+}
+
 void main() {
   // A small tent filter over the half-resolution clouds (smooths the march's per-pixel jitter).
   vec4 c = 0.4 * texture2D(clouds, vUv)
@@ -321,7 +464,12 @@ void main() {
   float opacity = 1.0 - c.a;
   // Premultiplied, linear: unpremultiply to encode for the (sRGB) canvas, then premultiply again.
   vec3 color = opacity > 1e-4 ? c.rgb / opacity : vec3(0.0);
-  gl_FragColor = vec4(pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)) * opacity, c.a);
+  vec3 encoded = pow(max(color, vec3(0.0)), vec3(1.0 / 2.2)) * opacity;
+  // The scene's dimming by the clouds (linear: as a factor on the sRGB canvas, its gamma root).
+  float dim = pow(clamp(texture2D(shade, vUv).r, 0.0, 1.0), 1.0 / 2.2);
+  float rain = texture2D(shade, vec2(0.5)).g;
+  if (rain > 0.05) encoded += vec3(0.3) * streaks(vUv, rain);
+  gl_FragColor = vec4(encoded, c.a * dim);
 }
 `
 
@@ -340,12 +488,13 @@ export class Clouds {
     const noise = cloudNoiseTextures()
     const targetOptions = { type: THREE.FloatType, format: THREE.RGBAFormat, depthBuffer: true, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter }
     this.distanceTarget = new THREE.WebGLRenderTarget(1, 1, { ...targetOptions, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter })
-    this.cloudTarget = new THREE.WebGLRenderTarget(1, 1, { ...targetOptions, type: THREE.HalfFloatType, depthBuffer: false })
+    this.cloudTarget = new THREE.WebGLRenderTarget(1, 1, { ...targetOptions, type: THREE.HalfFloatType, depthBuffer: false, count: 2 })
     this.uniforms = {
       ...SunAndSkyLight.uniforms,
       distanceMap: { value: this.distanceTarget.texture },
       weatherA: { value: this.weatherMap.textures[0] },
       weatherB: { value: this.weatherMap.textures[1] },
+      weatherC: { value: this.weatherMap.textures[2] },
       shapeNoise: { value: noise.shape },
       detailNoise: { value: noise.detail },
       inverseProjection: { value: new THREE.Matrix4() },
@@ -363,9 +512,9 @@ export class Clouds {
       mesh.frustumCulled = false
       return new THREE.Scene().add(mesh)
     }
-    this.marchScene = quad(new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: fullscreenVertex, fragmentShader: marchFragment(noise.shapeStats), depthTest: false, depthWrite: false }))
+    this.marchScene = quad(new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: fullscreenVertex, fragmentShader: marchFragment(noise.shapeStats), glslVersion: THREE.GLSL3, depthTest: false, depthWrite: false }))
     this.compositeScene = quad(new THREE.ShaderMaterial({
-      uniforms: { clouds: { value: this.cloudTarget.texture }, texel: { value: new THREE.Vector2() } },
+      uniforms: { clouds: { value: this.cloudTarget.textures[0] }, shade: { value: this.cloudTarget.textures[1] }, texel: { value: new THREE.Vector2() }, rainTime: { value: 0 }, aspect: { value: 1 } },
       vertexShader: fullscreenVertex,
       fragmentShader: compositeFragment,
       depthTest: false,
@@ -399,6 +548,7 @@ export class Clouds {
       this.distanceTarget.setSize(w, h)
       this.cloudTarget.setSize(w, h)
       this.compositeScene.children[0].material.uniforms.texel.value.set(1 / w, 1 / h)
+      this.compositeScene.children[0].material.uniforms.aspect.value = w / h
     }
     const u = this.uniforms
     // Planet axes, and the camera's planet position (float64) for the noise offsets.
@@ -424,6 +574,7 @@ export class Clouds {
     u.inverseProjection.value.copy(camera.projectionMatrixInverse)
     u.cameraWorld.value.copy(camera.matrixWorld)
     u.exposure.value.set(skyExposure, sunIntensity)
+    this.compositeScene.children[0].material.uniforms.rainTime.value = t % 1000
     u.pixelAngle.value = 2 / (camera.projectionMatrix.elements[5] * h)
 
     const previousTarget = renderer.getRenderTarget()

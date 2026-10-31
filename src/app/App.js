@@ -854,10 +854,11 @@ export class App {
     }
     this.lighting.updateSkyLight(true, this.planet, this.planetSpec.hasOcean === true)
     renderer.render(this.scene, this.camera3d)
-    this.lighting.updateSkyLight(false)
+    // (While the sun and sky light is still set up for this camera: the clouds use it.)
     if (!underwater && atmosphereVisible) {
       this.clouds?.render(renderer, this.scene, this.camera3d, this.lighting.sunLight.intensity, this.planet.atmosphereUniforms.atmoParams.value.y)
     }
+    this.lighting.updateSkyLight(false)
     if (underwater) {
       renderer.setClearColor(this._clearColor, this._clearAlpha)
       this.planet.atmosphere.visible = atmosphereVisible

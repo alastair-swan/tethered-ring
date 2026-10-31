@@ -9,6 +9,7 @@ import { DAYS_PER_YEAR, PLANET_RADIUS, weatherDraws, weatherNoiseGlsl } from '..
 // formulas the GLSL here repeats), so the clouds sit where the CPU's rain and wind say they are:
 //   weather.texture[0]: cover (0..1), rain (mm/h), convective share (0..1), high cloud cover (0..1)
 //   weather.texture[1]: low cloud base and top (km), wind east and north (m/s, at the surface)
+//   weather.texture[2]: relative humidity near the surface (0..1)
 // It is redrawn when the date changes (setDate).
 
 const WIDTH = 1024
@@ -85,7 +86,7 @@ export class WeatherMap {
     const wf = Object.fromEntries(weather.fields.map((n, i) => [n, i]))
     const vf = Object.fromEntries(wind.fields.map((n, i) => [n, i]))
     this.target = new THREE.WebGLRenderTarget(WIDTH, HEIGHT, {
-      count: 2, type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: false,
+      count: 3, type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: false,
       minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, wrapS: THREE.RepeatWrapping,
     })
     this.uniforms = {
@@ -111,6 +112,7 @@ uniform float utcHours;
 in vec2 vUv;
 layout(location = 0) out vec4 outWeather;
 layout(location = 1) out vec4 outLayers;
+layout(location = 2) out vec4 outAir;
 const float PI = 3.141592653589793;
 ${weatherNoiseGlsl}
 vec4 bSpline(float f) {
@@ -181,6 +183,7 @@ void main() {
   wind += V(${vf.sigma}) / (${eddyScale().toFixed(6)} * length(vec2(1.0 - fd, fd))) * e;
   outWeather = vec4(cover, rain, clamp(W(${wf.convective}), 0.0, 1.0), highCover);
   outLayers = vec4(lowBase, lowTop, wind);
+  outAir = vec4(clamp(W(${wf.humidity}) + 1.2 * W(${wf.humiditySd}) * z, 0.0, 1.0), 0.0, 0.0, 1.0);
 }
 `,
       depthTest: false,

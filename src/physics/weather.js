@@ -33,8 +33,11 @@ export function weatherClimatologyTable() {
   return { rows, cols, gridDegrees, fields, values: Float32Array.from(DATA, (v, i) => v * scales[i % FIELDS]) }
 }
 const HUMIDITY_GAIN = 1.2
+// The reanalysis's rain is an average over cells about 200 km across, of which only part is raining:
+// a share RAIN_AREA[0] of the cell for steady rain, RAIN_AREA[1] for showers.
+export const RAIN_AREA = [0.6, 0.15]
 // Squalls: under heavy showers the wind at the surface rises by up to SQUALL_GAIN, reaching it at
-// SQUALL_RAIN (mm/h) of convective rain.
+// SQUALL_RAIN (mm/h) of rain in the shower (showerRain).
 const SQUALL_GAIN = 0.6
 const SQUALL_RAIN = 10
 
@@ -107,7 +110,8 @@ const _c = new Float64Array(FIELDS)
 /**
  * The weather at geodetic latitude/longitude (degrees) on day of year `dayOfYear` (1..366) at
  * `utcHours`: cover (0..1) of cloud, the low cloud layer's base and top (m) and the high cloud's cover
- * (0..1) and base (m); rain (mm/h) and its convective share (0..1, showers rather than steady rain);
+ * (0..1) and base (m); rain (mm/h, averaged over the area), its convective share (0..1, showers rather
+ * than steady rain) and showerRain (mm/h, under the clouds that are raining);
  * humidity (relative, near the surface, 0..1); and the pressure anomaly.
  */
 export function weatherAt(lat, lon, dayOfYear, utcHours) {
@@ -125,6 +129,7 @@ export function weatherAt(lat, lon, dayOfYear, utcHours) {
     highBase: 1000 * c[F.highBase],
     rain: rainFor(z, c[F.rainFreq], c[F.rainRate]),
     convective: clamp(c[F.convective]),
+    get showerRain() { return this.rain / (RAIN_AREA[0] + (RAIN_AREA[1] - RAIN_AREA[0]) * this.convective) },
     humidity: clamp(c[F.humidity] + HUMIDITY_GAIN * c[F.humiditySd] * z),
     anomaly,
   }
@@ -136,7 +141,7 @@ export function weatherAt(lat, lon, dayOfYear, utcHours) {
  */
 export function seaWindAt(lat, lon, dayOfYear, utcHours) {
   const wind = windAt(lat, lon, dayOfYear, utcHours)
-  const { rain, convective } = weatherAt(lat, lon, dayOfYear, utcHours)
-  const gust = 1 + SQUALL_GAIN * convective * Math.min(1, rain / SQUALL_RAIN)
+  const { showerRain, convective } = weatherAt(lat, lon, dayOfYear, utcHours)
+  const gust = 1 + SQUALL_GAIN * convective * Math.min(1, showerRain / SQUALL_RAIN)
   return { ...wind, east: wind.east * gust, north: wind.north * gust, speed: wind.speed * gust, knots: wind.knots * gust }
 }
