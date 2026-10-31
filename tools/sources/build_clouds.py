@@ -36,6 +36,8 @@ from __future__ import annotations
 import datetime
 import io
 import json
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -70,10 +72,25 @@ def srgb_to_linear(v):
     return np.where(v <= 0.04045, v / 12.92, ((v + 0.055) / 1.055) ** 2.4)
 
 
-def tile(layer: str, date: str, row: int, col: int) -> Path:
+def tile(layer: str, date: str, row: int, col: int) -> Path | None:
+    """A tile's file, or None where GIBS has none (the odd day is missing from its archive)."""
     name = f'{date}_{LEVEL}_{row}_{col}.jpg'
     folder = DOWNLOADS / date if layer == LAYER else DOWNLOADS.parent / next(k for k, v in GLINT_LAYERS.items() if v == layer) / date
-    return fetch_file(URL.format(layer=layer, date=date, level=LEVEL, row=row, col=col), folder / name)
+    missing = folder / (name + '.missing')
+    if missing.exists():
+        return None
+    url = URL.format(layer=layer, date=date, level=LEVEL, row=row, col=col)
+    try:
+        return fetch_file(url, folder / name)
+    except RuntimeError:
+        try:
+            urllib.request.urlopen(url, timeout=60).close()
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                missing.parent.mkdir(parents=True, exist_ok=True)
+                missing.touch()
+                return None
+        raise
 
 
 def day_image(date: str, layer: str = LAYER) -> np.ndarray:
@@ -84,6 +101,8 @@ def day_image(date: str, layer: str = LAYER) -> np.ndarray:
         paths = list(pool.map(lambda rc: tile(layer, date, *rc), jobs))
     image = np.zeros((rows * TILE, cols * TILE, 3), np.uint8)
     for (r, c), path in zip(jobs, paths):
+        if path is None:
+            continue  # (no data: black)
         with Image.open(io.BytesIO(path.read_bytes())) as im:
             image[r * TILE:(r + 1) * TILE, c * TILE:(c + 1) * TILE] = np.asarray(im.convert('RGB'))
     return image[:HEIGHT, :WIDTH]
@@ -142,7 +161,9 @@ def main():
         a = build(date)
         Image.fromarray(np.round(a * 255).astype(np.uint8), 'L').save(OUT / f'{date}.jpg', quality=90)
         print(f'{date}: mean opacity {a.mean():.3f}')
-    (OUT / 'manifest.json').write_text(json.dumps({'width': WIDTH, 'height': HEIGHT, 'dates': DATES}, indent=1) + '\n')
+        # The manifest lists every snapshot there is (written each time, so a failure keeps the rest).
+        built = [d for d in DATES if (OUT / f'{d}.jpg').exists()]
+        (OUT / 'manifest.json').write_text(json.dumps({'width': WIDTH, 'height': HEIGHT, 'dates': built}, indent=1) + '\n')
 
 
 if __name__ == '__main__':
