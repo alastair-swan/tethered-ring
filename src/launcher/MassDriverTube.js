@@ -40,6 +40,17 @@ export class massDriverTubeModel {
     this.massDriverTubeMaterial3 = new THREE.MeshPhongMaterial( { side: THREE.FrontSide, shininess: 0.5} )
     this.massDriverTubeMaterial4 = new THREE.MeshPhongMaterial( { side: THREE.FrontSide, transparent: true, opacity: 0.5, shininess: 0.5} )
     this.massDriverTubeMaterial5 = new THREE.LineBasicMaterial( { color: 0x4897f8, transparent: true, opacity: 0.5 })
+    // The far-away line (see createModel's PixelLOD) is drawn over the sea surface. Under the sea
+    // it fades out by the water in front of it (seaDarkening.js's vSeaFog), as the structure lines do,
+    // rather than darkening: towards the horizon the water hides it, and a dark line would show over the
+    // sky the sea reflects there.
+    this.massDriverTubeMaterial5.onBeforeCompile = (shader) => {
+      shader.fragmentShader = shader.fragmentShader.replace('#include <fog_fragment>', `#include <fog_fragment>
+#ifdef USE_FOG
+  gl_FragColor.a *= 1.0 - vSeaFog;
+#endif`)
+    }
+    this.massDriverTubeMaterial5.customProgramCacheKey = () => 'massDriverTubeLine'
     // this.massDriverTubeMaterial1 = new THREE.MeshPhongMaterial( { map: this.tubeTexture, side: THREE.DoubleSide, transparent: true, opacity: 0.6, shininess: 0.5} )
     // this.massDriverTubeMaterial2 = new THREE.MeshPhongMaterial( { side: THREE.DoubleSide, color: 0x101015, transparent: true, opacity: 0.95, shininess: 0.5} )
 
