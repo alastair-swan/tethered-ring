@@ -68,9 +68,30 @@ const DETAIL_TILE = 3000
 // (m), moving the cover through a probit transform, so it shows where the clouds themselves are too
 // small to see (from orbit).
 const MACRO_TILE = 400000
-// Seen from space the clouds are real ones (realClouds.js): the cover blends from the weather's to the
-// imagery's as the camera climbs between these altitudes (m), the same for every pixel.
-const REAL_CLOUD_ALTITUDES = [60000, 600000]
+// The clouds' types. The cover, where the satellite imagery is (realClouds.js; otherwise the weather's),
+// is shared between two layers:
+// - High cloud (cirrus, cirrostratus) takes the thin part of the opacity, up to HIGH_SHARE, as much of
+//   it as the reanalysis has high cloud often (thin cirrus is what the faint brightening of the imagery
+//   over clear sea mostly is); it is thin (opacity HIGH_OPACITY where it is, an optical depth of about
+//   0.3), so it covers a good deal more of the sky than its opacity; HIGH_THICKNESS (m) deep from the high cloud base, drawn out into streaks HIGH_STREAK times
+//   longer along the wind (which is CIRRUS_WIND times the surface's aloft).
+// - Low cloud for the rest of the imagery's opacity: a few fair-weather cumulus where there is little
+//   (at least FAIR_CUMULUS of the sky, more with convection), turning into stratocumulus and then a stratus
+//   sheet as it rises over STRATUS_ONSET; towers in showers (the weather's, where the imagery has cloud:
+//   SHOWER_OPACITY).
+const HIGH_SHARE = 0.3
+const SHOWER_OPACITY = [0.3, 0.7]
+const HIGH_OPACITY = 0.25
+const HIGH_THICKNESS = 1500
+const HIGH_STREAK = 5
+const HIGH_TILE = 30000
+const HIGH_DENSITY = 0.012
+// Its fibres: the detail noise drawn out FIBRE_STREAK times along the wind, on FIBRE_TILE (m).
+const FIBRE_STREAK = 15
+const FIBRE_TILE = 2500
+const CIRRUS_WIND = 3
+const FAIR_CUMULUS = [0.012, 0.03]
+const STRATUS_ONSET = [0.4, 0.85]
 const DRIFT_PERIOD = 2400 // s
 // Extinction (1/m) of a cloud at full density.
 const EXTINCTION = 0.03
@@ -133,7 +154,7 @@ uniform vec3 shapeOffset[2];    // the camera's planet position modulo the shape
 uniform vec3 detailOffset[2];
 uniform vec3 macroOffset;        // the camera's planet position modulo the large-scale tile (m)
 uniform sampler2D realClouds;    // the real clouds' opacity (realClouds.js)
-uniform float realBlend;         // how much of the cover is theirs (0..1)
+uniform float realBlend;         // 1 where the real clouds' opacity sets the cover (it has loaded), else 0
 uniform float realTexel;         // the real clouds' texel size (m)
 uniform vec3 drift;             // x, y: the two copies' drift times (s); z: the second copy's weight
 uniform vec2 exposure;          // x: the sky's exposure (Planet.js); y: the sun's intensity
@@ -161,6 +182,7 @@ float showerRain(vec4 weather) {
 // The shape value's quantiles (cloudNoise.js): the threshold that leaves a fraction cover above it.
 const float SHAPE_QUANTILE[${stats.quantiles.length}] = float[](${stats.quantiles.map(q => q.toFixed(5)).join(', ')});
 const float SHAPE_MEAN = ${stats.mean.toFixed(5)};
+const float SHAPE_TOP = ${stats.quantiles[stats.quantiles.length - 2].toFixed(5)};
 float normalCdf(float x) {
   float t = 1.0 / (1.0 + 0.2316419 * abs(x));
   float tail = exp(-0.5 * x * x) * 0.3989422804 * t * (0.31938153 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
@@ -188,75 +210,123 @@ vec2 latLon(vec3 p) {
 
 vec2 mapUv(vec2 ll) { return vec2(ll.y / 360.0 + 0.5, (ll.x + 90.0) / 180.0); }
 
+// The two copies of the noise (flow-mapped with the wind) at q, cross-faded with their spread kept.
+float driftedShape(vec3 local, vec3 wind, float tile, vec3 offsets[2], out float detail, bool full) {
+  float shape = 0.0;
+  detail = 0.0;
+  for (int i = 0; i < 2; i++) {
+    float weight = i == 0 ? 1.0 - drift.z : drift.z;
+    vec3 q = local - wind * (i == 0 ? drift.x : drift.y);
+    vec4 s = texture(shapeNoise, (q + offsets[i]) / tile);
+    float fbm = s.g * 0.625 + s.b * 0.25 + s.a * 0.125;
+    shape += weight * remap(s.r, fbm - 1.0, 1.0, 0.0, 1.0);
+    if (full) {
+      vec4 dn = texture(detailNoise, (q + detailOffset[i]) / ${DETAIL_TILE.toFixed(1)});
+      detail += weight * (dn.r * 0.625 + dn.g * 0.25 + dn.b * 0.125);
+    }
+  }
+  // (Cross-fading two copies narrows the spread: restore it, so the cover stays the same.)
+  return SHAPE_MEAN + (shape - SHAPE_MEAN) / length(vec2(1.0 - drift.z, drift.z));
+}
+
+// Density (0..1) of thresholded noise for a cover: from 0 at the threshold to 1 near the noise's top
+// (SHAPE_TOP), so even sparse clouds are dense at their cores.
+float thresholdDensity(float shape, float cover) {
+  float threshold = coverThreshold(cover);
+  return clamp((shape - threshold) / max(SHAPE_TOP - threshold, 0.02), 0.0, 1.0);
+}
+
 // Cloud density (0..1) at stretched point p (planet centre at the origin) and planet-frame offset from
-// the camera local, altitude h (m); full adds the detail erosion.
+// the camera local, altitude h (m); full adds the detail erosion. layer: the height within its layer (0
+// at the base, 1 at the top; 1 in high cloud).
 float cloudDensity(vec2 uv, vec3 p, vec3 local, float h, bool full, float footprint, out float layer) {
   layer = 0.0;
   vec4 a = texture2D(weatherA, uv);
   vec4 b = texture2D(weatherB, uv);
-  // (The reanalysis's total cover counts thin high cloud too, and a threshold on 3D noise covers more
-  // of a column than of a level: a little less for the layer.)
-  float cover = a.r * 0.8;
-  // (The mip level from the pixel's footprint: automatic derivatives mean nothing along a ray, and jump
-  // at the date line.)
-  // (Less the imagery's floor of faint residual haze and noise over clear sea, about 0.05, which would
-  // veil the whole ocean.)
-  if (realBlend > 0.0) {
+  // The sky's opacity seen from space: the real clouds' (less the imagery's floor of faint haze and noise
+  // over clear sea, about 0.05; the mip level from the pixel's footprint, as automatic derivatives mean
+  // nothing along a ray and jump at the date line), or the weather's.
+  float opacity;
+  if (realBlend > 0.5) {
     float real = textureLod(realClouds, uv, log2(max(footprint, 1.0) / realTexel)).r;
-    cover = mix(cover, clamp((real - 0.05) / 0.95, 0.0, 1.0), realBlend);
+    opacity = clamp((real - 0.05) / 0.95, 0.0, 1.0);
   }
-  if (cover < 0.01) return 0.0;
-  // (Its features, from about 12 km up, fade to their mean as they shrink below a pixel; the real
-  // clouds have their own.)
-  float macroDetail = (1.0 - smoothstep(2000.0, 8000.0, footprint)) * (1.0 - realBlend);
-  if (macroDetail > 0.0) {
-    vec4 m = texture(shapeNoise, (local + macroOffset) / ${MACRO_TILE.toFixed(1)});
-    float macro = remap(m.r, m.g * 0.625 + m.b * 0.25 + m.a * 0.125 - 1.0, 1.0, 0.0, 1.0) - SHAPE_MEAN;
-    cover = normalCdf(probit(clamp(cover, 0.005, 0.995)) + 9.0 * macro * macroDetail);
+  else {
+    opacity = a.r * 0.9;
+    // (Large-scale structure in the weather's smooth cover, fading out as it shrinks below a pixel.)
+    float macroDetail = 1.0 - smoothstep(2000.0, 8000.0, footprint);
+    if (macroDetail > 0.0 && opacity > 0.01) {
+      vec4 m = texture(shapeNoise, (local + macroOffset) / ${MACRO_TILE.toFixed(1)});
+      float macro = remap(m.r, m.g * 0.625 + m.b * 0.25 + m.a * 0.125 - 1.0, 1.0, 0.0, 1.0) - SHAPE_MEAN;
+      opacity = normalCdf(probit(clamp(opacity, 0.005, 0.995)) + 9.0 * macro * macroDetail);
+    }
   }
+  // Shared between the layers: high cloud where the reanalysis has it, the rest low.
+  float highOpacity = min(opacity, ${HIGH_SHARE.toFixed(3)}) * a.a;
+  float highCover = clamp(highOpacity / ${HIGH_OPACITY.toFixed(3)}, 0.0, 1.0);
+  float lowOpacity = clamp(1.0 - (1.0 - opacity) / (1.0 - highOpacity), 0.0, 1.0);
   float convective = a.b;
-  float base = b.x * 1000.0;
-  // Cumulus towers in showers: the top rises with the rain in the shower.
-  float top = max(b.y * 1000.0, base + 300.0) + 9000.0 * convective * clamp(showerRain(a) / 8.0, 0.0, 1.0);
-  float hf = (h - base) / (top - base);
-  if (hf <= 0.0 || hf >= 1.0) return 0.0;
-  layer = hf;
-  // Height profiles: cumulus rounded at the top, stratus flat.
-  float cumulus = smoothstep(0.0, 0.08, hf) * smoothstep(1.0, 0.45, hf);
-  float stratus = smoothstep(0.0, 0.2, hf) * smoothstep(1.0, 0.75, hf);
-  float profile = mix(stratus, cumulus, convective);
-  // The wind (planet axes) drifts the noise.
+  float showers = convective * clamp(showerRain(a) / 3.0, 0.0, 1.0) * smoothstep(${SHOWER_OPACITY[0].toFixed(2)}, ${SHOWER_OPACITY[1].toFixed(2)}, opacity);
+  float lowCover = max(lowOpacity / 0.9, mix(${FAIR_CUMULUS[0].toFixed(3)}, ${FAIR_CUMULUS[1].toFixed(3)}, convective));
+  float stratiform = smoothstep(${STRATUS_ONSET[0].toFixed(2)}, ${STRATUS_ONSET[1].toFixed(2)}, lowCover) * (1.0 - showers);
+  // Too far for the noise's features (a few hundred metres up) to be seen: its expected value.
+  float lod = smoothstep(150.0, 900.0, footprint);
   vec3 up = normalize(worldToPlanet * p);
   vec3 east = normalize(cross(vec3(0.0, 1.0, 0.0), up));
   vec3 north = cross(up, east);
-  vec3 wind = (b.z * east + b.w * north) * 1.5;   // (stronger aloft than at the surface)
-  // Too far for the noise's features (a few hundred metres up) to be seen: its expected value.
-  float lod = smoothstep(150.0, 900.0, footprint);
-  float shape = 0.0, detail = 0.0;
-  if (lod < 1.0) {
-    for (int i = 0; i < 2; i++) {
-      float weight = i == 0 ? 1.0 - drift.z : drift.z;
-      vec3 q = local - wind * (i == 0 ? drift.x : drift.y);
-      vec4 s = texture(shapeNoise, (q + shapeOffset[i]) / ${SHAPE_TILE.toFixed(1)});
-      float fbm = s.g * 0.625 + s.b * 0.25 + s.a * 0.125;
-      shape += weight * remap(s.r, fbm - 1.0, 1.0, 0.0, 1.0);
-      if (full) {
-        vec4 dn = texture(detailNoise, (q + detailOffset[i]) / ${DETAIL_TILE.toFixed(1)});
-        detail += weight * (dn.r * 0.625 + dn.g * 0.25 + dn.b * 0.125);
+  vec3 surfaceWind = b.z * east + b.w * north;
+  float density = 0.0;
+
+  // Low cloud.
+  float base = b.x * 1000.0;
+  float cumulusTop = base + 800.0 + 1500.0 * lowCover + 9000.0 * showers;
+  float top = mix(cumulusTop, max(b.y * 1000.0, base + 500.0), stratiform);
+  float hf = (h - base) / (top - base);
+  if (hf > 0.0 && hf < 1.0) {
+    layer = hf;
+    // Height profiles: cumulus rounded at the top, stratus flat.
+    float cumulus = smoothstep(0.0, 0.08, hf) * smoothstep(1.0, 0.45, hf);
+    float stratus = smoothstep(0.0, 0.2, hf) * smoothstep(1.0, 0.75, hf);
+    float profile = mix(cumulus, stratus, stratiform);
+    float d = 0.0, detail = 0.0;
+    if (lod < 1.0) {
+      float shape = driftedShape(local, surfaceWind * 1.5, ${SHAPE_TILE.toFixed(1)}, shapeOffset, detail, full);
+      d = thresholdDensity(shape, lowCover) * profile;
+      // Edges eroded by the detail noise (wispy below, billowy above); less on stratus.
+      if (full && d > 0.0) d = remap(d, mix(0.3, 0.12, stratiform) * mix(detail, 1.0 - detail, clamp(hf * 4.0, 0.0, 1.0)), 1.0, 0.0, 1.0);
+    }
+    // Too far for the clouds to be told apart: a density giving the column the transmittance of a cover
+    // of opaque clouds (spreading the clouds' own density out evenly would make any cover of them opaque).
+    float far = -log(1.0 - 0.95 * min(lowCover, 1.0)) / (EXTINCTION * (top - base) * 0.5) * profile;
+    density += mix(clamp(d, 0.0, 1.0), far, lod) * mix(1.0, 1.6, showers);
+  }
+
+  // High cloud: streaks along the wind aloft.
+  float hb = texture2D(weatherC, uv).g * 1000.0;
+  float hh = (h - hb) / ${HIGH_THICKNESS.toFixed(1)};
+  if (highCover > 0.005 && hh > 0.0 && hh < 1.0) {
+    layer = 1.0;
+    float profile = smoothstep(0.0, 0.3, hh) * smoothstep(1.0, 0.6, hh);
+    vec3 windAloft = surfaceWind * ${CIRRUS_WIND.toFixed(1)};
+    vec3 along = normalize(length(windAloft) > 0.1 ? windAloft : east);
+    float d = 0.0;
+    if (lod < 1.0) {
+      // Drawn out along the wind: the along-wind distance squeezed.
+      vec3 streaked = local - (1.0 - 1.0 / ${HIGH_STREAK.toFixed(1)}) * dot(local, along) * along;
+      float detail;
+      float shape = driftedShape(streaked, windAloft / ${HIGH_STREAK.toFixed(1)}, ${HIGH_TILE.toFixed(1)}, shapeOffset, detail, full);
+      d = thresholdDensity(shape, highCover) * profile;
+      // Fibres along the wind (ice crystals falling out of the streaks).
+      if (full && d > 0.0) {
+        vec3 fibred = local - (1.0 - 1.0 / ${FIBRE_STREAK.toFixed(1)}) * dot(local, along) * along;
+        vec4 f = texture(detailNoise, (fibred - windAloft * drift.x / ${FIBRE_STREAK.toFixed(1)} + detailOffset[0]) / ${FIBRE_TILE.toFixed(1)});
+        d *= smoothstep(0.25, 0.75, f.r * 0.6 + f.g * 0.4);
       }
     }
-    // (Cross-fading two copies narrows the spread: restore it, so the cover stays the same.)
-    shape = SHAPE_MEAN + (shape - SHAPE_MEAN) / length(vec2(1.0 - drift.z, drift.z));
+    float far = -log(1.0 - highOpacity) / (EXTINCTION * ${HIGH_THICKNESS.toFixed(1)} * 0.5) * profile;
+    density += mix(clamp(d, 0.0, 1.0) * ${HIGH_DENSITY.toFixed(3)}, far, lod);
   }
-  float threshold = coverThreshold(cover);
-  float d = clamp((shape - threshold) / (1.0 - threshold), 0.0, 1.0) * profile;
-  if (full && d > 0.0) d = remap(d, 0.3 * mix(detail, 1.0 - detail, clamp(hf * 4.0, 0.0, 1.0)), 1.0, 0.0, 1.0);
-  // Too far for the clouds to be told apart: a density giving the column the transmittance of a cover
-  // of opaque clouds, 1 - 0.9 cover (spreading the clouds' own density out evenly would make any cover
-  // of them opaque).
-  float far = -log(1.0 - mix(0.9, 0.97, realBlend) * cover) / (EXTINCTION * (top - base) * 0.5) * profile;
-  d = mix(clamp(d, 0.0, 1.0), far, lod);
-  return d * mix(1.0, 1.6, convective);
+  return density;
 }
 
 float hash12(vec2 p) {
@@ -727,7 +797,7 @@ export class Clouds {
     u.pixelAngle.value = 2 / (camera.projectionMatrix.elements[5] * h) * this.pixelScale
     u.realClouds.value = this.realClouds.texture
     u.realTexel.value = 2 * Math.PI * 6378137 / (this.realClouds.texture.image?.width ?? 10240)
-    u.realBlend.value = this.realClouds.ready ? THREE.MathUtils.smoothstep(altitude, REAL_CLOUD_ALTITUDES[0], REAL_CLOUD_ALTITUDES[1]) : 0
+    u.realBlend.value = this.realClouds.ready ? 1 : 0
 
     const previousTarget = renderer.getRenderTarget()
     const previousClear = renderer.getClearColor(new THREE.Color()), previousAlpha = renderer.getClearAlpha()

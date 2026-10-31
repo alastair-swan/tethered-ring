@@ -9,7 +9,7 @@ import { DAYS_PER_YEAR, PLANET_RADIUS, weatherDraws, weatherNoiseGlsl } from '..
 // formulas the GLSL here repeats), so the clouds sit where the CPU's rain and wind say they are:
 //   weather.texture[0]: cover (0..1), rain (mm/h), convective share (0..1), high cloud cover (0..1)
 //   weather.texture[1]: low cloud base and top (km), wind east and north (m/s, at the surface)
-//   weather.texture[2]: relative humidity near the surface (0..1)
+//   weather.texture[2]: relative humidity near the surface (0..1), high cloud base (km)
 // It is redrawn when the date changes (setDate).
 
 const WIDTH = 1024
@@ -183,7 +183,7 @@ void main() {
   wind += V(${vf.sigma}) / (${eddyScale().toFixed(6)} * length(vec2(1.0 - fd, fd))) * e;
   outWeather = vec4(cover, rain, clamp(W(${wf.convective}), 0.0, 1.0), highCover);
   outLayers = vec4(lowBase, lowTop, wind);
-  outAir = vec4(clamp(W(${wf.humidity}) + 1.2 * W(${wf.humiditySd}) * z, 0.0, 1.0), 0.0, 0.0, 1.0);
+  outAir = vec4(clamp(W(${wf.humidity}) + 1.2 * W(${wf.humiditySd}) * z, 0.0, 1.0), W(${wf.highBase}), 0.0, 1.0);
 }
 `,
       depthTest: false,
