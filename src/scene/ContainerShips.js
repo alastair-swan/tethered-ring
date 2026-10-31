@@ -124,6 +124,7 @@ const HULL_STERN = -12.794
 const HULL_BOW = 15.959
 const HULL_KEEL = -0.776
 const ANTIFOULING = 0x7a2b25
+const HOLD = 0x2e3033          // the inside of an open hull
 
 const range = (r, [lo, hi]) => lo + Math.floor(r * (hi - lo + 1))
 
@@ -252,7 +253,7 @@ export class ContainerShips {
       this.model = parts
       this.box = new THREE.BoxGeometry(...CONTAINER)
       this.containerMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75 })
-      this.superstructureMaterial = new THREE.MeshStandardMaterial({ color: SUPERSTRUCTURE_COLOR, roughness: 0.6 })
+      this.superstructureMaterial = new THREE.MeshStandardMaterial({ color: SUPERSTRUCTURE_COLOR, roughness: 0.6, side: THREE.DoubleSide })
     }).catch((error) => console.warn('[ships] model failed to load', error))
     this.cutter = null
     new OBJLoader().loadAsync(cutterUrl).then((object) => {
@@ -561,24 +562,27 @@ export class ContainerShips {
   }
 
   // A hull's material: `color` above the waterline (model y = 0), antifouling below it; `scale` is
-  // metres per model unit.
-  _hullMaterial(color, scale = SHIP_SCALE) {
-    const key = `${color}:${scale}`
+  // metres per model unit. `doubleSided` for the container ship's hull (and its superstructure), which
+  // are partly open surfaces rather than closed shells and would show holes from behind; the cutter's
+  // hull is closed.
+  _hullMaterial(color, scale = SHIP_SCALE, doubleSided = true) {
+    const key = `${color}:${scale}:${doubleSided}`
     let material = this.hullMaterials.get(key)
     if (!material) {
-      material = new THREE.MeshStandardMaterial({ color, roughness: 0.55 })
-      // Antifouling red below the waterline (model y < 0).
+      material = new THREE.MeshStandardMaterial({ color, roughness: 0.55, side: doubleSided ? THREE.DoubleSide : THREE.FrontSide })
+      // Antifouling red below the waterline (model y < 0); inside an open hull, the hold's dark grey.
       material.onBeforeCompile = (shader) => {
         shader.uniforms.shipSeaParams = SeaDarkening.uniforms().seaParams
         shader.uniforms.shipSeaTint = SeaDarkening.uniforms().seaTint
         shader.vertexShader = shader.vertexShader
           .replace('#include <common>', '#include <common>\nvarying float vShipModelY;')
           .replace('#include <begin_vertex>', '#include <begin_vertex>\nvShipModelY = position.y;')
-        const red = new THREE.Color(ANTIFOULING)
+        const red = new THREE.Color(ANTIFOULING), hold = new THREE.Color(HOLD)
         shader.fragmentShader = shader.fragmentShader
           .replace('#include <common>', '#include <common>\nvarying float vShipModelY;\nuniform vec2 shipSeaParams;\nuniform vec3 shipSeaTint;')
           .replace('#include <color_fragment>', `#include <color_fragment>
-if (vShipModelY < -0.02) diffuseColor.rgb = vec3(${red.r.toFixed(4)}, ${red.g.toFixed(4)}, ${red.b.toFixed(4)});`)
+if (vShipModelY < -0.02) diffuseColor.rgb = vec3(${red.r.toFixed(4)}, ${red.g.toFixed(4)}, ${red.b.toFixed(4)});
+if (!gl_FrontFacing) diffuseColor.rgb = vec3(${hold.r.toFixed(4)}, ${hold.g.toFixed(4)}, ${hold.b.toFixed(4)});`)
           // From above the sea (shipSeaParams.y), the hull below the waterline fades into the water.
           .replace('#include <opaque_fragment>', `if (shipSeaParams.y > 0.5 && vShipModelY < 0.0)
   outgoingLight = mix(outgoingLight, shipSeaTint, 1.0 - exp(vShipModelY * ${(scale / UNDERWATER_FADE).toFixed(3)}));
@@ -605,7 +609,7 @@ if (vShipModelY < -0.02) diffuseColor.rgb = vec3(${red.r.toFixed(4)}, ${red.g.to
 
   _buildShip(design) {
     if (design.kind === 'cutter') {
-      const cutter = new THREE.Mesh(this.cutter, this._hullMaterial(design.color, 1))
+      const cutter = new THREE.Mesh(this.cutter, this._hullMaterial(design.color, 1, false))
       cutter.name = 'cutter'
       const root = new THREE.Group()
       root.add(cutter)
