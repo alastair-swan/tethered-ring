@@ -30,6 +30,7 @@ import { createStationaryRingLayer } from '../ring/StationaryRingSegment.js'
 import { createMovingRingLayer, movingRingTextureOffset } from '../ring/MovingRingSegment.js'
 import { createStatorMagnetLayer } from '../ring/StatorMagnetSegment.js'
 import { ModelPool } from './ModelPool.js'
+import { Highlights } from '../scene/Highlights.js'
 import { AnimationChannel } from './AnimationChannel.js'
 import { posFrac, seededRandom, transitStopLayout } from './VirtualRingObject.js'
 import {
@@ -89,7 +90,7 @@ export class transitSystem {
       transitVehicle: new ModelPool('transitVehicle', dParamWithUnits['transitVehicleNumModels'].value),
       ringTerminus: new ModelPool('ringTerminus', dParamWithUnits['ringTerminusNumModels'].value),
       groundTerminus: new ModelPool('groundTerminus', dParamWithUnits['groundTerminusNumModels'].value),
-      elevatorCar: new ModelPool('elevatorCar', dParamWithUnits['elevatorCarNumModels'].value),
+      elevatorCar: new ModelPool('elevatorCar', dParamWithUnits['elevatorCarNumModels'].value, { highlight: 'elevators' }),
       habitat: new ModelPool('habitat', dParamWithUnits['habitatNumModels'].value),
     }
 
@@ -330,16 +331,19 @@ export class transitSystem {
   rebuildLayers(dParamWithUnits, crv, mainRingCurve, layout) {
     this.disposeLayers()
     this.movingRingLayer = createMovingRingLayer(dParamWithUnits, crv, mainRingCurve, RANGE.movingRings)
-    this.layers = [
+    // (Highlighted as the ring: everything but the solar arrays.)
+    const ringLayers = [
       createStationaryRingLayer(dParamWithUnits, crv, mainRingCurve, RANGE.facilities),
       this.movingRingLayer,
       createStatorMagnetLayer(dParamWithUnits, crv, mainRingCurve, RANGE.statorMagnets),
       (this.transitTubeLayer = createTransitTubeLayer(dParamWithUnits, crv, mainRingCurve, layout.numStops, RANGE.longRange)),
       ...createTransitTrackLayers(dParamWithUnits, crv, mainRingCurve, layout.numStops, RANGE.facilities),
-      createSolarArrayLayer(dParamWithUnits, crv, RANGE.facilities),
-    ].filter(layer => layer.mesh)
+    ]
+    ringLayers.forEach(layer => Highlights.tag(layer.mesh, 'ring'))
+    this.layers = [...ringLayers, createSolarArrayLayer(dParamWithUnits, crv, RANGE.facilities)].filter(layer => layer.mesh)
     if (!this.movingRingLayer.mesh) this.movingRingLayer = null
     this.cableLayer = new ElevatorCableLayer(dParamWithUnits, crv, layout.terminusPositions, RANGE.longRange)
+    Highlights.tag(this.cableLayer.mesh, 'elevators')
     if (this.terrain) this.cableLayer.setTerrain(this.terrain)
     this.layers.forEach(layer => layer.setParent(this.scene))
     this.cableLayer.setParent(this.scene)

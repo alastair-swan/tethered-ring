@@ -7,6 +7,7 @@ import { placeAtHeightInRingPlane } from '../ring/ringGeometry.js'
 import { TetherRoots } from '../ring/TetherRoots.js'
 import { StructureLines } from '../scene/structureLines.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
+import { Highlights } from '../scene/Highlights.js'
 
 const UNIVERSE = { gravitationalConstant: 6.67408e-11 }
 // Distant tether forks are merged once their branches would be less than this far apart on screen.
@@ -65,6 +66,9 @@ export class RingAssembly {
       const system = new tetheredRingSystem(d, UNIVERSE, this.planetSpec, ringSpec, index, genKMLFile, kmlFile)
       this.systems.push(system)
       this.planetCoordSys.add(system.getMesh())
+      // The ring's highlight from afar, where its segments are not drawn.
+      system.highlightStandIn = Highlights.curveStandIn(system.mainRingCurve, 'ring', { closed: true, chunks: 128 })
+      system.getMesh().add(system.highlightStandIn)
     })
     this.planetCoordSys.updateWorldMatrix(true)
     for (const system of this.systems) system.getMesh().updateMatrixWorld(true)
@@ -137,6 +141,7 @@ export class RingAssembly {
           }
         }
       }
+      list.forEach(tether => Highlights.tag(tether, 'tethers'))
       this.tethers.push(list)
     }
   }
@@ -263,7 +268,10 @@ export class RingAssembly {
   // Rebuilds rings and tethers from the current parameters. Returns KML text when requested.
   rebuild({ genSpecs = false, genKMLFile = false } = {}) {
     this.disposeTethers()
-    for (const system of this.systems) system.destroy()
+    for (const system of this.systems) {
+      Highlights.disposeStandIn(system.highlightStandIn)
+      system.destroy()
+    }
     this.systems = []
     this.store.derive()
     const kmlFile = ''

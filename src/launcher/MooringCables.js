@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { ecefToGeodetic, geodeticToECEF } from '../physics/geodesy.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
 import { StructureLines } from '../scene/structureLines.js'
+import { Highlights } from '../scene/Highlights.js'
 import { catenaryPoints } from './catenary.js'
 
 // Mooring cables for one tube segment. Where the mass-driver tube runs under the sea it is buoyant
@@ -72,6 +73,7 @@ export class MooringCables {
 
     this.root = new THREE.Group()
     this.root.name = 'mooringCables'
+    Highlights.tag(this.root, 'massDriverTethers')
     this.near = new THREE.Group()
     this.lines = new THREE.Group()
     // Solid cable (with the lines) where it is at least a pixel across; the lines alone below that,

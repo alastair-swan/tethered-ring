@@ -96,6 +96,7 @@ export class VirtualObject {
   static addObjectsParameters = []
   static modelFactory = null     // object with createModel(curve, index) for non-recyclable classes
   static scene = null            // three.js parent that in-use models are added to
+  static highlightClass = undefined // Highlights class of the models (src/scene/Highlights.js)
 
   // Returns a model for `obj` (or null if none can be provided).
   static acquireModel(obj, refFrame) {
@@ -115,6 +116,7 @@ export class VirtualObject {
       model = this.modelFactory.createModel(refFrame.curve, obj.index)
       model.name = this.className
     }
+    if (this.highlightClass) model.userData.highlight = this.highlightClass
     if (model.parent !== this.scene && this.scene) this.scene.add(model)
     model.visible = this.isVisible
     return model

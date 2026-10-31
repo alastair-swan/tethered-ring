@@ -564,6 +564,14 @@ export function createParameterDefinitions() {
   // Tethers and cables are drawn at their real diameters and glow (see src/scene/structureLines.js): how
   // far away a 1 cm line still glows at full brightness; beyond that it fades with its pixel coverage.
   structureGlowDistance: {value: 10000000, units: 'm', autoMap: true, min: 100, max: 10000000, onChange: 'adjustStructureGlow', folder: 'Rendering'},
+  // Highlights: each class drawn over everything in a colour of its own, whatever the lighting and
+  // whatever is in front of it (see src/scene/Highlights.js).
+  highlightRing: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
+  highlightRingTethers: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
+  highlightElevators: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
+  highlightMassDrivers: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
+  highlightMassDriverTethers: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
+  highlightLaunchVehicles: {value: false, units: '', autoMap: true, onChange: 'adjustHighlights', folder: 'Rendering'},
   showMoon: {value: defaultShows, units: '', autoMap: true, onChange: 'adjustMoonsVisibility', folder: 'Rendering'},
   showStars: {value: defaultShows, units: '', autoMap: true, onChange: 'adjustStarsVisibility', folder: 'Rendering'},
   showEarthAxis: {value: false, units: '', autoMap: true, onChange: 'earthAxisObjectUpdate', folder: 'Rendering'},

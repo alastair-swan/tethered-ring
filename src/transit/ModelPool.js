@@ -3,8 +3,10 @@
 // in updateMatrixWorld or rendering. The pool never grows past the configured size; when it runs
 // out, `acquire()` returns null and the shortage is counted so it can be reported once.
 export class ModelPool {
-  constructor(name, size) {
+  // highlight: Highlights class of the models (src/scene/Highlights.js).
+  constructor(name, size, { highlight } = {}) {
     this.name = name
+    this.highlight = highlight
     this.size = size
     this.free = []
     this.inUse = new Set()
@@ -17,6 +19,7 @@ export class ModelPool {
   setTemplate(template) {
     this.template = template
     template.visible = false
+    if (this.highlight) template.userData.highlight = this.highlight
     const toCreate = Math.max(0, this.size - this.free.length - this.inUse.size)
     for (let i = 0; i < toCreate; i++) {
       const model = template.clone()

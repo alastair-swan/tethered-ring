@@ -99,6 +99,7 @@ export class virtualLaunchSled extends MovingVirtualObject {
   static activeObjects = new Map()
   static className = 'virtualLaunchSleds'
   static modelsAreRecyleable = true
+  static highlightClass = 'massDriver'
   static isDynamic = true
 
   static signatureOf(dParamWithUnits) {

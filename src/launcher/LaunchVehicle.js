@@ -407,6 +407,7 @@ export class virtualLaunchVehicle extends MovingVirtualObject {
   static activeObjects = new Map()
   static className = 'virtualLaunchVehicles'
   static modelsAreRecyleable = true
+  static highlightClass = 'launchVehicle'
   static isDynamic = true
   static useT = true
 
