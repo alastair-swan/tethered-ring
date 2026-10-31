@@ -27,6 +27,37 @@ const UNDERSIDE_COLOR = new THREE.Color(0x6fb3c9)
 const UNDERSIDE_OPACITY = 0.18 // looking straight up through it (more at grazing angles)
 // Seen from above (through the water, near the horizon): deep water, matching the fog in the sea.
 const UNDERSIDE_FROM_ABOVE = [0.012, 0.03, 0.05]
+// Snell's window: light from above the surface reaches the camera only within the critical angle of the
+// vertical, asin(1 / 1.333) = 48.6 degrees; beyond it the surface reflects totally, and shows the water
+// below as a mirror would. Within it the surface reflects more towards its edge (Fresnel's equations,
+// from water into air), which ripples soften by tilting the surface. The mirrored water is taken as the
+// water's colour (the fog's), a little lighter or darker with the ripples, so the surface still shows.
+const WATER_INDEX = 1.333
+const MIRROR_OPACITY = 0.995 // the mirror mesh draws where the underside is at least this opaque
+const undersideGlsl = `
+// Fresnel reflectance from water into air (unpolarised), for cos(incidence) = cosI.
+float seaUndersideReflectance(float cosI) {
+  float sinT2 = ${(WATER_INDEX * WATER_INDEX).toFixed(6)} * (1.0 - cosI * cosI);
+  if (sinT2 >= 1.0) return 1.0;
+  float cosT = sqrt(1.0 - sinT2);
+  float rs = (${WATER_INDEX.toFixed(3)} * cosI - cosT) / (${WATER_INDEX.toFixed(3)} * cosI + cosT);
+  float rp = (${WATER_INDEX.toFixed(3)} * cosT - cosI) / (${WATER_INDEX.toFixed(3)} * cosT + cosI);
+  return 0.5 * (rs * rs + rp * rp);
+}
+
+// The underside's colour and opacity: the surface's own look (shaded), and over it the mirrored water,
+// by the reflectance averaged over the ripples' tilt (a few degrees, so the window's edge is soft).
+vec4 seaUndersideLook(vec4 shaded, vec3 water, float facing, float ripple) {
+  float tilt = 0.035;
+  float c = clamp(facing + 0.02 * ripple, 0.0, 1.0);
+  float reflectance = (seaUndersideReflectance(clamp(c - tilt, 0.0, 1.0)) + 2.0 * seaUndersideReflectance(c)
+    + seaUndersideReflectance(clamp(c + tilt, 0.0, 1.0))) * 0.25;
+  vec3 mirrored = water * (1.0 + 0.15 * ripple);
+  float alpha = 1.0 - (1.0 - shaded.a) * (1.0 - reflectance);
+  vec3 color = (shaded.rgb * shaded.a * (1.0 - reflectance) + mirrored * reflectance) / max(alpha, 1e-4);
+  return vec4(color, alpha);
+}
+`
 const SHALLOW_WATER_COLOR = new THREE.Color(0x1f6f8c)
 const DEEP_WATER_COLOR = new THREE.Color(0x04131f)
 // The water colour goes from slightly darker than SHALLOW just under the surface towards (but never
@@ -60,58 +91,16 @@ export class Ocean {
     this.cameraDepth = 0
 
     const geometry = discGeometry()
-    // Seen from below (back faces), lit by the daylight coming through it rather than shaded: mostly
-    // clear, more opaque at grazing angles, with the same ripples as the surface seen from above. (A
-    // lit material only for the sky's uniforms, used from above: its colour is not shaded.)
+    // Seen from below (back faces), lit by the daylight coming through it rather than shaded: inside
+    // Snell's window mostly clear, with the same ripples as the surface seen from above; outside it a
+    // mirror of the water (see undersideGlsl). (Lit materials only for the sky's uniforms, used from
+    // above by the mirror mesh below: their colour is not shaded.)
     this.material = new THREE.MeshLambertMaterial({
       color: UNDERSIDE_COLOR, transparent: true, depthWrite: false, side: THREE.BackSide,
     })
     this.rippleOffsets = noiseOffsets(new THREE.Vector3(), SEA_SURFACE_FREQUENCIES)
     this.opaque = { value: 0 } // 1 while the camera is above the sea (see update)
-    this.material.onBeforeCompile = (shader) => {
-      shader.uniforms.seaRippleOffset = { value: this.rippleOffsets }
-      shader.uniforms.seaUndersideOpaque = this.opaque
-      shader.uniforms.seaSlopeVariance = seaWaveUniforms.seaSlopeVariance
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', `#include <common>
-varying vec3 vSeaLocal;
-varying vec3 vSeaView;
-varying vec3 vSeaNormal;`)
-        .replace('#include <project_vertex>', `#include <project_vertex>
-vSeaLocal = transformed;
-vSeaView = -mvPosition.xyz;
-vSeaNormal = normalize(normalMatrix * normal);`)
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', `#include <common>
-uniform float seaUndersideOpaque;
-varying vec3 vSeaLocal;
-varying vec3 vSeaView;
-varying vec3 vSeaNormal;
-${fbmGlsl('seaRipple', SEA_SURFACE_FREQUENCIES)}
-${seaSurfaceLookGlsl(UNDERSIDE_OPACITY)}`)
-        .replace('#include <alphatest_fragment>', `if (seaUndersideOpaque > 0.5) {
-  diffuseColor = vec4(${UNDERSIDE_FROM_ABOVE.map(c => c.toFixed(3)).join(', ')}, 1.0);
-}
-else {
-  float ripple = seaRippleFbm(vSeaLocal, length(vSeaView));
-  float shine;
-  vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, abs(dot(normalize(vSeaNormal), normalize(vSeaView))), shine);
-  diffuseColor.rgb = shaded.rgb;
-  diffuseColor.a = shaded.a;
-}
-#include <alphatest_fragment>`)
-        .replace('#include <lights_lambert_pars_fragment>', `#include <lights_lambert_pars_fragment>
-${seaSkyReflectionGlsl}`)
-        // Unlit. From above, the backstop shows what the surface there would: deep water reflecting the
-        // sky, as the sea surface does (seaWaves.js), most of all near the horizon.
-        .replace('#include <opaque_fragment>', `outgoingLight = diffuseColor.rgb;
-if (seaUndersideOpaque > 0.5) {
-  vec3 view = normalize(vSeaView);
-  vec3 up = normalize(vSeaNormal);
-  outgoingLight = mix(outgoingLight, seaSkyReflection(reflect(-view, up), sqrt(seaSlopeVariance)), seaReflectance(abs(dot(up, view))));
-}
-#include <opaque_fragment>`)
-    }
+    this.material.onBeforeCompile = (shader) => this.patchShader(shader, false)
     this.material.customProgramCacheKey = () => 'seaUnderside'
     this.mesh = new THREE.Mesh(geometry, this.material)
     this.mesh.name = 'oceanSurface'
@@ -120,7 +109,79 @@ if (seaUndersideOpaque > 0.5) {
     this.mesh.visible = false
     parent.add(this.mesh)
 
+    // Outside Snell's window the underside is opaque, and this copy of the disc draws that part of it in
+    // the opaque pass, writing depth, so that it hides what is above the surface there even if that is
+    // drawn after the translucent disc (e.g. the tube, or lines drawn late). The translucent disc draws
+    // over it in the same colour. From above the sea it is the whole disc, as an opaque backstop (see
+    // update). (Two meshes rather than one material switched between opaque and translucent, which
+    // three.js compiles as two programs: a stall when the camera first crosses the surface.)
+    this.mirrorMaterial = new THREE.MeshLambertMaterial({ color: UNDERSIDE_COLOR, side: THREE.BackSide })
+    this.mirrorMaterial.onBeforeCompile = (shader) => this.patchShader(shader, true)
+    this.mirrorMaterial.customProgramCacheKey = () => 'seaUndersideMirror'
+    this.mirror = new THREE.Mesh(geometry, this.mirrorMaterial)
+    this.mirror.name = 'oceanSurfaceMirror'
+    this.mirror.frustumCulled = false
+    this.mirror.visible = false
+    parent.add(this.mirror)
+
     this.fog = new THREE.FogExp2(SHALLOW_WATER_COLOR.clone(), 0)
+  }
+
+  // The underside's shader (a MeshLambertMaterial's, patched). mirror: only the opaque part outside
+  // Snell's window, for the mirror mesh.
+  patchShader(shader, mirror) {
+    shader.uniforms.seaRippleOffset = { value: this.rippleOffsets }
+    shader.uniforms.seaUndersideOpaque = this.opaque
+    shader.uniforms.seaSlopeVariance = seaWaveUniforms.seaSlopeVariance
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+varying vec3 vSeaLocal;
+varying vec3 vSeaView;
+varying vec3 vSeaNormal;`)
+      .replace('#include <project_vertex>', `#include <project_vertex>
+vSeaLocal = transformed;
+vSeaView = -mvPosition.xyz;
+vSeaNormal = normalize(normalMatrix * normal);`)
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+uniform float seaUndersideOpaque;
+varying vec3 vSeaLocal;
+varying vec3 vSeaView;
+varying vec3 vSeaNormal;
+${fbmGlsl('seaRipple', SEA_SURFACE_FREQUENCIES)}
+${seaSurfaceLookGlsl(UNDERSIDE_OPACITY)}
+${undersideGlsl}`)
+      .replace('#include <alphatest_fragment>', `if (seaUndersideOpaque > 0.5) {
+  diffuseColor = vec4(${UNDERSIDE_FROM_ABOVE.map(c => c.toFixed(3)).join(', ')}, 1.0);
+}
+else {
+  float ripple = seaRippleFbm(vSeaLocal, length(vSeaView));
+  float facing = abs(dot(normalize(vSeaNormal), normalize(vSeaView)));
+  float shine;
+  vec4 shaded = seaSurfaceShade(diffuseColor.rgb, ripple, facing, shine);
+  // The water's own colour, mirrored outside Snell's window (the fog colour is in the output colour
+  // space, as it is blended in after the conversion to it).
+#ifdef USE_FOG
+  vec3 water = sRGBTransferEOTF(vec4(fogColor, 1.0)).rgb;
+#else
+  vec3 water = diffuseColor.rgb * 0.3;
+#endif
+  diffuseColor = seaUndersideLook(shaded, water, facing, ripple);
+${mirror ? `  if (diffuseColor.a < ${MIRROR_OPACITY.toFixed(3)}) discard;
+  diffuseColor.a = 1.0;` : ''}
+}
+#include <alphatest_fragment>`)
+      .replace('#include <lights_lambert_pars_fragment>', `#include <lights_lambert_pars_fragment>
+${seaSkyReflectionGlsl}`)
+      // Unlit. From above, the backstop shows what the surface there would: deep water reflecting the
+      // sky, as the sea surface does (seaWaves.js), most of all near the horizon.
+      .replace('#include <opaque_fragment>', `outgoingLight = diffuseColor.rgb;
+if (seaUndersideOpaque > 0.5) {
+  vec3 view = normalize(vSeaView);
+  vec3 up = normalize(vSeaNormal);
+  outgoingLight = mix(outgoingLight, seaSkyReflection(reflect(-view, up), sqrt(seaSlopeVariance)), seaReflectance(abs(dot(up, view))));
+}
+#include <opaque_fragment>`)
   }
 
   setEnabled(enabled) {
@@ -128,6 +189,7 @@ if (seaUndersideOpaque > 0.5) {
     if (!enabled) {
       this.setCameraInWater(false)
       this.mesh.visible = false
+      this.mirror.visible = false
       SeaDarkening.update(false)
       if (this.scene.fog === this.fog) this.scene.fog = null
     }
@@ -153,25 +215,24 @@ if (seaUndersideOpaque > 0.5) {
     const above = !this.cameraUnderSurface
     SeaDarkening.update(above, _camera, this.ellipsoid, this.parent.getWorldQuaternion(_quaternion))
 
-    // The disc is the sea's underside: seen from under the surface, rippled and translucent; from
-    // above, an opaque backstop for rays that dip under the surface and would come back out of it
-    // beyond the horizon (the Earth curves away), so the sky never shows through the sea.
-    this.mesh.visible = true
+    // The disc is the sea's underside: seen from under the surface, rippled and translucent within
+    // Snell's window (the translucent mesh, drawn after the translucent things it covers) and a mirror of
+    // the water outside it (the mirror mesh, opaque); from above, an opaque backstop (the mirror mesh
+    // alone) for rays that dip under the surface and would come back out of it beyond the horizon (the
+    // Earth curves away), so the sky never shows through the sea. Being opaque and drawn in the opaque
+    // pass, it is in place before anything translucent in front of it (e.g. the cable lines) is blended
+    // over it; otherwise they would blend with the sky behind it and glow against the dark water.
+    this.mesh.visible = !above
+    this.mirror.visible = true
     this.opaque.value = above ? 1 : 0
-    // As a backstop it is opaque and drawn in the opaque pass, so it is in place before anything
-    // translucent in front of it (e.g. the cable lines) is blended over it; otherwise they would blend
-    // with the sky behind it and glow against the dark water. As the underside seen from below it is
-    // translucent and drawn after the translucent things it covers.
-    this.material.transparent = !above
-    this.material.depthWrite = above
-    this.mesh.renderOrder = above ? 0 : 2
     // Rebuild only when the camera has moved by a noticeable fraction of its height above the sea
-    // (the innermost ring is 5% of it), or has crossed the surface.
+    // (the innermost ring is 5% of it), has crossed the surface, or the visibility has changed.
     const height = Math.abs(geo.alt)
-    if (!this._builtAt || this._builtAbove !== above || this._builtAt.distanceTo(_camera) > Math.max(0.05, 0.01 * height)) {
+    if (!this._builtAt || this._builtAbove !== above || this._builtVisibility !== this.visibility || this._builtAt.distanceTo(_camera) > Math.max(0.05, 0.01 * height)) {
       this.buildSurface(height, above)
       ;(this._builtAt ??= new THREE.Vector3()).copy(_camera)
       this._builtAbove = above
+      this._builtVisibility = this.visibility
     }
   }
 
@@ -192,10 +253,13 @@ if (seaUndersideOpaque > 0.5) {
 
   // Rebuilds the surface disc around the point below the camera (heightAboveSea: |camera altitude|).
   // From above it reaches past twice the horizon distance: a ray that skims under the surface comes
-  // back out of it about as far beyond the horizon as it went in before it.
+  // back out of it about as far beyond the horizon as it went in before it. From below it reaches as
+  // far as the water lets anything be seen, so that nothing above the surface shows past its edge.
   buildSurface(heightAboveSea, above = false) {
     const horizon = this.horizonDistance(heightAboveSea)
-    this.fillDisc(this.mesh, heightAboveSea, Math.max(3000, horizon * (above ? 2.2 : 1.05) + 1000), 0)
+    const reach = above ? horizon * 2.2 + 1000 : Math.max(horizon * 1.05 + 1000, 2 * this.visibility)
+    this.fillDisc(this.mesh, heightAboveSea, Math.max(3000, reach), 0)
+    this.mirror.position.copy(this.mesh.position)
     noiseOffsets(this.mesh.position, SEA_SURFACE_FREQUENCIES, this.rippleOffsets) // ripples stay put as the disc moves
   }
 
@@ -260,8 +324,10 @@ if (seaUndersideOpaque > 0.5) {
   dispose() {
     this.setEnabled(false)
     this.mesh.parent?.remove(this.mesh)
+    this.mirror.parent?.remove(this.mirror)
     this.mesh.geometry.dispose()
     this.material.dispose()
+    this.mirrorMaterial.dispose()
   }
 }
 

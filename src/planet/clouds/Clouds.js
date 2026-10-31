@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { standInScene } from '../../scene/precompile.js'
 import '../../scene/sunAndSkyLight.js' // registers <sun_and_sky_light> (and <atmosphere_common>)
 import { SunAndSkyLight } from '../../scene/sunAndSkyLight.js'
 import { cloudNoiseTextures } from './cloudNoise.js'
@@ -647,7 +648,41 @@ export class Clouds {
     this.weatherMap.update(renderer, dayOfYear, utcHours)
     if (!this.enabled) return
     this.realClouds.setDayOfYear(dayOfYear + utcHours / 24)
+    // The real clouds' snapshot (10240 x 5120) takes ~0.1 s to upload: do it as soon as it has loaded,
+    // rather than on the first frame with clouds (e.g. on coming up out of the sea).
+    if (this.realClouds.ready && this._uploaded !== this.realClouds.texture) {
+      renderer.initTexture(this.realClouds.texture)
+      this._uploaded = this.realClouds.texture
+    }
     this.time = t
+  }
+
+  // Compiles the passes' shaders in the background (see precompile.js), so that the first frame with
+  // clouds (e.g. on coming up out of the sea) does not wait for them: the march, the composite, and the
+  // distance pass's variants for the objects in `scene` (new ones only).
+  compileAsync(renderer, scene, camera) {
+    if (!this.enabled) return Promise.resolve()
+    const compiled = []
+    // Each for the target it is drawn into (three.js compiles for the current target's colour space),
+    // and the distance pass with the scene's lights but no fog, as it is drawn.
+    const previousTarget = renderer.getRenderTarget()
+    const standIns = standInScene(scene, { material: distanceMaterial, seen: (this._compiled ??= new Set()) })
+    if (standIns) {
+      const fog = scene.fog
+      scene.fog = null
+      renderer.setRenderTarget(this.distanceTarget)
+      compiled.push(renderer.compileAsync(standIns, camera, scene))
+      scene.fog = fog
+    }
+    if (!this._compiledPasses) {
+      this._compiledPasses = true
+      renderer.setRenderTarget(this.cloudTarget)
+      compiled.push(renderer.compileAsync(this.marchScene, this.quadCamera))
+      renderer.setRenderTarget(previousTarget)
+      compiled.push(renderer.compileAsync(this.compositeScene, this.quadCamera))
+    }
+    renderer.setRenderTarget(previousTarget)
+    return Promise.all(compiled)
   }
 
   // Draws the clouds over what `renderer` has drawn of `scene` from `camera`.

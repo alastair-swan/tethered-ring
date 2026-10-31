@@ -47,12 +47,14 @@ import { ShotController } from '../shots/ShotController.js'
 import { ShotSidebar } from '../ui/ShotSidebar.js'
 import cameraPresets from '../data/cameraPresets.json' with { type: 'json' }
 import { placeAtHeightInRingPlane } from '../ring/ringGeometry.js'
+import { standInScene, warmPrograms } from '../scene/precompile.js'
 import mountainList from '../data/mountainList.json' with { type: 'json' }
 import googleEarthProjectFile from '../data/googleEarthStudioSampleProjectFile.json' with { type: 'json' }
 
 const LOGO_DURATION = 20 // s of simulated time before the logo hides and preset start actions run
 const RING_RAISE_RATE = 0.25 // fraction of full raise per second (R/L keys)
 const TUBE_DEPLOY_RATE = 0.0025 // fraction per second
+const PRECOMPILE_INTERVAL = 120 // frames between background compiles of new shader programs (precompileShaders)
 
 // The application: builds the scene from the selected preset, owns the per-frame update, and
 // exposes the actions used by the GUI and keyboard shortcuts.
@@ -902,6 +904,25 @@ export class App {
     this.highlights.render(renderer, this.scene, this.camera3d)
     renderer.clearDepth()
     this.overlays.render(renderer)
+    if ((this._framesRendered = (this._framesRendered ?? 0) + 1) % PRECOMPILE_INTERVAL === 1) this.precompileShaders()
+    warmPrograms(renderer)
+  }
+
+  // Compiles the shader programs of new objects in the scene (drawn or not: e.g. the sea surface and the
+  // atmosphere while under the sea), the sky's and the clouds' passes' in the background, so that the
+  // first frame that draws them does not stall (see precompile.js).
+  precompileShaders() {
+    if (this._precompiling) return
+    const seen = (this._precompiled ??= { scene: new Set(), sky: new Set() })
+    const scene = standInScene(this.scene, { seen: seen.scene })
+    const sky = standInScene(this.sky.scene, { seen: seen.sky })
+    this._precompiling = true
+    Promise.all([
+      scene && this.renderer.compileAsync(scene, this.camera3d, this.scene),
+      sky && this.renderer.compileAsync(sky, this.sky.camera, this.sky.scene),
+      this.clouds?.compileAsync(this.renderer, this.scene, this.camera3d),
+    ]).catch((error) => console.warn('[app] precompiling shaders failed', error))
+      .finally(() => { this._precompiling = false })
   }
 
   // Sets the drawing-buffer size. `css` keeps the canvas filling its container while recording at
