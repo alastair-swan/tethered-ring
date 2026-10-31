@@ -33,6 +33,12 @@ import shipping from '../data/shippingLanes.json' with { type: 'json' }
 // below MAX_ALTITUDE, relative to an origin near the camera (planet coordinates are too large for
 // float32).
 //
+// Cutters (models/warship.obj, in metres, loosely a coast guard cutter) are white for the coast guard or
+// haze grey for the navy. A few sail each lane (CUTTERS_PER_1000KM each way), about half the anchorages
+// have a coast guard cutter lying off them, and an underwater launcher has two coast guard cutters
+// patrolling it, back and forth: one the whole corridor, one a beat of START_PATROL either side of its
+// start.
+//
 // From above the sea, a hull fades into the deep-water colour below the waterline (over UNDERWATER_FADE),
 // as water this clear would hide it; the sea's own darkening of what is under it (seaDarkening.js) is
 // much gentler, to keep the submerged launcher tube in view.
@@ -65,6 +71,11 @@ const CORRIDOR_LEAD = 40000
 const CORRIDOR_DEPTH = 30
 const CORRIDOR_MIN = 20000
 const CORRIDOR_HIDE = 3000
+const CUTTER_COLORS = { coastGuard: 0xf1f1ee, navy: 0x7d848a }
+const CUTTERS_PER_1000KM = 0.5
+const CUTTER_ANCHORAGE_CHANCE = 0.5
+const START_PATROL = 15000
+const PATROL_OFFSET = [1000, 3000]
 
 // The model's deck: slot k (from the stern) is centred at z = FIRST_SLOT + k * SLOT. Slots 0-2 (where
 // the hull narrows aft) have 6, 4 and 2 fewer rows than the rest; the bow's two slots 2 fewer rows and
@@ -205,7 +216,7 @@ export class ContainerShips {
    * planet: Planet (for the terrain at anchorages); parent: the planet's coordinate system (three.js
    * planet axes); ellipsoid: { a, f }.
    */
-  constructor(planet, parent, ellipsoid, { url = 'models/container_ship.obj' } = {}) {
+  constructor(planet, parent, ellipsoid, { url = 'models/container_ship.obj', cutterUrl = 'models/warship.obj' } = {}) {
     this.planet = planet
     this.ellipsoid = ellipsoid
     this.group = new THREE.Group()
@@ -227,6 +238,10 @@ export class ContainerShips {
       this.containerMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75 })
       this.superstructureMaterial = new THREE.MeshStandardMaterial({ color: SUPERSTRUCTURE_COLOR, roughness: 0.6 })
     }).catch((error) => console.warn('[ships] model failed to load', error))
+    this.cutter = null
+    new OBJLoader().loadAsync(cutterUrl).then((object) => {
+      object.traverse((o) => { if (o.isMesh) this.cutter = o.geometry })
+    }).catch((error) => console.warn('[ships] cutter model failed to load', error))
   }
 
   setVisible(visible) {
@@ -257,16 +272,35 @@ export class ContainerShips {
           phase: (k + 0.8 * r()) / count * length, speed: (14 + 7 * r()) * KNOT,
         })
       }
+      const cutters = density > 0 ? Math.round(length / 1e6 * CUTTERS_PER_1000KM) : 0
+      for (let k = 0; k < cutters; k++) {
+        const r = random(hash(index, direction, k, 13))
+        ships.push({
+          id: `lane${index}:${direction}:cutter${k}`, direction, kind: 'cutter', service: r() < 0.5 ? 'coastGuard' : 'navy',
+          phase: (k + r()) / cutters * length, speed: (15 + 7 * r()) * KNOT,
+        })
+      }
     }
     return { name: lane.name, points, separation, cumulative, length, ships }
   }
 
-  // Where a lane ship is at time t: { lat, lon, heading } (or null near the lane's ends).
+  // Where a lane ship is at time t: { lat, lon, heading } (or null near the lane's ends). A ship with a
+  // `patrol` [from, to] (distances along the lane) sails back and forth between them.
   _laneShipPose(lane, ship, t) {
-    let s = (ship.phase + ship.direction * ship.speed * t) % lane.length
-    if (s < 0) s += lane.length
-    const hide = lane.hide ?? PORT_HIDE
-    if (s < hide || s > lane.length - hide) return null
+    let s, direction = ship.direction
+    if (ship.patrol) {
+      const [from, to] = ship.patrol, beat = to - from
+      let u = (ship.phase + ship.speed * t) % (2 * beat)
+      if (u < 0) u += 2 * beat
+      direction = u < beat ? 1 : -1
+      s = from + (u < beat ? u : 2 * beat - u)
+    }
+    else {
+      s = (ship.phase + direction * ship.speed * t) % lane.length
+      if (s < 0) s += lane.length
+      const hide = lane.hide ?? PORT_HIDE
+      if (s < hide || s > lane.length - hide) return null
+    }
     const c = lane.cumulative
     let i = 0, j = c.length - 1
     while (j - i > 1) {
@@ -281,7 +315,7 @@ export class ContainerShips {
     const sa = Math.sin((1 - f) * angle), sb = Math.sin(f * angle), sin = Math.sin(angle) || 1
     _p.copy(a).multiplyScalar(sa / sin).addScaledVector(b, sb / sin).normalize()
     _t.copy(a).multiplyScalar(-Math.cos((1 - f) * angle)).addScaledVector(b, Math.cos(f * angle)).normalize()
-    if (ship.direction < 0) _t.negate()
+    if (direction < 0) _t.negate()
     // Keep to starboard.
     _r.crossVectors(_t, _p).normalize()
     const offset = (ship.offset ?? lane.separation[i]) / EARTH_RADIUS
@@ -373,6 +407,16 @@ export class ContainerShips {
         offset: CORRIDOR_OFFSET[0] + (CORRIDOR_OFFSET[1] - CORRIDOR_OFFSET[0]) * d[3],
       }
     })
+    // Coast guard cutters patrolling the launcher: the whole corridor, and a beat around its start.
+    const patrols = [[CORRIDOR_HIDE + 1000, lane.length - CORRIDOR_HIDE - 1000], [CORRIDOR_LEAD - START_PATROL, CORRIDOR_LEAD + START_PATROL]]
+    patrols.forEach((patrol, k) => {
+      const d = [r(), r(), r()]
+      lane.ships.push({
+        id: `launcher${seed}:patrol${k}`, kind: 'cutter', service: 'coastGuard', patrol,
+        phase: d[0] * 2 * (patrol[1] - patrol[0]), speed: (12 + 4 * d[1]) * KNOT,
+        offset: PATROL_OFFSET[0] + (PATROL_OFFSET[1] - PATROL_OFFSET[0]) * d[2],
+      })
+    })
     this.lanes.push(lane)
   }
 
@@ -456,6 +500,17 @@ export class ContainerShips {
         seed: hash(anchorage.seed ?? index, k, 10), sizes: [['small', 0.3], ['medium', 0.4], ['large', 0.3]],
       })
     }
+    // About half the ports have a coast guard cutter lying off the anchorage.
+    if (!anchorage.local && r() < CUTTER_ANCHORAGE_CHANCE) {
+      const angle = 2 * Math.PI * r(), radius = anchorage.radiusKm * 1100
+      const north = radius * Math.cos(angle), east = radius * Math.sin(angle)
+      const lat = anchorage.lat + north / 111320
+      const lon = anchorage.lon + east / (111320 * Math.cos(anchorage.lat * Math.PI / 180))
+      const h = await this._height(lat, lon)
+      if (h !== null && h <= -ANCHOR_DEPTH) {
+        ships.push({ id: `anchor${anchorage.seed ?? index}:cutter`, lat, lon, heading: wind.from + (r() - 0.5) * 0.6, kind: 'cutter', service: 'coastGuard' })
+      }
+    }
     anchorage.ships = ships
   }
 
@@ -477,8 +532,11 @@ export class ContainerShips {
     return g
   }
 
-  _hullMaterial(color) {
-    let material = this.hullMaterials.get(color)
+  // A hull's material: `color` above the waterline (model y = 0), antifouling below it; `scale` is
+  // metres per model unit.
+  _hullMaterial(color, scale = SHIP_SCALE) {
+    const key = `${color}:${scale}`
+    let material = this.hullMaterials.get(key)
     if (!material) {
       material = new THREE.MeshStandardMaterial({ color, roughness: 0.55 })
       // Antifouling red below the waterline (model y < 0).
@@ -495,16 +553,23 @@ export class ContainerShips {
 if (vShipModelY < -0.02) diffuseColor.rgb = vec3(${red.r.toFixed(4)}, ${red.g.toFixed(4)}, ${red.b.toFixed(4)});`)
           // From above the sea (shipSeaParams.y), the hull below the waterline fades into the water.
           .replace('#include <opaque_fragment>', `if (shipSeaParams.y > 0.5 && vShipModelY < 0.0)
-  outgoingLight = mix(outgoingLight, shipSeaTint, 1.0 - exp(vShipModelY * ${(SHIP_SCALE / UNDERWATER_FADE).toFixed(3)}));
+  outgoingLight = mix(outgoingLight, shipSeaTint, 1.0 - exp(vShipModelY * ${(scale / UNDERWATER_FADE).toFixed(3)}));
 #include <opaque_fragment>`)
       }
-      material.customProgramCacheKey = () => 'containerShipHull'
-      this.hullMaterials.set(color, material)
+      material.customProgramCacheKey = () => `shipHull:${scale}`
+      this.hullMaterials.set(key, material)
     }
     return material
   }
 
   _buildShip(design) {
+    if (design.kind === 'cutter') {
+      const cutter = new THREE.Mesh(this.cutter, this._hullMaterial(design.color, 1))
+      cutter.name = 'cutter'
+      const root = new THREE.Group()
+      root.add(cutter)
+      return root
+    }
     const root = new THREE.Group()
     root.name = 'containerShip'
     root.scale.setScalar(SHIP_SCALE)
@@ -529,11 +594,15 @@ if (vShipModelY < -0.02) diffuseColor.rgb = vec3(${red.r.toFixed(4)}, ${red.g.to
     return root
   }
 
-  _show(id, seed, sizes, loaded, lat, lon, heading, seen) {
+  // Shows `vessel` (a lane or anchorage ship) at (lat, lon), building it the first time; `loaded` is the
+  // range a container ship's load is drawn from.
+  _show(vessel, loaded, lat, lon, heading, seen) {
+    const id = vessel.id
     let ship = this.ships.get(id)
     if (!ship) {
-      if (this.builds-- <= 0) return
-      const design = shipDesign(seed, sizes, loaded)
+      const cutter = vessel.kind === 'cutter'
+      if ((cutter && !this.cutter) || (!cutter && !this.model) || this.builds-- <= 0) return
+      const design = cutter ? { kind: 'cutter', color: CUTTER_COLORS[vessel.service] } : shipDesign(vessel.seed, vessel.sizes, loaded)
       ship = { design, object: this._buildShip(design) }
       this.ships.set(id, ship)
       this.group.add(ship.object)
@@ -549,7 +618,7 @@ if (vShipModelY < -0.02) diffuseColor.rgb = vec3(${red.r.toFixed(4)}, ${red.g.to
 
   /** Places the ships for simulated time t (s) as seen from `camera`. */
   update(t, camera) {
-    if (!this.model) return
+    if (!this.model && !this.cutter) return
     const parent = this.group.parent
     parent.updateWorldMatrix(true, false)
     const cam = parent.worldToLocal(camera.getWorldPosition(new THREE.Vector3()))
@@ -570,7 +639,7 @@ if (vShipModelY < -0.02) diffuseColor.rgb = vec3(${red.r.toFixed(4)}, ${red.g.to
       for (const lane of this.lanes) {
         for (const ship of lane.ships) {
           const pose = this._laneShipPose(lane, ship, t)
-          if (pose && near(pose.lat, pose.lon)) this._show(ship.id, ship.seed, ship.sizes, [0.35, 1], pose.lat, pose.lon, pose.heading, seen)
+          if (pose && near(pose.lat, pose.lon)) this._show(ship, [0.35, 1], pose.lat, pose.lon, pose.heading, seen)
         }
       }
       this.anchorages.forEach((anchorage, index) => {
@@ -581,7 +650,7 @@ if (vShipModelY < -0.02) diffuseColor.rgb = vec3(${red.r.toFixed(4)}, ${red.g.to
           this._buildAnchorage(anchorage, index).catch((error) => console.warn('[ships]', error))
         }
         for (const ship of anchorage.ships ?? []) {
-          if (near(ship.lat, ship.lon)) this._show(ship.id, ship.seed, ship.sizes, [0.75, 1], ship.lat, ship.lon, ship.heading, seen)
+          if (near(ship.lat, ship.lon)) this._show(ship, [0.75, 1], ship.lat, ship.lon, ship.heading, seen)
         }
       })
     }
