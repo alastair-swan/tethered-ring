@@ -91,6 +91,8 @@ export const seaWaveUniforms = {
   seaGust: { value: new THREE.Vector4(0, 0, 0, 0) },        // z: pattern cross-fade
   seaGustSlice: { value: [new THREE.Vector3(), new THREE.Vector3()] },
   seaSlopeVariance: { value: 0.03 },                        // the sea's mean square slope (see seaReflectanceGlsl)
+  seaWindMap: { value: null },                              // the weather map's wind (weatherMap.js), if any
+  seaWindMapActive: { value: 0 },
 }
 
 // A whole-lattice offset for pattern number n (so the noise stays seamless across tiles).
@@ -138,7 +140,10 @@ export function updateSeaWaves(t, direction, speed) {
 // sky from higher up, which is darker and bluer than at the horizon. GLSL, with seaWaveUniforms'
 // seaSlopeVariance (the sea's mean square slope).
 export const seaReflectanceGlsl = `
+#ifndef SEA_SLOPE_VARIANCE
+#define SEA_SLOPE_VARIANCE
 uniform float seaSlopeVariance;
+#endif
 
 // The share of the sky reflected, seen at |cos| facing of the angle to the (drawn) normal.
 float seaReflectance(float facing) {
@@ -200,6 +205,12 @@ uniform float seaWaveOffset[${WAVE_COUNT}];
 uniform float seaWavePhase[${WAVE_COUNT}];
 uniform float seaBandSlope[${WAVE_BANDS}];
 uniform vec4 seaWind;
+uniform sampler2D seaWindMap;
+uniform float seaWindMapActive;
+#ifndef SEA_SLOPE_VARIANCE
+#define SEA_SLOPE_VARIANCE
+uniform float seaSlopeVariance;
+#endif
 uniform vec4 seaFoam;
 uniform vec3 seaFoamSlice[2];
 uniform vec4 seaGust;
@@ -212,6 +223,16 @@ ${fbmGlsl('seaFoam', FOAM_FREQUENCIES)}
 ${fbmGlsl('seaGroup', GROUP_FREQUENCIES)}
 ${slicedFbmGlsl('seaGust', GUST_FREQUENCIES.length)}
 ${slicedFbmGlsl('seaFoam', FOAM_FREQUENCIES.length)}
+
+// The sea's mean square slope (Cox and Munk, plus the swell) at the ellipsoid normal n (renderer frame:
+// y the polar axis, longitude atan(-z, x)), from the weather map's wind there; the camera's
+// (seaSlopeVariance) without a map.
+float seaRoughnessHere(vec3 n) {
+  if (seaWindMapActive < 0.5) return seaSlopeVariance;
+  vec2 uv = vec2(atan(-n.z, n.x) / (2.0 * PI) + 0.5, asin(clamp(n.y, -1.0, 1.0)) / PI + 0.5);
+  float speed = length(texture(seaWindMap, uv).zw);
+  return 0.003 + 0.00512 * speed + ${(SWELL_SLOPE * SWELL_SLOPE).toFixed(5)};
+}
 
 // The gust factor at a point (1 on average): how much rougher than average the short waves are.
 float seaGustFactor(vec3 local, float viewDistance) {
@@ -264,6 +285,11 @@ vec3 seaWaveSlope(vec3 local, vec3 up, float gust, out float unresolved) {
       unresolved += (1.0 - visible) * 0.5 * amplitude * amplitude * dot(along[d], along[d]);
     }
   }
+  // The waves too fine to draw are as rough as the wind where they are (not at the camera, whose wind
+  // sets the drawn waves): from far away the sea's roughness, and so the sun's glint, follows the
+  // weather (with one wind for the whole planet, the glint turned sharp or blurred all at once as the
+  // point under the camera moved between a calm and a breeze).
+  unresolved *= seaRoughnessHere(up) / seaSlopeVariance;
   return slope;
 }
 

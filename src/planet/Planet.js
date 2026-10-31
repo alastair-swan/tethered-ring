@@ -276,6 +276,12 @@ export class Planet {
     updateSeaWaves(t, _seaWind, windSpeed);
   }
 
+  /** The weather map's wind texture (clouds/weatherMap.js), for the sea's roughness far away (seaWaves.js). */
+  setSeaWindMap(texture) {
+    seaWaveUniforms.seaWindMap.value = texture;
+    seaWaveUniforms.seaWindMapActive.value = texture ? 1 : 0;
+  }
+
   updateAtmosphere(camera, sunDirection) {
     const { a, b } = this.ellipsoid;
     const k = a / b;

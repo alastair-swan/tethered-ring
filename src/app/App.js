@@ -811,6 +811,11 @@ export class App {
     }
     const date = advanceDate(Math.max(1, this.store.get('sunDayOfYear')), Math.max(0, this.store.get('sunTimeOfDayUTC')), this.clock.time)
     this.clouds?.update(this.renderer, date.dayOfYear, date.utcHours, this.clock.time)
+    // The sea's roughness far away follows the weather map's wind, once it has been drawn.
+    if (this.clouds && !this._seaWindMapSet) {
+      this._seaWindMapSet = true
+      this.planet.setSeaWindMap(this.clouds.weatherMap.textures[1])
+    }
     this.planet.setDayOfYear(date.dayOfYear + date.utcHours / 24)
     if (!this.sunFollowsDate) return
     const s = subsolarPoint(date.dayOfYear, date.utcHours)

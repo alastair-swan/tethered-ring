@@ -640,8 +640,9 @@ export class Clouds {
    * frame before render.
    */
   update(renderer, dayOfYear, utcHours, t) {
-    if (!this.enabled) return
+    // (The weather map also gives the sea its roughness, with or without the clouds.)
     this.weatherMap.update(renderer, dayOfYear, utcHours)
+    if (!this.enabled) return
     this.realClouds.setDayOfYear(dayOfYear + utcHours / 24)
     this.time = t
   }
