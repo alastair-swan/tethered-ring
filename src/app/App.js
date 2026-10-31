@@ -793,6 +793,7 @@ export class App {
       containerShips: this.containerShips ?? null,
     })
     this.oceanTerminal.setVisible(true)
+    this.oceanTerminal.setSchedule(this.launchSystem.terminalSchedule())
     this.oceanTerminal.place(breech)
     const sun = this.lighting.sunLight
     _sunDirection.copy(sun.getWorldPosition(_sunDirection)).sub(sun.target.getWorldPosition(_sunTarget))

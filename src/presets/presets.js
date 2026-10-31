@@ -1202,6 +1202,8 @@ function bigIslandLauncher(guidParamWithUnits, nonGUIParams) {
   // (This preset used a 100 m tube radius so the track showed up from far away; it now uses the real size.)
   guidParamWithUnits['numVirtualLaunchVehicles'].value = 1
   guidParamWithUnits['numVirtualLaunchSleds'].value = 1
+  // A launch every 20 minutes, each after a feeder ship has brought its cargo to the ocean terminal (launchCadence.js).
+  guidParamWithUnits['launchVehicleSpacingInSeconds'].value = 1200
   guidParamWithUnits['launcherMassDriver1InitialVelocity'].value = 2
   guidParamWithUnits['launcherMassDriver2InitialVelocity'].value = 1000
   guidParamWithUnits['launcherMassDriverScrewThreadStarts'].value = 8  // m

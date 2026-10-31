@@ -148,7 +148,7 @@ export class virtualLaunchSled extends MovingVirtualObject {
     const v = virtualLaunchSled
     om.visible = v.isVisible
     if (!v.isVisible) return
-    const deltaT = Math.max(0, v.adjustedTime(refFrame.timeSinceStart) - this.timeLaunched)
+    const deltaT = this.clampedDeltaT(refFrame)   // (negative while leaving the terminal)
     const frame = this.frameAt(refFrame, deltaT)
     om.position.copy(frame.position)
     om.quaternion.copy(frame.orientation)

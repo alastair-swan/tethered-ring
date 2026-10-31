@@ -26,6 +26,7 @@ export const ANCHOR_KINDS = {
 const LAUNCH_KINDS = ['launchVehicle', 'launchSled', 'adaptiveNut']
 const LANE_NAMES = ['express, clockwise', 'express, anticlockwise', 'collector, clockwise', 'collector, anticlockwise']
 const STAGE_NAMES = {
+  egress: 'Leaves the terminal',
   feederRailCurve: 'Enters the feeder rail',
   massDriver1Curve: 'Enters the first mass driver',
   massDriver2Curve: 'Enters the mass driver',
@@ -251,7 +252,8 @@ export class AnchorResolver {
       for (const stage of launch?.launchStages(className) ?? []) {
         events.push({ simTime: launch.launchSimTime(className, anchor.launchIndex, stage.deltaT), name: STAGE_NAMES[stage.name] ?? stage.name })
       }
-      if (events.length) events[0].name = 'Launch'
+      const start = events.find(e => e.name !== STAGE_NAMES.egress)
+      if (start) start.name = 'Launch'
     }
     else if (anchor.type === 'transitVehicle') {
       events = this.transitSystem?.collectorStopEvents(anchor.lane, anchor.p, fromSimTime, toSimTime) ?? []

@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { ecefToGeodetic, geodeticToECEF } from '../physics/geodesy.js'
 import { windAt } from '../scene/seaPlacement.js'
 import { terminalModel } from './terminalModel.js'
-import { siteSeed } from './terminalPort.js'
+import { DEFAULT_SCHEDULE, siteSeed } from './terminalPort.js'
 import { TerminalTraffic } from './TerminalTraffic.js'
 import { AnchorCables } from './AnchorCables.js'
 import { CONE_OUTER, setLampCount, setLamps, withPortLamps } from './portLamps.js'
@@ -21,7 +21,7 @@ import { CONE_OUTER, setLampCount, setLamps, withPortLamps } from './portLamps.j
 // - Two cables run from each anchor marker to the sea floor, splayed out diagonally from the terminal's
 //   ends (AnchorCables.js).
 // - Feeder ships call at the pier, and their containers go into the terminal (terminalPort.js,
-//   TerminalTraffic.js).
+//   TerminalTraffic.js), on the launcher's cadence (setSchedule; launchCadence.js).
 // - Between dusk and dawn (the sun below LIGHTS_ON) the pier's floodlights shine on the pier (in the
 //   shaders of the things on it: portLamps.js; their faint beams are drawn too), their lenses glow, and
 //   so do the terminal's windows and doors.
@@ -30,7 +30,7 @@ import { CONE_OUTER, setLampCount, setLamps, withPortLamps } from './portLamps.j
 // local (the terminal's position on the planet is its group's position), as planet coordinates are too
 // large for float32.
 
-const MIN_DEPTH = 45          // m: the breech must be this far below the sea for the terminal to fit above it
+export const MIN_DEPTH = 45          // m: the breech must be this far below the sea for the terminal to fit above it
 const LIGHTS_ON = [2, -4]     // sun elevation (degrees): the lights fade on between these
 const LAMP_COLOR = new THREE.Color(1.0, 0.86, 0.68)
 const LAMP_INTENSITY = 140    // the lamps' intensity (light on a surface 1 m away, facing them; full sun is pi)
@@ -66,6 +66,8 @@ export class OceanTerminal {
     this.placed = null     // the breech it is placed at
     this.model = null
     this.frame = 0
+    this.schedule = DEFAULT_SCHEDULE
+    this.site = null
     fetch(url).then((r) => r.text()).then((text) => this._build(terminalModel(text)))
       .catch((error) => console.warn('[oceanTerminal] model failed to load', error))
   }
@@ -161,6 +163,12 @@ export class OceanTerminal {
     this.surface.add(beams)
   }
 
+  /** The ships' timetable (terminalPort.terminalSchedule), which keeps up with the launches. */
+  setSchedule(schedule = DEFAULT_SCHEDULE) {
+    this.schedule = schedule
+    if (this.traffic && this.site !== null) this.traffic.setSite(this.site, schedule)
+  }
+
   setVisible(visible) {
     this.visible = !!visible
     if (!this.visible) this.root.visible = false
@@ -231,7 +239,8 @@ export class OceanTerminal {
       }
     }
     this.cables = new AnchorCables({ parent: this.root, toLocal, legs, ellipsoid: this.ellipsoid, sampleHeight: this.sampleHeight })
-    this.traffic.setSite(siteSeed(geo.lat, geo.lon))
+    this.site = siteSeed(geo.lat, geo.lon)
+    this.traffic.setSite(this.site, this.schedule)
     this.windKey = null
     return true
   }

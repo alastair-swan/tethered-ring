@@ -490,7 +490,7 @@ export class virtualLaunchVehicle extends MovingVirtualObject {
   placeAndOrientModel(om, refFrame) {
     const v = virtualLaunchVehicle
     const adj = v.adjustedTime(refFrame.timeSinceStart)
-    const deltaT = Math.max(0, adj - this.timeLaunched)
+    const deltaT = this.clampedDeltaT(refFrame)   // (negative while leaving the terminal)
     const frame = this.frameAt(refFrame, deltaT)
     const relevantCurve = frame.f.curve
 
