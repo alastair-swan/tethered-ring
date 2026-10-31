@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import * as tram from '../utils/tram.js'
 import { advanceDate, sunElevation } from '../physics/solar.js'
 import { CODEC_LABELS, CONTAINERS, isRecordingSupported } from '../capture/VideoRecorder.js'
+import { SUPERSAMPLE_FACTORS } from '../capture/Supersampler.js'
 import { ANCHOR_KINDS } from '../shots/Anchors.js'
 import { isWorldAnchor, WORLD_ANCHOR, ANCHOR_ORIENTS } from '../shots/ShotFormat.js'
 import { PLAYBACK_SPEEDS } from '../shots/ShotController.js'
@@ -12,6 +13,7 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 const MONTH_STARTS = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
 const RESOLUTIONS = [[1280, 720], [1920, 1080], [2560, 1440], [3840, 2160], [1080, 1920], [1080, 1080]]
 const FRAME_RATES = [24, 25, 30, 48, 50, 60, 120]
+const SUPERSAMPLE_OPTIONS = SUPERSAMPLE_FACTORS.map(f => [f, f === 1 ? 'Off (antialiasing only)' : `${f} × ${f}${f === 2 ? ' (recommended)' : ''}`])
 const TIME_SPEEDS = [0, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
 const ORIENT_LABELS = { follow: 'Turns with the object', level: 'Level, turns with its heading', translate: 'Moves with it, never turns' }
 const MOTION_LABELS = { auto: 'Auto (orbit when zooming or circling)', direct: 'Direct (straight path)', orbit: 'Orbit & zoom around target' }
@@ -528,6 +530,8 @@ export class ShotSidebar {
           this.row('Most sub-frames per frame', this.number(() => o().motionBlurMaxSamples, (v) => s.setOutput({ motionBlurMaxSamples: Math.max(1, Math.round(v)) }), { min: 1, step: 1 }))),
         this.blurHint = el('div', { class: 'ss-hint' }),
         this.button('Preview this frame', () => this.previewFrame(), { title: 'Render the video frame at the playhead as the recording will (with motion blur) and show it', cls: 'ss-wide' })),
+      this.row('Supersampling', this.select(SUPERSAMPLE_OPTIONS, () => o().supersample ?? 1, (v) => s.setOutput({ supersample: Number(v) }), { title: 'Render each frame at a higher resolution and filter it down to the video size: smoother edges, tethers and fine detail than antialiasing alone. 2 × 2 takes about four times as long and much more graphics memory (at 4K, about 1.5 GB more).' })),
+      this.supersampleHint = el('div', { class: 'ss-hint' }),
       this.checkbox('Wait for terrain tiles', () => o().waitForTerrain, (v) => s.setOutput({ waitForTerrain: v }), { title: 'Each frame waits for the terrain it shows to load (slower, but no blurry tiles)' }),
       typeof window.showSaveFilePicker === 'function'
         ? this.checkbox('Stream to a file (large videos)', () => s.prefs.saveToDisk, (v) => { s.prefs.saveToDisk = v })
@@ -543,6 +547,7 @@ export class ShotSidebar {
     const s = this.shots
     if (kind === 'shot') {
       this.updateBlurRows()
+      this.updateSupersampleHint()
       this.rebuildKeyList()
       this.syncEditor()
       for (const sync of this.syncs) sync()
@@ -566,6 +571,14 @@ export class ShotSidebar {
       el('div', { class: 'ss-still-caption', textContent: `Frame at ${this.shots.playhead.toFixed(2)} s, as recorded. Click to close.` }))
     overlay.addEventListener('click', () => overlay.remove())
     document.body.append(overlay)
+  }
+
+  // Says when the GPU cannot supersample this much at the output size.
+  updateSupersampleHint() {
+    const o = this.shots.shot.output
+    const factor = this.shots.supersampleFactor(o)
+    this.supersampleHint.hidden = factor === (o.supersample ?? 1)
+    this.supersampleHint.textContent = `This graphics card renders at most ${(factor * o.width).toFixed(0)} pixels across at this size, so ${factor === 1 ? 'there will be no supersampling' : `it will be ${factor} × ${factor}`}.`
   }
 
   // Shows the motion blur settings that apply, and how much rendering they cost for this shot.

@@ -510,6 +510,9 @@ export class Clouds {
   constructor(planet, planetCoordSys) {
     this.planet = planet
     this.planetCoordSys = planetCoordSys
+    // Drawing-buffer pixels per output pixel across (the supersampling factor while recording): the
+    // clouds' detail is filtered to the output pixel, so a supersampled frame looks like an ordinary one.
+    this.pixelScale = 1
     this.weatherMap = new WeatherMap()
     this.realClouds = new RealClouds()
     this.enabled = true
@@ -610,7 +613,7 @@ export class Clouds {
     u.cameraWorld.value.copy(camera.matrixWorld)
     u.exposure.value.set(skyExposure, sunIntensity)
     this.compositeScene.children[0].material.uniforms.rainTime.value = t % 1000
-    u.pixelAngle.value = 2 / (camera.projectionMatrix.elements[5] * h)
+    u.pixelAngle.value = 2 / (camera.projectionMatrix.elements[5] * h) * this.pixelScale
     u.realClouds.value = this.realClouds.texture
     u.realTexel.value = 2 * Math.PI * 6378137 / (this.realClouds.texture.image?.width ?? 10240)
     u.realBlend.value = this.realClouds.ready ? THREE.MathUtils.smoothstep(altitude, REAL_CLOUD_ALTITUDES[0], REAL_CLOUD_ALTITUDES[1]) : 0

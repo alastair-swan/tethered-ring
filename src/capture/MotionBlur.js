@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { renderToCorner } from './Supersampler.js'
 
 // Motion blur for recordings, by temporal supersampling: each video frame is the average of several
 // sub-frames rendered at moments spread over the shutter interval. This removes temporal aliasing
@@ -12,7 +13,9 @@ import * as THREE from 'three'
 // recorder picks it up. Averaging in linear light keeps bright streaks bright, as a real shutter does.
 //
 //   const blur = new MotionBlur(renderer)
-//   blur.begin(width, height)          // once per recording
+//   blur.begin(width, height)          // once per recording, at the output size
+//   (with supersampling the canvas is larger: each sub-frame is first filtered into its bottom-left
+//   output-sized corner, which is what is averaged and where the average is drawn; see Supersampler.js)
 //   for each sub-frame s of n: render to the canvas, then blur.add(s === 0, 1 / n)
 //   (n can differ from frame to frame: see adaptiveSubFrames)
 //   blur.present()                     // the averaged frame is now on the canvas
@@ -127,8 +130,10 @@ export class MotionBlur {
     this.sum = null
   }
 
-  // Allocates the buffers for drawing-buffer size width x height.
+  // Allocates the buffers for output size width x height.
   begin(width, height) {
+    this.width = width
+    this.height = height
     this.disposeBuffers()
     // Float sums need float blending; otherwise half floats (enough for a few dozen sub-frames).
     const type = this.renderer.extensions.has('EXT_float_blend') ? THREE.FloatType : THREE.HalfFloatType
@@ -138,7 +143,7 @@ export class MotionBlur {
     this.presentMaterial.uniforms.map.value = this.sum.texture
   }
 
-  // Adds what is on the canvas now, with `weight` (1 / sub-frames). `first` starts a new frame.
+  // Adds what is in the canvas's output-sized corner now, with `weight` (1 / sub-frames). `first` starts a new frame.
   add(first, weight) {
     const r = this.renderer
     r.copyFramebufferToTexture(this.frame)
@@ -156,13 +161,9 @@ export class MotionBlur {
     r.setRenderTarget(previousTarget)
   }
 
-  // Draws the averaged frame to the canvas.
+  // Draws the averaged frame to the canvas's output-sized corner.
   present() {
-    const r = this.renderer
-    const previousTarget = r.getRenderTarget()
-    r.setRenderTarget(null)
-    r.render(this.presentScene, this.camera)
-    r.setRenderTarget(previousTarget)
+    renderToCorner(this.renderer, this.presentScene, this.camera, this.width, this.height)
   }
 
   disposeBuffers() {

@@ -12,7 +12,9 @@ import {
 } from '../capture/VideoRecorder.js'
 import { downloadText } from '../app/exports.js'
 import { MotionBlur, subFrameTimes, adaptiveSubFrames } from '../capture/MotionBlur.js'
+import { Supersampler, OpaqueCanvas, clampSupersample, maxRenderSize } from '../capture/Supersampler.js'
 import { PixelLOD } from '../scene/PixelLOD.js'
+import { StructureLines } from '../scene/structureLines.js'
 
 const PENDING_SHOT_KEY = 'tetheredRing.pendingShot'
 const TERRAIN_WAIT_TIMEOUT_MS = 15000
@@ -613,28 +615,53 @@ export class ShotController {
     }
   }
 
+  // The supersampling factor a recording at `output` gets on this GPU (see Supersampler.js).
+  supersampleFactor(output) {
+    return clampSupersample(output.supersample ?? 1, output.width, output.height, maxRenderSize(this.app.renderer))
+  }
+
+  // The canvas a recording at `output` is encoded from: the renderer's own, or with supersampling the
+  // output-sized canvas the filtered frames are copied to.
+  frameCanvas(output) {
+    if (this.supersampleFactor(output) === 1) return this.app.renderer.domElement
+    this.outputCanvas ??= document.createElement('canvas')
+    this.outputCanvas.width = output.width
+    this.outputCanvas.height = output.height
+    return this.outputCanvas
+  }
+
   // Runs frames at a fixed step. perFrame(i, s) sets up sub-frame s of frame i and returns the
   // simulated time step to take, or false (at s = 0) to stop. subFrames(i) is how many sub-frames
   // frame i averages (motion blur, see MotionBlur.js); `blur` allocates the buffers for that.
-  async runFixedStep({ width, height, fps, waitForTerrain, perFrame, recorder, progressLabel, subFrames = () => 1, blur: useBlur = false, afterFrame = null }) {
+  // `supersample` renders each sub-frame at that many times the resolution (Supersampler.js).
+  // afterFrame(i, canvas) is called while frame i is finished on `canvas` (the one to encode).
+  async runFixedStep({ width, height, fps, waitForTerrain, perFrame, recorder, progressLabel, subFrames = () => 1, blur: useBlur = false, afterFrame = null, supersample = 1 }) {
     const app = this.app
+    const factor = clampSupersample(supersample, width, height, maxRenderSize(app.renderer))
     app.renderer.setAnimationLoop(null)
-    app.setRenderSize(width, height, { pixelRatio: 1 })
+    app.setRenderSize(width, height, { pixelRatio: factor })
     app.clock.setFixedStep(1 / fps)
     // Every recorded frame gets its intended level of detail (no deferred high-detail builds).
     const previousBuildBudget = PixelLOD.buildBudget
     PixelLOD.buildBudget = Infinity
     app.quality.applyForRecording()
+    // Terrain tiles as for the output resolution: the finer ones a larger canvas would ask for add
+    // little once filtered down, and would multiply the tiles to stream.
+    if (factor > 1 && app.planet?.lod) app.planet.lod.sseThreshold *= factor
+    StructureLines.setPixelScale(factor)
+    if (app.clouds) app.clouds.pixelScale = factor
     // Nothing but the scene goes into the video: no path overlay or tracking markers.
     const markers = [app.camera.trackingMarker, app.camera.targetMarker, app.camera.orbitMarker]
     const markerVisibility = markers.map(m => m.visible)
     markers.forEach(m => { m.visible = false })
     const progress = new ProgressOverlay(() => this.stop())
     const blur = useBlur ? new MotionBlur(app.renderer) : null
-    if (blur) {
-      const size = app.renderer.getDrawingBufferSize(new THREE.Vector2())
-      blur.begin(size.x, size.y)
-    }
+    blur?.begin(width, height)
+    const supersampler = factor > 1 ? new Supersampler(app.renderer, this.frameCanvas({ width, height, supersample: factor })) : null
+    supersampler?.begin(width, height)
+    const canvas = supersampler ? supersampler.canvas : app.renderer.domElement
+    // (The supersampler's filter writes opaque pixels itself.)
+    const opaque = supersampler ? null : new OpaqueCanvas(app.renderer)
     let lastYield = performance.now()
     try {
       frames: for (let i = 0; ; i++) {
@@ -648,6 +675,8 @@ export class ShotController {
           // The sub-frames of one frame are close together; their terrain is the first one's.
           if (waitForTerrain && s === 0) await this.waitForTerrain()
           app.render()
+          supersampler?.resolve()
+          opaque?.apply(width, height)
           if (blur) {
             blur.add(s === 0, 1 / n)
             // Keep the page (and the Stop button) responsive through long runs of sub-frames, without
@@ -660,7 +689,8 @@ export class ShotController {
           }
         }
         if (blur) blur.present()
-        afterFrame?.(i)
+        supersampler?.publish()
+        afterFrame?.(i, canvas)
         if (recorder) await recorder.addFrame()
         progress.update(progressLabel(i))
         // Yield so the page (and the live-take camera controls) stay responsive.
@@ -670,6 +700,10 @@ export class ShotController {
     }
     finally {
       blur?.dispose()
+      supersampler?.dispose()
+      opaque?.dispose()
+      StructureLines.setPixelScale(1)
+      if (app.clouds) app.clouds.pixelScale = 1
       progress.remove()
       markers.forEach((m, i) => { m.visible = markerVisibility[i] })
       PixelLOD.buildBudget = previousBuildBudget
@@ -680,16 +714,18 @@ export class ShotController {
     }
   }
 
-  async createRecorder(output, fileName) {
+  // `writable` (optional): a WritableStream to write the file to (no save dialog; see VideoRecorder).
+  async createRecorder(output, fileName, { canvas = this.frameCanvas(output), writable = null } = {}) {
     const settings = { width: output.width, height: output.height, fps: output.fps }
     const recorder = new VideoRecorder({
-      canvas: this.app.renderer.domElement,
+      canvas,
       ...settings,
       codec: output.codec,
       container: output.container,
       bitrate: 0,
       fileName,
       saveToDisk: this.prefs.saveToDisk,
+      writable,
     })
     if (!(await recorder.prepareTarget())) return null
     const codec = await resolveCodec(output.codec, settings)
@@ -731,6 +767,39 @@ export class ShotController {
     if (!recorder) return
     const failed = await this.renderFrames(recorder)
     await this.finishRecorder(recorder, failed)
+  }
+
+  // Renders `shot` without asking anything (the render queue and the command-line renderer): loads it
+  // (its preset must be the current one), lets the scene settle for `settleSeconds`, renders it at the
+  // fixed step and encodes it into `writable` (a WritableStream, see VideoRecorder; null buffers the
+  // file in memory and downloads it). onProgress({ frame, frames }) after each frame. Resolves to
+  // { fileName, frames, codec, bytes }; throws if it fails or is stopped.
+  async renderShotUnattended(shot, { writable = null, fileName = slug(shot.name), settleSeconds = 0, onProgress = null } = {}) {
+    if (this.mode !== 'idle') throw new Error('Another recording is running.')
+    if (!isRecordingSupported()) throw new Error('This browser has no WebCodecs video encoder.')
+    if (shot.preset !== this.app.presetId) throw new Error(`The shot needs preset "${shot.preset}", but "${this.app.presetId}" is loaded.`)
+    if (!shot.camera.keyframes.length) throw new Error('The shot has no keyframes.')
+    this.pause()
+    this.loadShot(clone(shot))
+    this.setViewMode('shot')
+    const output = this.shot.output
+    output.width = evenDimension(output.width)
+    output.height = evenDimension(output.height)
+    // Things that load in the background (the satellite cloud snapshot, models) should be there before
+    // the first frame, so every render of the shot starts the same way.
+    const settleEnd = performance.now() + settleSeconds * 1000
+    while (performance.now() < settleEnd || (this.app.clouds?.enabled && !this.app.clouds.realClouds?.ready && performance.now() < settleEnd + 30000)) await sleep(100)
+    const recorder = await this.createRecorder(output, fileName, { writable })
+    if (!recorder) throw new Error('Could not open the output file.')
+    const frames = Math.max(1, Math.round(shotDuration(this.shot) * output.fps))
+    const failed = await this.renderFrames(recorder, { afterFrame: (i) => onProgress?.({ frame: i + 1, frames }) })
+    if (failed || this.cancelRequested) {
+      await recorder.cancel().catch(() => {})
+      throw failed ?? new Error('Stopped.')
+    }
+    const result = await recorder.finish()
+    this.setStatus(`Saved ${result.fileName}: ${recorder.frameCount} frames, ${CODEC_LABELS[recorder.options.codec]}.`)
+    return { ...result, frames: recorder.frameCount, codec: recorder.options.codec }
   }
 
   // Sub-frames for video frame i under the shot's motion blur settings (1 without blur).
@@ -776,6 +845,8 @@ export class ShotController {
     this.emit('mode')
     const frames = Math.min(to, Math.max(1, Math.round(shotDuration(shot) * output.fps)))
     const blurred = (output.motionBlur ?? 'off') !== 'off'
+    const ss = this.supersampleFactor(output)
+    const ssLabel = ss > 1 ? `, ${ss}x${ss} supersampled` : ''
     let n = 1
     let times = [0]
     let failed = null
@@ -784,8 +855,9 @@ export class ShotController {
         ...output,
         recorder,
         blur: blurred,
+        supersample: output.supersample ?? 1,
         subFrames: () => n,
-        afterFrame: afterFrame && ((k) => afterFrame(from + k)),
+        afterFrame: afterFrame && ((k, canvas) => afterFrame(from + k, canvas)),
         perFrame: (k, s) => {
           const i = from + k
           if (i >= frames) return false
@@ -795,7 +867,7 @@ export class ShotController {
           }
           return this.setPlayhead(times[s])
         },
-        progressLabel: (k) => `Rendering "${shot.name}": frame ${from + k + 1} / ${frames}${recorder ? ` (${CODEC_LABELS[recorder.options.codec]} ${output.width}x${output.height} @ ${output.fps} fps${n > 1 ? `, ${n} sub-frames` : ''})` : ''}`,
+        progressLabel: (k) => `Rendering "${shot.name}": frame ${from + k + 1} / ${frames}${recorder ? ` (${CODEC_LABELS[recorder.options.codec]} ${output.width}x${output.height} @ ${output.fps} fps${ssLabel}${n > 1 ? `, ${n} sub-frames` : ''})` : ''}`,
       })
     }
     catch (err) {
@@ -813,7 +885,7 @@ export class ShotController {
     if (this.mode !== 'idle' || !this.keyframes.length) return null
     const i = Math.max(0, Math.round(this.playhead * this.fps))
     let image = null
-    const failed = await this.renderFrames(null, { from: i, to: i + 1, afterFrame: () => { image = this.app.renderer.domElement.toDataURL('image/png') } })
+    const failed = await this.renderFrames(null, { from: i, to: i + 1, afterFrame: (k, canvas) => { image = canvas.toDataURL('image/png') } })
     if (failed) this.setStatus(`Preview failed: ${failed.message}`)
     return image
   }
@@ -845,7 +917,7 @@ export class ShotController {
       if (!isRecordingSupported()) { this.setStatus('This browser cannot encode video; recording the camera path only.') }
       else {
         try {
-          recorder = await this.createRecorder(output, slug(shot.name))
+          recorder = await this.createRecorder(output, slug(shot.name), { canvas: this.app.renderer.domElement })
           if (!recorder) return
         }
         catch (err) {

@@ -16,7 +16,9 @@
 //             motionBlurMaxStep,     // 'adaptive': metres the camera may move between sub-frames near things
 //             motionBlurMaxPixels,   // 'adaptive': pixels nearby scenery may move between sub-frames
 //             motionBlurMaxSamples,  // 'adaptive': the most sub-frames per frame
-//             shutterAngle },        // degrees of each frame interval the sub-frames cover (360 = all)
+//             shutterAngle,          // degrees of each frame interval the sub-frames cover (360 = all)
+//             supersample },         // render at this many times the resolution and filter down (1 = off;
+//                                    // see src/capture/Supersampler.js)
 // }
 //
 // keyframe: {
@@ -68,6 +70,7 @@ export const DEFAULT_OUTPUT = {
   motionBlurMaxPixels: 2,
   motionBlurMaxSamples: 1024,
   shutterAngle: 360,
+  supersample: 1,
 }
 
 export const MOTION_BLUR_MODES = ['off', 'fixed', 'adaptive']
@@ -151,6 +154,7 @@ export function validateShot(shot) {
   }
   if (!(o.motionBlurMaxStep > 0) || !(o.motionBlurMaxPixels > 0)) fail('"output.motionBlurMaxStep" and "motionBlurMaxPixels" must be positive')
   if (!(o.shutterAngle >= 0 && o.shutterAngle <= 360)) fail('"output.shutterAngle" must be between 0 and 360')
+  if (!(o.supersample >= 1 && o.supersample <= 4)) fail('"output.supersample" must be between 1 and 4')
   return shot
 }
 
