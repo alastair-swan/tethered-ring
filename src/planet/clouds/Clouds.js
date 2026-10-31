@@ -81,7 +81,8 @@ const MACRO_TILE = 400000
 //   0.3), so it covers a good deal more of the sky than its opacity; HIGH_THICKNESS (m) deep from the high cloud base, drawn out into streaks HIGH_STREAK times
 //   longer along the wind (which is CIRRUS_WIND times the surface's aloft).
 // - Low cloud for the rest of the imagery's opacity: a few fair-weather cumulus where there is little
-//   (at least FAIR_CUMULUS of the sky, more with convection), turning into stratocumulus and then a stratus
+//   (FAIR_CUMULUS of the sky, more with convection, in fields a few hundred kilometres across covering
+//   about FAIR_FIELDS of the clear sky, the rest clear), turning into stratocumulus and then a stratus
 //   sheet as it rises over STRATUS_ONSET; towers in showers (the weather's, where the imagery has cloud:
 //   SHOWER_OPACITY).
 const HIGH_SHARE = 0.3
@@ -96,6 +97,7 @@ const FIBRE_STREAK = 15
 const FIBRE_TILE = 2500
 const CIRRUS_WIND = 3
 const FAIR_CUMULUS = [0.012, 0.03]
+const FAIR_FIELDS = 0.35
 const STRATUS_ONSET = [0.4, 0.85]
 const DRIFT_PERIOD = 2400 // s
 // Extinction (1/m) of a cloud at full density.
@@ -281,7 +283,12 @@ CloudColumn cloudColumn(vec2 uv, vec3 p, vec3 local, float footprint) {
   float lowOpacity = clamp(1.0 - (1.0 - opacity) / (1.0 - highOpacity), 0.0, 1.0);
   float convective = a.b;
   float showers = convective * clamp(showerRain(a) / 3.0, 0.0, 1.0) * smoothstep(${SHOWER_OPACITY[0].toFixed(2)}, ${SHOWER_OPACITY[1].toFixed(2)}, opacity);
-  float lowCover = max(lowOpacity / 0.9, mix(${FAIR_CUMULUS[0].toFixed(3)}, ${FAIR_CUMULUS[1].toFixed(3)}, convective));
+  // (The fair-weather cumulus come in fields: the large-scale noise above its FAIR_FIELDS quantile.)
+  vec4 fm = texture(shapeNoise, (local + macroOffset) / ${MACRO_TILE.toFixed(1)});
+  float field = remap(fm.r, fm.g * 0.625 + fm.b * 0.25 + fm.a * 0.125 - 1.0, 1.0, 0.0, 1.0);
+  float fieldThreshold = coverThreshold(${FAIR_FIELDS.toFixed(2)});
+  float fair = mix(${FAIR_CUMULUS[0].toFixed(3)}, ${FAIR_CUMULUS[1].toFixed(3)}, convective) * smoothstep(fieldThreshold - 0.03, fieldThreshold + 0.06, field);
+  float lowCover = max(lowOpacity / 0.9, fair);
   float stratiform = smoothstep(${STRATUS_ONSET[0].toFixed(2)}, ${STRATUS_ONSET[1].toFixed(2)}, lowCover) * (1.0 - showers);
   vec3 up = normalize(worldToPlanet * p);
   vec3 east = normalize(cross(vec3(0.0, 1.0, 0.0), up));
