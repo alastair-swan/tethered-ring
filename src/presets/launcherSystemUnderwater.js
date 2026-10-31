@@ -102,6 +102,10 @@ export function launcherSystemUnderwater(guidParamWithUnits, nonGUIParams) {
   guidParamWithUnits['showEarthsAtmosphere'].value = false
 
   guidParamWithUnits['launcherCoastTime'].value = 100*20
+  // A launch every 20 minutes, each after a feeder ship has brought its cargo to the ocean terminal
+  // (launchCadence.js); a vehicle is in flight for longer than that, so two are drawn.
+  guidParamWithUnits['launchVehicleSpacingInSeconds'].value = 1200
+  guidParamWithUnits['numVirtualLaunchVehicles'].value = 2
   guidParamWithUnits['launcherSlowDownPassageOfTime'].value = 1
   guidParamWithUnits['orbitControlsRotateSpeed'].value = 1
   guidParamWithUnits['logZoomRate'].value = -3
