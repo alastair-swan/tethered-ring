@@ -97,8 +97,11 @@ Every animated system receives the simulation time in `animate(time, ...)`. Its 
 
 1. The sky pass: stars and the Moon, drawn with their own camera so the main camera's far plane can stay fitted to the planet
 2. Any background image or Google Earth frame
-3. The main scene
-4. The screen-space overlays
+3. The main scene (then the clouds over it)
+4. The highlights, if any are on (see below)
+5. The screen-space overlays
+
+**Highlights.** The Rendering toggles `highlightRing`, `highlightRingTethers`, `highlightElevators`, `highlightMassDrivers`, `highlightMassDriverTethers` and `highlightLaunchVehicles` draw a class of structure over the finished frame in a colour of its own, whatever the lighting and whatever is in front of it (`src/scene/Highlights.js`). Objects are tagged where they are built (`Highlights.tag(object, key)`, in `userData.highlight`, inherited by the subtree and copied by clones; the launcher's virtual object classes set `static highlightClass`, and `ModelPool` and `InstancedProxyPool` take a `highlight` option). Each frame with a class on, the visible meshes and lines of those classes go on layer 31 and are drawn alone, with an override material, into an offscreen target with its own depth; a full-screen pass lays them over the frame as a translucent fill with full-opacity outlines and creases, and lines at full opacity. Only what is drawn is highlighted, so the ring and the mass driver also have a line along their curve that is drawn only while highlighted (`Highlights.curveStandIn`), for when they are too far away for their models. With every toggle off the pass costs nothing.
 
 During recording, `ShotController` stops the animation loop and calls `step()`/`render()` itself, one fixed step at a time.
 
