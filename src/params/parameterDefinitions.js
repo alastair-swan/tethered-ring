@@ -551,6 +551,8 @@ export function createParameterDefinitions() {
   showSeaIce: {value: true, units: '', autoMap: true, onChange: 'adjustSeaIce', folder: 'Rendering'},
   // Sailboats near the camera, at anchor and sailing, for scale (see src/scene/Sailboats.js).
   showSailboats: {value: true, units: '', autoMap: true, onChange: 'adjustSailboats', folder: 'Rendering'},
+  // Container ships on the shipping lanes and at anchor off ports (see src/scene/ContainerShips.js).
+  showContainerShips: {value: true, units: '', autoMap: true, onChange: 'adjustContainerShips', folder: 'Rendering'},
   underwaterVisibility: {value: 20000, units: 'm', autoMap: true, min: 100, max: 200000, onChange: 'adjustOcean', folder: 'Rendering'},   // distance at which things underwater have almost faded into the water colour (a visual cue, not realism)
   earthTextureOpacity: {value: 1, units: '', autoMap: true, min: 0, max: 1, onChange: 'adjustEarthTextureOpacity', folder: 'Rendering'},
   earthTextureDoubleSided: {value: false, units: '', autoMap: true, onChange: 'adjustEarthTextureSidedness', folder: 'Rendering'},
